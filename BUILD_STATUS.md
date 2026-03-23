@@ -119,6 +119,18 @@ When completely finished: openclaw system event --text "TokenPulse Phase 2 compl
 
 ---
 
+## Future Feature Ideas (Post-Launch)
+
+### Image & Video Generation Tracking (v1.2+ idea)
+- Ryan suggested tracking image/video generation APIs alongside LLM token tracking
+- Examples: Replicate, fal.ai, RunwayML, Seedance 2.0 (video), Stable Diffusion APIs, Imagen
+- Pricing model is different — per image, per second of video, or per compute unit (not tokens)
+- Schema would need a `cost_unit` field (tokens / images / seconds / compute_units)
+- Proxy architecture handles this the same way — intercept request, parse response, calculate cost
+- Good v1.2 feature once core LLM tracking is solid
+
+---
+
 ## Key Design Decisions (reference)
 
 - **Proxy port:** 4100 (configurable later)
