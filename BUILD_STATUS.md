@@ -121,6 +121,28 @@ When completely finished: openclaw system event --text "TokenPulse Phase 2 compl
 
 ## Future Feature Ideas (Post-Launch)
 
+### OpenClaw Native Integration (v1.1 — HIGH PRIORITY)
+- Auto-setup: OpenClaw plugin that configures proxy base URLs automatically
+- OpenClaw already has all the user's API keys — TokenPulse can pull them and register without manual setup
+- Makes OpenClaw users the natural first beta audience
+- Setup flow becomes: install TokenPulse → tell OpenClaw to connect → done
+- This is a major differentiator vs. competitors that require manual config
+
+### Live Token Visualizer (v1.1)
+- Real-time activity indicator in system tray (pulses when a request is in flight)
+- "Live" panel in dashboard showing current active request, which model, token counter ticking up during streaming
+- Token velocity graph (tokens/second) animated during inference
+- Great demo moment — watch your AI "think" in real time
+- Implementation: Tauri events or WebSocket from proxy to frontend (proxy emits events per-chunk during streaming)
+- Would make an excellent Product Hunt demo GIF
+
+### Web Dashboard / Mobile Access (v1.1)
+- Serve a lightweight read-only web dashboard on localhost:4200 alongside the proxy
+- Accessible from any device on the same network (phone, tablet) — open browser, see dashboard
+- No account, no cloud — fully local
+- Perfect for checking overnight cron job activity
+- Great for OpenClaw users who want to see AI activity from another device
+
 ### Image & Video Generation Tracking (v1.2+ idea)
 - Ryan suggested tracking image/video generation APIs alongside LLM token tracking
 - Examples: Replicate, fal.ai, RunwayML, Seedance 2.0 (video), Stable Diffusion APIs, Imagen
