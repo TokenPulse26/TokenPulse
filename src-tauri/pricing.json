@@ -1,0 +1,72 @@
+[
+  {
+    "model": "gpt-4o",
+    "provider": "openai",
+    "input_cost_per_million": 2.50,
+    "output_cost_per_million": 10.00,
+    "context_window": 128000
+  },
+  {
+    "model": "gpt-4o-mini",
+    "provider": "openai",
+    "input_cost_per_million": 0.15,
+    "output_cost_per_million": 0.60,
+    "context_window": 128000
+  },
+  {
+    "model": "gpt-4-turbo",
+    "provider": "openai",
+    "input_cost_per_million": 10.00,
+    "output_cost_per_million": 30.00,
+    "context_window": 128000
+  },
+  {
+    "model": "claude-sonnet-4-6",
+    "provider": "anthropic",
+    "input_cost_per_million": 3.00,
+    "output_cost_per_million": 15.00,
+    "context_window": 200000
+  },
+  {
+    "model": "claude-sonnet-4-5",
+    "provider": "anthropic",
+    "input_cost_per_million": 3.00,
+    "output_cost_per_million": 15.00,
+    "context_window": 200000
+  },
+  {
+    "model": "claude-haiku-3-5",
+    "provider": "anthropic",
+    "input_cost_per_million": 0.80,
+    "output_cost_per_million": 4.00,
+    "context_window": 200000
+  },
+  {
+    "model": "claude-opus-4-6",
+    "provider": "anthropic",
+    "input_cost_per_million": 15.00,
+    "output_cost_per_million": 75.00,
+    "context_window": 200000
+  },
+  {
+    "model": "gemini-1.5-pro",
+    "provider": "google",
+    "input_cost_per_million": 1.25,
+    "output_cost_per_million": 5.00,
+    "context_window": 1000000
+  },
+  {
+    "model": "gemini-1.5-flash",
+    "provider": "google",
+    "input_cost_per_million": 0.075,
+    "output_cost_per_million": 0.30,
+    "context_window": 1000000
+  },
+  {
+    "model": "gemini-2.0-flash",
+    "provider": "google",
+    "input_cost_per_million": 0.10,
+    "output_cost_per_million": 0.40,
+    "context_window": 1000000
+  }
+]
