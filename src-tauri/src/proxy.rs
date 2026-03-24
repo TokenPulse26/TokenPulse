@@ -515,8 +515,7 @@ pub async fn start_proxy_server(
         .allow_headers(Any);
 
     let app = Router::new()
-        .route("/{*path}", any(proxy_handler))
-        .route("/", any(proxy_handler))
+        .fallback(any(proxy_handler))
         .layer(cors)
         .with_state(state);
 
