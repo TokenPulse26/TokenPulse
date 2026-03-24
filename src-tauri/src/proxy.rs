@@ -233,12 +233,17 @@ async fn proxy_handler(
         Err(_) => return Err(StatusCode::BAD_REQUEST),
     };
 
-    let mut body_json: Value = serde_json::from_slice(&body_bytes).unwrap_or(Value::Null);
+    let body_json_result: Result<Value, _> = serde_json::from_slice(&body_bytes);
+    let mut body_json = body_json_result.unwrap_or(Value::Null);
+    let has_json_body = body_json != Value::Null;
     let model = extract_model(&body_json, &provider.name);
     let is_streaming = is_streaming_request(&body_json);
 
+    eprintln!("[TokenPulse] {} {} → {} (provider: {}, model: {}, streaming: {})",
+        parts.method, path, target_url, provider.name, model, is_streaming);
+
     // Inject stream_options for OpenAI streaming requests
-    if is_streaming && provider.name == "openai" {
+    if is_streaming && (provider.name == "openai" || provider.name == "cliproxy") {
         if let Some(obj) = body_json.as_object_mut() {
             obj.insert(
                 "stream_options".to_string(),
@@ -247,13 +252,18 @@ async fn proxy_handler(
         }
     }
 
-    let modified_body = serde_json::to_vec(&body_json).unwrap_or_else(|_| body_bytes.to_vec());
+    // Use original bytes if body wasn't valid JSON (e.g. GET requests)
+    let modified_body = if has_json_body {
+        serde_json::to_vec(&body_json).unwrap_or_else(|_| body_bytes.to_vec())
+    } else {
+        body_bytes.to_vec()
+    };
 
-    // Build forward request
+    // Build forward request — pass ALL original headers through
     let mut forward_headers = reqwest::header::HeaderMap::new();
     for (name, value) in &parts.headers {
         let name_str = name.as_str();
-        // Skip hop-by-hop headers and host
+        // Skip only hop-by-hop headers and host (host gets set by reqwest for the target URL)
         if matches!(name_str, "host" | "connection" | "transfer-encoding" | "content-length") {
             continue;
         }
@@ -263,6 +273,9 @@ async fn proxy_handler(
             }
         }
     }
+    eprintln!("[TokenPulse] Forwarding {} headers (auth present: {})",
+        forward_headers.len(),
+        forward_headers.contains_key("authorization") || forward_headers.contains_key("x-api-key"));
 
     let method = match parts.method {
         Method::GET => reqwest::Method::GET,
@@ -278,11 +291,18 @@ async fn proxy_handler(
         .headers(forward_headers)
         .body(modified_body)
         .build()
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| {
+            eprintln!("[TokenPulse] ERROR building request: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     let response = match state.http_client.execute(forward_req).await {
-        Ok(r) => r,
+        Ok(r) => {
+            eprintln!("[TokenPulse] Response: {} from {}", r.status(), target_url);
+            r
+        },
         Err(e) => {
+            eprintln!("[TokenPulse] ERROR forwarding to {}: {}", target_url, e);
             // Log the failed attempt
             let latency_ms = start_time.elapsed().as_millis() as i64;
             let record = RequestRecord {
