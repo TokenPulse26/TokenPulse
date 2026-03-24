@@ -118,6 +118,32 @@ When completely finished: openclaw system event --text "TokenPulse Phase 2 compl
 
 ## Future Feature Ideas (Post-Launch)
 
+### 🐛 CRITICAL BUGS FOUND (2026-03-24 overnight)
+TokenPulse proxy was deployed into OpenClaw's request path and broke both routes:
+
+**Bug 1: Header stripping**
+- TokenPulse strips the `Authorization: Bearer` header when forwarding requests
+- cliproxy at 8317 received requests without auth → returned 401
+- Root cause: proxy.rs request forwarding logic doesn't pass all original headers through to the upstream
+
+**Bug 2: Outbound HTTPS connections fail**
+- TokenPulse couldn't make outbound connections to `api.anthropic.com`
+- Requests hung until timeout (curl returned 000)
+- Root cause: likely reqwest TLS/certificate issue in the release build, or the proxy isn't forwarding to external HTTPS endpoints correctly
+
+**Bug 3: No logging**
+- tokenpulse.log was empty — silent failures
+- Need to add proper error logging to proxy.rs (eprintln at minimum, structured logging preferred)
+
+**Resolution:** Ryan bypassed TokenPulse by pointing config directly at cliproxy (8317) and Anthropic API. OpenClaw is stable. TokenPulse proxy still running on 4100 but not in the request path.
+
+**Fix plan:**
+1. Fix header passthrough in proxy.rs — MUST forward ALL original headers (Authorization, x-api-key, Content-Type, etc.)
+2. Fix outbound HTTPS — test reqwest with TLS to external APIs
+3. Add proper error logging throughout proxy.rs
+4. Test the full chain locally with curl BEFORE reconnecting to OpenClaw
+5. Only reconnect to OpenClaw after verified working
+
 ### ARCHITECTURE PIVOT: Web-First Dashboard (CRITICAL — Next Session)
 - Key insight: Target users (OpenClaw, Mac Mini, Mac Studio, DGX Spark) run HEADLESS servers
 - Desktop GUI (Tauri) is wrong primary interface for headless machines
