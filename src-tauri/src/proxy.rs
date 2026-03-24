@@ -69,6 +69,12 @@ fn detect_provider(headers: &HeaderMap, path: &str) -> ProviderInfo {
             base_url: "https://api.groq.com".to_string(),
         };
     }
+    if path.starts_with("/cliproxy/") {
+        return ProviderInfo {
+            name: "cliproxy".to_string(),
+            base_url: "http://127.0.0.1:8317".to_string(),
+        };
+    }
 
     // Check auth header
     if let Some(auth) = headers.get("authorization") {
@@ -195,6 +201,7 @@ fn build_forward_path(provider: &ProviderInfo, original_path: &str) -> String {
         "lmstudio" => original_path.strip_prefix("/lmstudio").unwrap_or(original_path),
         "mistral" => original_path.strip_prefix("/mistral").unwrap_or(original_path),
         "groq" => original_path.strip_prefix("/groq").unwrap_or(original_path),
+        "cliproxy" => original_path.strip_prefix("/cliproxy").unwrap_or(original_path),
         _ => original_path,
     };
     stripped.to_string()
