@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PricingEntry {
@@ -18,7 +19,6 @@ pub fn load_pricing() -> Vec<PricingEntry> {
 pub fn calculate_cost(model: &str, input_tokens: u32, output_tokens: u32) -> f64 {
     let pricing = load_pricing();
 
-    // Try exact match first, then prefix match
     let entry = pricing.iter().find(|p| {
         model.to_lowercase() == p.model.to_lowercase()
     }).or_else(|| {
@@ -38,6 +38,72 @@ pub fn calculate_cost(model: &str, input_tokens: u32, output_tokens: u32) -> f64
     }
 }
 
-pub fn load_pricing_from_json(json: &str) -> Result<Vec<PricingEntry>, serde_json::Error> {
-    serde_json::from_str(json)
+/// Try DB pricing first, then fall back to bundled pricing.json
+pub fn calculate_cost_with_db(
+    conn: &rusqlite::Connection,
+    model: &str,
+    input_tokens: u32,
+    output_tokens: u32,
+) -> f64 {
+    if let Ok(Some((input_per_million, output_per_million))) =
+        crate::db::get_price_for_model(conn, model)
+    {
+        let input_cost = (input_tokens as f64 / 1_000_000.0) * input_per_million;
+        let output_cost = (output_tokens as f64 / 1_000_000.0) * output_per_million;
+        return input_cost + output_cost;
+    }
+    // Fall back to bundled pricing
+    calculate_cost(model, input_tokens, output_tokens)
+}
+
+/// Parse the LiteLLM model_prices_and_context_window.json format.
+/// That file is a JSON object where each key is a model name and the value
+/// contains input_cost_per_token, output_cost_per_token, litellm_provider, max_tokens.
+pub fn parse_litellm_json(json_str: &str) -> Vec<PricingEntry> {
+    let json: Value = match serde_json::from_str(json_str) {
+        Ok(v) => v,
+        Err(_) => return vec![],
+    };
+
+    let map = match json.as_object() {
+        Some(m) => m,
+        None => return vec![],
+    };
+
+    let mut entries = Vec::new();
+    for (model_name, model_data) in map {
+        let input_cost = model_data
+            .get("input_cost_per_token")
+            .and_then(|v| v.as_f64());
+        let output_cost = model_data
+            .get("output_cost_per_token")
+            .and_then(|v| v.as_f64());
+
+        // Skip entries without pricing (e.g. embedding-only or image models)
+        let (input, output) = match (input_cost, output_cost) {
+            (Some(i), Some(o)) => (i, o),
+            _ => continue,
+        };
+
+        let provider = model_data
+            .get("litellm_provider")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        let context_window = model_data
+            .get("max_tokens")
+            .and_then(|v| v.as_u64())
+            .or_else(|| model_data.get("max_input_tokens").and_then(|v| v.as_u64()))
+            .unwrap_or(0);
+
+        entries.push(PricingEntry {
+            model: model_name.clone(),
+            provider,
+            input_cost_per_million: input * 1_000_000.0,
+            output_cost_per_million: output * 1_000_000.0,
+            context_window,
+        });
+    }
+    entries
 }

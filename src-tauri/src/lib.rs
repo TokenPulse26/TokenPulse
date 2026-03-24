@@ -49,6 +49,50 @@ fn get_proxy_status() -> ProxyStatus {
     }
 }
 
+fn spawn_pricing_update(db: Arc<Mutex<rusqlite::Connection>>) {
+    tauri::async_runtime::spawn(async move {
+        let url = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
+        let client = match reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+        {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+
+        let text = match client.get(url).send().await {
+            Ok(resp) => match resp.text().await {
+                Ok(t) => t,
+                Err(_) => return,
+            },
+            Err(_) => return, // No network — silently fall back to bundled pricing
+        };
+
+        let entries = pricing::parse_litellm_json(&text);
+        if entries.is_empty() {
+            return;
+        }
+
+        if let Ok(conn) = db.lock() {
+            for entry in &entries {
+                let _ = db::upsert_pricing(
+                    &conn,
+                    &entry.model,
+                    &entry.provider,
+                    entry.input_cost_per_million,
+                    entry.output_cost_per_million,
+                    entry.context_window as i64,
+                );
+            }
+            let _ = db::set_setting(
+                &conn,
+                "pricing_last_updated",
+                &chrono::Utc::now().to_rfc3339(),
+            );
+        }
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -70,6 +114,9 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 proxy::start_proxy_server(db_for_proxy).await;
             });
+
+            // Spawn background pricing update (non-blocking)
+            spawn_pricing_update(db_arc.clone());
 
             app.manage(DbState(db_arc));
             Ok(())

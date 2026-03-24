@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::db::{insert_request, RequestRecord};
-use crate::pricing::calculate_cost;
+use crate::pricing::calculate_cost_with_db;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -53,6 +53,18 @@ fn detect_provider(headers: &HeaderMap, path: &str) -> ProviderInfo {
         return ProviderInfo {
             name: "lmstudio".to_string(),
             base_url: "http://localhost:1234".to_string(),
+        };
+    }
+    if path.starts_with("/mistral/") {
+        return ProviderInfo {
+            name: "mistral".to_string(),
+            base_url: "https://api.mistral.ai".to_string(),
+        };
+    }
+    if path.starts_with("/groq/") {
+        return ProviderInfo {
+            name: "groq".to_string(),
+            base_url: "https://api.groq.com".to_string(),
         };
     }
 
@@ -179,6 +191,8 @@ fn build_forward_path(provider: &ProviderInfo, original_path: &str) -> String {
         "google" => original_path.strip_prefix("/google").unwrap_or(original_path),
         "ollama" => original_path.strip_prefix("/ollama").unwrap_or(original_path),
         "lmstudio" => original_path.strip_prefix("/lmstudio").unwrap_or(original_path),
+        "mistral" => original_path.strip_prefix("/mistral").unwrap_or(original_path),
+        "groq" => original_path.strip_prefix("/groq").unwrap_or(original_path),
         _ => original_path,
     };
     stripped.to_string()
@@ -308,7 +322,11 @@ async fn proxy_handler(
                 let (input_tokens, output_tokens, cached_tokens, reasoning_tokens) =
                     extract_usage(&json, &provider_name);
                 let latency_ms = start_time.elapsed().as_millis() as i64;
-                let cost = calculate_cost(&model_clone, input_tokens as u32, output_tokens as u32);
+                let cost = if let Ok(conn) = db.lock() {
+                    calculate_cost_with_db(&conn, &model_clone, input_tokens as u32, output_tokens as u32)
+                } else {
+                    0.0
+                };
                 let tps = if latency_ms > 0 {
                     (output_tokens as f64) / (latency_ms as f64 / 1000.0)
                 } else {
@@ -359,7 +377,11 @@ async fn proxy_handler(
         if let Ok(json) = serde_json::from_slice::<Value>(&resp_bytes) {
             let (input_tokens, output_tokens, cached_tokens, reasoning_tokens) =
                 extract_usage(&json, &provider.name);
-            let cost = calculate_cost(&model, input_tokens as u32, output_tokens as u32);
+            let cost = if let Ok(conn) = state.db.lock() {
+                calculate_cost_with_db(&conn, &model, input_tokens as u32, output_tokens as u32)
+            } else {
+                0.0
+            };
             let tps = if latency_ms > 0 {
                 (output_tokens as f64) / (latency_ms as f64 / 1000.0)
             } else {

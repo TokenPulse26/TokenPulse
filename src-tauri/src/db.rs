@@ -168,6 +168,52 @@ pub fn get_daily_stats(conn: &Connection, days: u32) -> Result<Vec<DailyStats>> 
     Ok(records)
 }
 
+pub fn upsert_pricing(
+    conn: &Connection,
+    model: &str,
+    provider: &str,
+    input_per_million: f64,
+    output_per_million: f64,
+    context_window: i64,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO pricing (model, provider, input_cost_per_million_tokens, output_cost_per_million_tokens, context_window_tokens, is_custom, last_updated)
+         VALUES (?1, ?2, ?3, ?4, ?5, 0, datetime('now'))
+         ON CONFLICT(model) DO UPDATE SET
+             provider=excluded.provider,
+             input_cost_per_million_tokens=excluded.input_cost_per_million_tokens,
+             output_cost_per_million_tokens=excluded.output_cost_per_million_tokens,
+             context_window_tokens=excluded.context_window_tokens,
+             last_updated=excluded.last_updated
+         WHERE is_custom=0",
+        params![model, provider, input_per_million, output_per_million, context_window],
+    )?;
+    Ok(())
+}
+
+pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<()> {
+    conn.execute(
+        "INSERT INTO settings (key, value, updated_at) VALUES (?1, ?2, datetime('now'))
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+        params![key, value],
+    )?;
+    Ok(())
+}
+
+pub fn get_price_for_model(conn: &Connection, model: &str) -> Result<Option<(f64, f64)>> {
+    let model_lower = model.to_lowercase();
+    let result = conn.query_row(
+        "SELECT input_cost_per_million_tokens, output_cost_per_million_tokens FROM pricing WHERE lower(model) = ?1",
+        params![model_lower],
+        |row| Ok((row.get::<_, f64>(0)?, row.get::<_, f64>(1)?)),
+    );
+    match result {
+        Ok(v) => Ok(Some(v)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
 pub fn get_model_breakdown(conn: &Connection, days: u32) -> Result<Vec<ModelStats>> {
     let mut stmt = conn.prepare(
         "SELECT
