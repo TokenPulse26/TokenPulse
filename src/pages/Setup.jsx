@@ -86,6 +86,48 @@ const s = {
     color: "#e2e8f0",
     minHeight: "100vh",
     fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif",
+  },
+  nav: {
+    display: "flex",
+    alignItems: "center",
+    padding: "0 32px",
+    height: "56px",
+    borderBottom: "1px solid #1a1f2e",
+    backgroundColor: "#0d1117",
+    gap: "24px",
+  },
+  navWordmark: {
+    fontSize: "18px",
+    fontWeight: "800",
+    letterSpacing: "-0.02em",
+    background: "linear-gradient(135deg, #38bdf8, #818cf8)",
+    WebkitBackgroundClip: "text",
+    WebkitTextFillColor: "transparent",
+    backgroundClip: "text",
+    marginRight: "12px",
+    cursor: "pointer",
+  },
+  navLink: (active) => ({
+    fontSize: "14px",
+    fontWeight: active ? "600" : "400",
+    color: active ? "#f1f5f9" : "#64748b",
+    background: "none",
+    border: "none",
+    cursor: "pointer",
+    padding: "4px 0",
+    borderBottom: active ? "2px solid #6366f1" : "2px solid transparent",
+  }),
+  proxyBadge: (running) => ({
+    marginLeft: "auto",
+    backgroundColor: running ? "#14532d22" : "#450a0a22",
+    color: running ? "#4ade80" : "#f87171",
+    padding: "4px 12px",
+    borderRadius: "20px",
+    fontSize: "12px",
+    fontWeight: "600",
+    border: `1px solid ${running ? "#16a34a44" : "#991b1b44"}`,
+  }),
+  body: {
     padding: "40px 48px",
     maxWidth: "900px",
     margin: "0 auto",
@@ -291,6 +333,16 @@ export default function Setup() {
 
   return (
     <div style={s.root}>
+      <nav style={s.nav}>
+        <span style={s.navWordmark} onClick={() => navigate("/")}>TokenPulse</span>
+        <button style={s.navLink(false)} onClick={() => navigate("/")}>Dashboard</button>
+        <button style={s.navLink(true)}>Setup</button>
+        <button style={s.navLink(false)} onClick={() => navigate("/settings")}>Settings</button>
+        <span style={s.proxyBadge(proxyRunning)}>
+          {proxyRunning ? "● Proxy :4100" : "● Proxy offline"}
+        </span>
+      </nav>
+      <div style={s.body}>
       <div style={s.header}>
         <h1 style={s.title}>Point your AI tools at TokenPulse</h1>
         <p style={s.subtitle}>
@@ -355,6 +407,7 @@ export default function Setup() {
         >
           Done — Go to Dashboard →
         </button>
+      </div>
       </div>
     </div>
   );

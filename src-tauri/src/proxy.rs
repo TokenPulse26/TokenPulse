@@ -12,6 +12,7 @@ use http::{HeaderMap, Method, StatusCode};
 use reqwest::Client;
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::db::{insert_request, RequestRecord};
@@ -21,6 +22,7 @@ use crate::pricing::calculate_cost_with_db;
 pub struct AppState {
     pub db: Arc<Mutex<rusqlite::Connection>>,
     pub http_client: Client,
+    pub proxy_paused: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Clone)]
@@ -202,6 +204,11 @@ async fn proxy_handler(
     State(state): State<AppState>,
     req: Request<Body>,
 ) -> Result<Response<Body>, StatusCode> {
+    // Return 503 if proxy is paused
+    if state.proxy_paused.load(Ordering::SeqCst) {
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
+
     let start_time = std::time::Instant::now();
     let start_timestamp = Utc::now().to_rfc3339();
 
@@ -266,13 +273,73 @@ async fn proxy_handler(
         .build()
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let response = state.http_client
-        .execute(forward_req)
-        .await
-        .map_err(|_| StatusCode::BAD_GATEWAY)?;
+    let response = match state.http_client.execute(forward_req).await {
+        Ok(r) => r,
+        Err(e) => {
+            // Log the failed attempt
+            let latency_ms = start_time.elapsed().as_millis() as i64;
+            let record = RequestRecord {
+                id: None,
+                timestamp: start_timestamp,
+                provider: provider.name.clone(),
+                model: model.clone(),
+                input_tokens: 0,
+                output_tokens: 0,
+                cached_tokens: 0,
+                reasoning_tokens: 0,
+                cost_usd: 0.0,
+                latency_ms,
+                tokens_per_second: 0.0,
+                time_to_first_token_ms: -1,
+                is_streaming,
+                is_complete: false,
+                source_tag: String::new(),
+                error_message: Some(e.to_string()),
+            };
+            if let Ok(conn) = state.db.lock() {
+                let _ = insert_request(&conn, &record);
+            }
+            return Err(StatusCode::BAD_GATEWAY);
+        }
+    };
 
     let status = response.status();
     let resp_headers = response.headers().clone();
+
+    // Log error responses from the upstream provider
+    if !status.is_success() && !is_streaming {
+        let resp_bytes = response.bytes().await.map_err(|_| StatusCode::BAD_GATEWAY)?;
+        let latency_ms = start_time.elapsed().as_millis() as i64;
+        let error_text = String::from_utf8_lossy(&resp_bytes).to_string();
+        let record = RequestRecord {
+            id: None,
+            timestamp: start_timestamp,
+            provider: provider.name.clone(),
+            model: model.clone(),
+            input_tokens: 0,
+            output_tokens: 0,
+            cached_tokens: 0,
+            reasoning_tokens: 0,
+            cost_usd: 0.0,
+            latency_ms,
+            tokens_per_second: 0.0,
+            time_to_first_token_ms: -1,
+            is_streaming: false,
+            is_complete: false,
+            source_tag: String::new(),
+            error_message: Some(format!("HTTP {}: {}", status.as_u16(), &error_text[..error_text.len().min(200)])),
+        };
+        if let Ok(conn) = state.db.lock() {
+            let _ = insert_request(&conn, &record);
+        }
+        let mut response_builder = Response::builder().status(status.as_u16());
+        for (name, value) in &resp_headers {
+            if let Ok(header_name) = http::header::HeaderName::from_bytes(name.as_str().as_bytes()) {
+                response_builder = response_builder.header(header_name, value.as_bytes());
+            }
+        }
+        return Ok(response_builder.body(Body::from(resp_bytes)).unwrap());
+    }
 
     if is_streaming {
         // Stream response back, collecting chunks to find usage
@@ -349,6 +416,7 @@ async fn proxy_handler(
                     is_streaming: true,
                     is_complete: true,
                     source_tag: String::new(),
+                    error_message: None,
                 };
 
                 if let Ok(conn) = db.lock() {
@@ -404,6 +472,7 @@ async fn proxy_handler(
                 is_streaming: false,
                 is_complete: true,
                 source_tag: String::new(),
+                error_message: None,
             };
 
             if let Ok(conn) = state.db.lock() {
@@ -428,13 +497,17 @@ async fn proxy_handler(
     }
 }
 
-pub async fn start_proxy_server(db: Arc<Mutex<rusqlite::Connection>>) {
+pub async fn start_proxy_server(
+    db: Arc<Mutex<rusqlite::Connection>>,
+    proxy_running: Arc<AtomicBool>,
+    proxy_paused: Arc<AtomicBool>,
+) {
     let http_client = Client::builder()
         .timeout(std::time::Duration::from_secs(300))
         .build()
         .expect("Failed to build HTTP client");
 
-    let state = AppState { db, http_client };
+    let state = AppState { db, http_client, proxy_paused };
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -447,11 +520,16 @@ pub async fn start_proxy_server(db: Arc<Mutex<rusqlite::Connection>>) {
         .layer(cors)
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:4100")
-        .await
-        .expect("Failed to bind proxy port 4100");
-
-    axum::serve(listener, app)
-        .await
-        .expect("Proxy server failed");
+    match tokio::net::TcpListener::bind("0.0.0.0:4100").await {
+        Ok(listener) => {
+            proxy_running.store(true, Ordering::SeqCst);
+            eprintln!("TokenPulse proxy listening on port 4100");
+            axum::serve(listener, app).await.ok();
+            proxy_running.store(false, Ordering::SeqCst);
+        }
+        Err(e) => {
+            eprintln!("Failed to bind proxy port 4100: {}. Is another instance running?", e);
+            proxy_running.store(false, Ordering::SeqCst);
+        }
+    }
 }

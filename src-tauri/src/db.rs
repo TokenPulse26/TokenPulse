@@ -18,6 +18,7 @@ pub struct RequestRecord {
     pub is_streaming: bool,
     pub is_complete: bool,
     pub source_tag: String,
+    pub error_message: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -27,6 +28,13 @@ pub struct DailyStats {
     pub total_requests: i64,
     pub total_input_tokens: i64,
     pub total_output_tokens: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DailyProviderStat {
+    pub date: String,
+    pub provider: String,
+    pub cost: f64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -82,13 +90,16 @@ pub fn init_db(path: &str) -> Result<Connection> {
         CREATE INDEX IF NOT EXISTS idx_requests_model ON requests(model);
     ")?;
 
+    // Migrations: add error_message column if it doesn't exist
+    let _ = conn.execute("ALTER TABLE requests ADD COLUMN error_message TEXT", []);
+
     Ok(conn)
 }
 
 pub fn insert_request(conn: &Connection, req: &RequestRecord) -> Result<i64> {
     conn.execute(
-        "INSERT INTO requests (timestamp, provider, model, input_tokens, output_tokens, cached_tokens, reasoning_tokens, cost_usd, latency_ms, tokens_per_second, time_to_first_token_ms, is_streaming, is_complete, source_tag)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+        "INSERT INTO requests (timestamp, provider, model, input_tokens, output_tokens, cached_tokens, reasoning_tokens, cost_usd, latency_ms, tokens_per_second, time_to_first_token_ms, is_streaming, is_complete, source_tag, error_message)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
         params![
             req.timestamp,
             req.provider,
@@ -104,37 +115,41 @@ pub fn insert_request(conn: &Connection, req: &RequestRecord) -> Result<i64> {
             req.is_streaming as i64,
             req.is_complete as i64,
             req.source_tag,
+            req.error_message,
         ],
     )?;
     Ok(conn.last_insert_rowid())
 }
 
+fn map_request_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RequestRecord> {
+    Ok(RequestRecord {
+        id: Some(row.get(0)?),
+        timestamp: row.get(1)?,
+        provider: row.get(2)?,
+        model: row.get(3)?,
+        input_tokens: row.get(4)?,
+        output_tokens: row.get(5)?,
+        cached_tokens: row.get(6)?,
+        reasoning_tokens: row.get(7)?,
+        cost_usd: row.get(8)?,
+        latency_ms: row.get(9)?,
+        tokens_per_second: row.get(10)?,
+        time_to_first_token_ms: row.get(11)?,
+        is_streaming: row.get::<_, i64>(12)? != 0,
+        is_complete: row.get::<_, i64>(13)? != 0,
+        source_tag: row.get(14)?,
+        error_message: row.get(15)?,
+    })
+}
+
 pub fn get_recent_requests(conn: &Connection, limit: u32) -> Result<Vec<RequestRecord>> {
     let mut stmt = conn.prepare(
-        "SELECT id, timestamp, provider, model, input_tokens, output_tokens, cached_tokens, reasoning_tokens, cost_usd, latency_ms, tokens_per_second, time_to_first_token_ms, is_streaming, is_complete, source_tag
+        "SELECT id, timestamp, provider, model, input_tokens, output_tokens, cached_tokens, reasoning_tokens, cost_usd, latency_ms, tokens_per_second, time_to_first_token_ms, is_streaming, is_complete, source_tag, error_message
          FROM requests ORDER BY timestamp DESC LIMIT ?1"
     )?;
 
-    let records = stmt.query_map(params![limit], |row| {
-        Ok(RequestRecord {
-            id: Some(row.get(0)?),
-            timestamp: row.get(1)?,
-            provider: row.get(2)?,
-            model: row.get(3)?,
-            input_tokens: row.get(4)?,
-            output_tokens: row.get(5)?,
-            cached_tokens: row.get(6)?,
-            reasoning_tokens: row.get(7)?,
-            cost_usd: row.get(8)?,
-            latency_ms: row.get(9)?,
-            tokens_per_second: row.get(10)?,
-            time_to_first_token_ms: row.get(11)?,
-            is_streaming: row.get::<_, i64>(12)? != 0,
-            is_complete: row.get::<_, i64>(13)? != 0,
-            source_tag: row.get(14)?,
-        })
-    })?
-    .collect::<Result<Vec<_>>>()?;
+    let records = stmt.query_map(params![limit], map_request_row)?
+        .collect::<Result<Vec<_>>>()?;
 
     Ok(records)
 }
@@ -229,29 +244,11 @@ pub fn get_setting(conn: &Connection, key: &str) -> Result<Option<String>> {
 
 pub fn get_all_requests(conn: &Connection) -> Result<Vec<RequestRecord>> {
     let mut stmt = conn.prepare(
-        "SELECT id, timestamp, provider, model, input_tokens, output_tokens, cached_tokens, reasoning_tokens, cost_usd, latency_ms, tokens_per_second, time_to_first_token_ms, is_streaming, is_complete, source_tag
+        "SELECT id, timestamp, provider, model, input_tokens, output_tokens, cached_tokens, reasoning_tokens, cost_usd, latency_ms, tokens_per_second, time_to_first_token_ms, is_streaming, is_complete, source_tag, error_message
          FROM requests ORDER BY timestamp DESC"
     )?;
-    let records = stmt.query_map([], |row| {
-        Ok(RequestRecord {
-            id: Some(row.get(0)?),
-            timestamp: row.get(1)?,
-            provider: row.get(2)?,
-            model: row.get(3)?,
-            input_tokens: row.get(4)?,
-            output_tokens: row.get(5)?,
-            cached_tokens: row.get(6)?,
-            reasoning_tokens: row.get(7)?,
-            cost_usd: row.get(8)?,
-            latency_ms: row.get(9)?,
-            tokens_per_second: row.get(10)?,
-            time_to_first_token_ms: row.get(11)?,
-            is_streaming: row.get::<_, i64>(12)? != 0,
-            is_complete: row.get::<_, i64>(13)? != 0,
-            source_tag: row.get(14)?,
-        })
-    })?
-    .collect::<Result<Vec<_>>>()?;
+    let records = stmt.query_map([], map_request_row)?
+        .collect::<Result<Vec<_>>>()?;
     Ok(records)
 }
 
@@ -310,6 +307,28 @@ pub fn get_daily_stats_for_range(conn: &Connection, time_range: &str) -> Result<
     Ok(records)
 }
 
+pub fn get_daily_provider_stats_for_range(
+    conn: &Connection,
+    time_range: &str,
+) -> Result<Vec<DailyProviderStat>> {
+    let where_clause = time_range_filter(time_range);
+    let query = format!(
+        "SELECT date(timestamp) as date, provider, SUM(cost_usd) as cost
+         FROM requests {} GROUP BY date(timestamp), provider ORDER BY date ASC",
+        where_clause
+    );
+    let mut stmt = conn.prepare(&query)?;
+    let records = stmt.query_map([], |row| {
+        Ok(DailyProviderStat {
+            date: row.get(0)?,
+            provider: row.get(1)?,
+            cost: row.get(2)?,
+        })
+    })?
+    .collect::<Result<Vec<_>>>()?;
+    Ok(records)
+}
+
 pub fn get_model_breakdown_for_range(conn: &Connection, time_range: &str) -> Result<Vec<ModelStats>> {
     let where_clause = time_range_filter(time_range);
     let query = format!(
@@ -334,31 +353,13 @@ pub fn get_model_breakdown_for_range(conn: &Connection, time_range: &str) -> Res
 pub fn get_requests_for_range(conn: &Connection, limit: u32, time_range: &str) -> Result<Vec<RequestRecord>> {
     let where_clause = time_range_filter(time_range);
     let query = format!(
-        "SELECT id, timestamp, provider, model, input_tokens, output_tokens, cached_tokens, reasoning_tokens, cost_usd, latency_ms, tokens_per_second, time_to_first_token_ms, is_streaming, is_complete, source_tag
+        "SELECT id, timestamp, provider, model, input_tokens, output_tokens, cached_tokens, reasoning_tokens, cost_usd, latency_ms, tokens_per_second, time_to_first_token_ms, is_streaming, is_complete, source_tag, error_message
          FROM requests {} ORDER BY timestamp DESC LIMIT {}",
         where_clause, limit
     );
     let mut stmt = conn.prepare(&query)?;
-    let records = stmt.query_map([], |row| {
-        Ok(RequestRecord {
-            id: Some(row.get(0)?),
-            timestamp: row.get(1)?,
-            provider: row.get(2)?,
-            model: row.get(3)?,
-            input_tokens: row.get(4)?,
-            output_tokens: row.get(5)?,
-            cached_tokens: row.get(6)?,
-            reasoning_tokens: row.get(7)?,
-            cost_usd: row.get(8)?,
-            latency_ms: row.get(9)?,
-            tokens_per_second: row.get(10)?,
-            time_to_first_token_ms: row.get(11)?,
-            is_streaming: row.get::<_, i64>(12)? != 0,
-            is_complete: row.get::<_, i64>(13)? != 0,
-            source_tag: row.get(14)?,
-        })
-    })?
-    .collect::<Result<Vec<_>>>()?;
+    let records = stmt.query_map([], map_request_row)?
+        .collect::<Result<Vec<_>>>()?;
     Ok(records)
 }
 

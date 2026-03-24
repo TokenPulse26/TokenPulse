@@ -27,6 +27,7 @@ const s = {
     WebkitTextFillColor: "transparent",
     backgroundClip: "text",
     marginRight: "12px",
+    cursor: "pointer",
   },
   navLink: (active) => ({
     fontSize: "14px",
@@ -37,6 +38,16 @@ const s = {
     cursor: "pointer",
     padding: "4px 0",
     borderBottom: active ? "2px solid #6366f1" : "2px solid transparent",
+  }),
+  proxyBadge: (running) => ({
+    marginLeft: "auto",
+    backgroundColor: running ? "#14532d22" : "#450a0a22",
+    color: running ? "#4ade80" : "#f87171",
+    padding: "4px 12px",
+    borderRadius: "20px",
+    fontSize: "12px",
+    fontWeight: "600",
+    border: `1px solid ${running ? "#16a34a44" : "#991b1b44"}`,
   }),
   content: {
     padding: "40px 48px",
@@ -132,26 +143,6 @@ const s = {
     cursor: "pointer",
     transition: "all 0.15s",
   },
-  btnPrimary: {
-    backgroundColor: "#6366f1",
-    color: "#fff",
-    border: "none",
-    borderRadius: "8px",
-    padding: "8px 16px",
-    fontSize: "13px",
-    fontWeight: "600",
-    cursor: "pointer",
-  },
-  btnDanger: {
-    backgroundColor: "#450a0a",
-    color: "#f87171",
-    border: "1px solid #991b1b",
-    borderRadius: "8px",
-    padding: "8px 16px",
-    fontSize: "13px",
-    fontWeight: "600",
-    cursor: "pointer",
-  },
   meta: {
     fontSize: "12px",
     color: "#475569",
@@ -176,16 +167,34 @@ export default function Settings() {
   const [pricingLastUpdated, setPricingLastUpdated] = useState(null);
   const [pricingStatus, setPricingStatus] = useState(null);
   const [exportStatus, setExportStatus] = useState(null);
+  const [autolaunchStatus, setAutolaunchStatus] = useState(null);
+  const [proxyStatus, setProxyStatus] = useState({ running: false, port: 4100, paused: false });
 
   useEffect(() => {
     invoke("get_setting", { key: "proxy_port" }).then((v) => v && setProxyPort(v)).catch(() => {});
     invoke("get_setting", { key: "launch_at_login" }).then((v) => v && setLaunchAtLogin(v === "true")).catch(() => {});
     invoke("get_setting", { key: "data_retention" }).then((v) => v && setDataRetention(v)).catch(() => {});
     invoke("get_setting", { key: "pricing_last_updated" }).then((v) => setPricingLastUpdated(v)).catch(() => {});
+    invoke("get_proxy_status").then(setProxyStatus).catch(() => {});
   }, []);
 
   function saveSetting(key, value) {
     invoke("set_setting", { key, value }).catch(() => {});
+  }
+
+  async function handleLaunchAtLoginToggle() {
+    const next = !launchAtLogin;
+    setLaunchAtLogin(next);
+    saveSetting("launch_at_login", next ? "true" : "false");
+    setAutolaunchStatus("saving");
+    try {
+      await invoke("set_autostart", { enabled: next });
+      setAutolaunchStatus("ok");
+      setTimeout(() => setAutolaunchStatus(null), 2000);
+    } catch (e) {
+      setAutolaunchStatus("error");
+      setTimeout(() => setAutolaunchStatus(null), 3000);
+    }
   }
 
   async function handleUpdatePricing() {
@@ -230,13 +239,22 @@ export default function Settings() {
     }
   }
 
+  const proxyBadgeLabel = proxyStatus.paused
+    ? "● Proxy paused"
+    : proxyStatus.running
+    ? `● Proxy :${proxyStatus.port}`
+    : "● Proxy offline";
+
   return (
     <div style={s.root}>
       <nav style={s.nav}>
-        <span style={s.navWordmark}>TokenPulse</span>
+        <span style={s.navWordmark} onClick={() => navigate("/")}>TokenPulse</span>
         <button style={s.navLink(false)} onClick={() => navigate("/")}>Dashboard</button>
         <button style={s.navLink(false)} onClick={() => navigate("/setup")}>Setup</button>
         <button style={s.navLink(true)}>Settings</button>
+        <span style={s.proxyBadge(proxyStatus.running && !proxyStatus.paused)}>
+          {proxyBadgeLabel}
+        </span>
       </nav>
 
       <div style={s.content}>
@@ -264,17 +282,17 @@ export default function Settings() {
           <div style={s.row}>
             <div>
               <div style={s.label}>Launch at Login</div>
-              <div style={s.subLabel}>Start TokenPulse automatically (coming soon)</div>
+              <div style={s.subLabel}>Start TokenPulse automatically when you log in</div>
             </div>
-            <div
-              style={s.toggle(launchAtLogin)}
-              onClick={() => {
-                const next = !launchAtLogin;
-                setLaunchAtLogin(next);
-                saveSetting("launch_at_login", next ? "true" : "false");
-              }}
-            >
-              <div style={s.toggleKnob(launchAtLogin)} />
+            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+              {autolaunchStatus === "ok" && <span style={s.successMsg}>✓</span>}
+              {autolaunchStatus === "error" && <span style={s.errorMsg}>Failed</span>}
+              <div
+                style={s.toggle(launchAtLogin)}
+                onClick={handleLaunchAtLoginToggle}
+              >
+                <div style={s.toggleKnob(launchAtLogin)} />
+              </div>
             </div>
           </div>
         </div>

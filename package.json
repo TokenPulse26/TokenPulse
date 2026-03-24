@@ -1,7 +1,8 @@
 {
-  "name": "tauri-app",
+  "name": "tokenpulse",
   "private": true,
   "version": "0.1.0",
+  "description": "Track every AI token you spend, across every model, in one place.",
   "type": "module",
   "scripts": {
     "dev": "vite",
