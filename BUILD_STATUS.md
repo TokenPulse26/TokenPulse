@@ -118,6 +118,17 @@ When completely finished: openclaw system event --text "TokenPulse Phase 2 compl
 
 ## Future Feature Ideas (Post-Launch)
 
+### ARCHITECTURE PIVOT: Web-First Dashboard (CRITICAL — Next Session)
+- Key insight: Target users (OpenClaw, Mac Mini, Mac Studio, DGX Spark) run HEADLESS servers
+- Desktop GUI (Tauri) is wrong primary interface for headless machines
+- Web dashboard should be the PRIMARY interface, not optional
+- Architecture: Rust proxy + SQLite + embedded web server (served on port 4200)
+- Accessible from any device on the network — phone, laptop, desktop
+- Tauri desktop app becomes optional/secondary for users who want native
+- Current quick Python web dashboard at web-dashboard.py proves the concept
+- Need to build a proper React-based web dashboard served by the Rust backend
+- This simplifies the product AND better serves the actual audience
+
 ### OpenClaw Native Integration (v1.1 — HIGH PRIORITY)
 - Auto-setup: OpenClaw plugin that configures proxy base URLs automatically
 - OpenClaw already has all the user's API keys — TokenPulse can pull them and register without manual setup
