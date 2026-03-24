@@ -9,6 +9,12 @@
     "clipboard-manager:allow-write-text",
     "clipboard-manager:allow-read-text",
     "dialog:allow-save",
-    "dialog:allow-open"
+    "dialog:allow-open",
+    "notification:default",
+    "autostart:allow-enable",
+    "autostart:allow-disable",
+    "autostart:allow-is-enabled",
+    "updater:allow-check",
+    "updater:allow-download-and-install"
   ]
 }

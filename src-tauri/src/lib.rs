@@ -195,6 +195,69 @@ fn toggle_proxy_pause(
     !was_paused
 }
 
+#[derive(serde::Serialize, Clone)]
+pub struct UpdateInfo {
+    pub version: String,
+    pub notes: String,
+}
+
+async fn check_for_update_inner(app: &tauri::AppHandle) {
+    let update_url = "https://raw.githubusercontent.com/tokenpulse/tokenpulse/main/update.json";
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    let resp = match client.get(update_url).send().await {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+
+    let json: serde_json::Value = match resp.json().await {
+        Ok(j) => j,
+        Err(_) => return,
+    };
+
+    let current_version = app.package_info().version.to_string();
+    if let Some(latest) = json.get("version").and_then(|v| v.as_str()) {
+        if latest != current_version && is_newer_version(latest, &current_version) {
+            let notes = json
+                .get("notes")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let _ = app.emit("update-available", UpdateInfo { version: latest.to_string(), notes });
+        }
+    }
+}
+
+fn is_newer_version(latest: &str, current: &str) -> bool {
+    let parse = |v: &str| -> Vec<u32> {
+        v.trim_start_matches('v')
+            .split('.')
+            .filter_map(|p| p.parse().ok())
+            .collect()
+    };
+    let l = parse(latest);
+    let c = parse(current);
+    for i in 0..l.len().max(c.len()) {
+        let lv = l.get(i).copied().unwrap_or(0);
+        let cv = c.get(i).copied().unwrap_or(0);
+        if lv > cv { return true; }
+        if lv < cv { return false; }
+    }
+    false
+}
+
+#[tauri::command]
+async fn check_for_update(app: tauri::AppHandle) -> Result<(), String> {
+    check_for_update_inner(&app).await;
+    Ok(())
+}
+
 fn spawn_pricing_update(db: Arc<Mutex<rusqlite::Connection>>) {
     tauri::async_runtime::spawn(async move {
         let url = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
@@ -250,6 +313,7 @@ pub fn run() {
             Some(vec![]),
         ))
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let app_dir = app
                 .path()
@@ -276,6 +340,13 @@ pub fn run() {
             });
 
             spawn_pricing_update(db_arc.clone());
+
+            // Check for updates in the background after a short delay
+            let app_handle_for_update = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+                check_for_update_inner(&app_handle_for_update).await;
+            });
 
             app.manage(DbState(db_arc.clone()));
             app.manage(ProxyRunningState(proxy_running.clone()));
@@ -337,6 +408,7 @@ pub fn run() {
             export_csv,
             set_autostart,
             toggle_proxy_pause,
+            check_for_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

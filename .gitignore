@@ -22,3 +22,25 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Rust / Tauri build output
+target/
+src-tauri/target/
+
+# macOS app bundles and installers
+*.dmg
+*.app
+*.pkg
+
+# Windows installers
+*.exe
+*.msi
+*.nsis
+
+# Linux packages
+*.AppImage
+*.deb
+*.rpm
+
+# Tauri generated files (regenerated on build)
+src-tauri/gen/schemas/

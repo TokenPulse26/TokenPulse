@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import {
   BarChart,
   Bar,
@@ -48,6 +49,30 @@ const s = {
     padding: "4px 0",
     borderBottom: active ? "2px solid #6366f1" : "2px solid transparent",
   }),
+  updateBanner: {
+    backgroundColor: "#1e293b",
+    borderBottom: "1px solid #334155",
+    color: "#94a3b8",
+    fontSize: "13px",
+    padding: "8px 32px",
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+  },
+  updateBannerVersion: {
+    fontWeight: "600",
+    color: "#38bdf8",
+  },
+  updateBannerDismiss: {
+    marginLeft: "auto",
+    background: "none",
+    border: "none",
+    color: "#475569",
+    cursor: "pointer",
+    fontSize: "16px",
+    lineHeight: 1,
+    padding: "0 4px",
+  },
   proxyBadge: (running) => ({
     marginLeft: "auto",
     backgroundColor: running ? "#14532d22" : "#450a0a22",
@@ -401,9 +426,14 @@ export default function Dashboard() {
   const [summary, setSummary] = useState({ total_cost: 0, total_requests: 0, total_input_tokens: 0, total_output_tokens: 0 });
   const [proxyStatus, setProxyStatus] = useState({ running: false, port: 4100, paused: false });
   const [hoveredRow, setHoveredRow] = useState(null);
+  const [updateVersion, setUpdateVersion] = useState(null);
 
   useEffect(() => {
     invoke("get_proxy_status").then(setProxyStatus).catch(console.error);
+    const unlisten = listen("update-available", (event) => {
+      setUpdateVersion(event.payload?.version || event.payload);
+    });
+    return () => { unlisten.then((fn) => fn()); };
   }, []);
 
   useEffect(() => {
@@ -455,6 +485,15 @@ export default function Dashboard() {
           {proxyBadgeLabel}
         </span>
       </nav>
+
+      {updateVersion && (
+        <div style={s.updateBanner}>
+          <span>Update available:</span>
+          <span style={s.updateBannerVersion}>v{updateVersion}</span>
+          <span>— visit the GitHub releases page to download.</span>
+          <button style={s.updateBannerDismiss} onClick={() => setUpdateVersion(null)}>×</button>
+        </div>
+      )}
 
       <div style={s.body}>
         <div style={s.toolbar}>
