@@ -1,41 +1,38 @@
 # TokenPulse — Build Status
 
-**Last updated:** 2026-03-23 14:40 ET  
-**Current phase:** Phase 1 COMPLETE ✅  
+**Last updated:** 2026-03-23
+**Current phase:** Phase 2 COMPLETE ✅
 
 ---
 
-## What's Built (Phase 1 — DONE)
+## What's Built (Phase 2 — DONE)
 
-All code committed at: `c672378 Phase 1: proxy server, SQLite database, pricing engine, and basic React dashboard`
+All code committed at: `f213fc9 Phase 2: provider routing, streaming, pricing auto-update, live dashboard`
 
-### Files created:
-- `src-tauri/src/db.rs` — SQLite database layer (init, insert_request, get_recent_requests, get_daily_stats, get_model_breakdown)
-- `src-tauri/src/proxy.rs` — Axum HTTP proxy server on port 4100, provider detection, request forwarding, usage extraction for all providers
-- `src-tauri/src/pricing.rs` — Cost calculation engine, LiteLLM JSON loader
-- `src-tauri/src/lib.rs` — Tauri commands (get_recent_requests, get_daily_stats, get_model_breakdown, get_proxy_status)
-- `src-tauri/pricing.json` — Bundled pricing data (gpt-4o, gpt-4o-mini, claude-sonnet-4-6, claude-haiku-3-5, gemini-1.5-pro, gemini-1.5-flash)
-- `src/App.jsx` — Dark-mode React dashboard with stat cards and live request table
+### Phase 1 files (still in place):
+- `src-tauri/src/db.rs` — SQLite layer + new: upsert_pricing, set_setting, get_price_for_model
+- `src-tauri/src/proxy.rs` — Axum proxy; all providers routed; streaming SSE forwarding; DB-aware cost calc
+- `src-tauri/src/pricing.rs` — Cost engine + parse_litellm_json + calculate_cost_with_db
+- `src-tauri/src/lib.rs` — Tauri commands + spawn_pricing_update background task on startup
+- `src-tauri/pricing.json` — Bundled fallback pricing
+- `src/App.jsx` — Live dashboard with Recharts bar chart + model breakdown
 
-### Compile status: ✅ PASSES (`cargo check` clean, 1 harmless unused-fn warning)
+### Phase 2 additions:
+- **Mistral** (`/mistral/` → `https://api.mistral.ai`) and **Groq** (`/groq/` → `https://api.groq.com`) routing
+- All 7 providers routed: OpenAI, Anthropic, Google, Ollama, LM Studio, Mistral, Groq
+- Streaming SSE: chunks forwarded in real-time; usage extracted from final chunk; written to DB after stream completes
+- Pricing auto-update: on launch, fetches LiteLLM JSON from GitHub, upserts into DB (skips is_custom=1 rows)
+- React dashboard: Recharts 7-day daily spend bar chart, model breakdown panel (30 days), real-time polling every 2s
+
+### Compile status: ✅ PASSES (`cargo check` clean)
 
 ---
 
 ## What's NOT Built Yet
 
-### Phase 2 — Provider Coverage (next)
-- [ ] Anthropic routing and response parsing (separate from OpenAI format)
-- [ ] Google routing and response parsing
-- [ ] Ollama/LM Studio direct detection
-- [ ] Streaming response handling (SSE buffering + real-time forwarding)
-- [ ] Pull fresh LiteLLM pricing JSON from GitHub on launch
-
-### Phase 3 — Full Dashboard
-- [ ] Replace mock data with real SQLite queries in frontend
-- [ ] Live-polling for recent requests table (2-second interval)
-- [ ] Daily spend bar chart (Recharts)
-- [ ] Model breakdown chart (Recharts)
-- [ ] Time range selectors (Today / 7 Days / 30 Days / Month)
+### Phase 3 — Time Range Selectors + Polish
+- [ ] Time range selectors (Today / 7 Days / 30 Days / Month) in dashboard
+- [ ] Streaming indicator in request table (badge showing in-flight streams)
 
 ### Phase 4 — Setup UX
 - [ ] Welcome/onboarding screen
@@ -173,6 +170,7 @@ When completely finished: openclaw system event --text "TokenPulse Phase 2 compl
 ## Business Context
 
 - Product name: **TokenPulse**
+- Domain: **tokenpulse.to** (purchased 2026-03-23)
 - Target: developers and AI power users running hybrid cloud+local model setups
 - Gap: no existing tool tracks both cloud and local in one simple non-developer-friendly dashboard
 - MVP spec: /Users/openclaw/.openclaw/workspace/research/api-tokenizer-mvp-plan.md
