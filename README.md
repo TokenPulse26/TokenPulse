@@ -2,116 +2,108 @@
 
 **Track every AI token you spend — across every model, in one place.**
 
-TokenPulse is a lightweight desktop app that tracks your AI usage and costs across cloud APIs and local models. It runs a local proxy that captures token counts, calculates costs in real time, and displays everything in a live dashboard — without sending your data anywhere.
+TokenPulse is a lightweight local proxy that sits between your AI tools and the APIs they talk to. It captures every request, tracks token usage and costs in real time, and serves a live dashboard — all without sending a single byte of your data anywhere.
+
+![Dashboard](docs/dashboard-screenshot.png)
 
 ---
 
 ## Features
 
-- **Multi-provider tracking** — OpenAI, Anthropic, Google, Mistral, Groq, and more
-- **Local model support** — Ollama, LM Studio, vLLM, llama.cpp
-- **Real-time cost calculation** — auto-updated pricing from the LiteLLM community database
+- **Multi-provider tracking** — OpenAI, Anthropic, Google Gemini, Mistral, Groq, and more
+- **Local model support** — Ollama, LM Studio, and any OpenAI-compatible endpoint
+- **Real-time cost calculation** — auto-updated pricing from the LiteLLM community database (2,500+ models)
 - **Per-model breakdowns** — see exactly what each model costs you
-- **Daily spend charts** — stacked by provider, filterable by time range
-- **Time range filters** — Today, 7 days, 30 days, All time
+- **Daily spend charts** — stacked by provider with dark mode UI and provider-colored charts
+- **Time range filters** — Today, 7 Days, 30 Days, All Time
+- **Streaming support** — full SSE pass-through with real-time chunk forwarding
+- **Web dashboard** — accessible from any device on your network at port 4200
+- **Desktop app** — native macOS app with system tray integration
+- **Setup wizard** — guided per-tool configuration right in the app
 - **CSV data export** — export all requests for your own analysis
-- **System tray** — live spend tracking without keeping the window open
-- **Launch on login** — always running, never in the way
-- **Dark mode dashboard** — easy on the eyes
+- **Headless mode** — run on a Mac Mini, Mac Studio, or any server with launchd auto-start
+- **Data retention** — automatic cleanup of old data based on your preferences
 
 ---
 
 ## How It Works
 
-TokenPulse runs a local HTTP proxy on port `4100`. You point your AI tools at this proxy instead of the real API endpoint. The proxy forwards your requests normally, but captures the response metadata (token counts, model name, latency) and records it to a local SQLite database. Your API keys pass through transparently and are never stored or logged.
+TokenPulse runs a local HTTP proxy on port `4100`. Point your AI tools at this proxy instead of the real API endpoint. The proxy forwards requests normally and captures the response metadata — token counts, model name, latency, and cost — recording everything to a local SQLite database.
 
 ```
-Your tool  →  localhost:4100  →  api.openai.com (or any provider)
-                    ↓
-              SQLite DB  →  Dashboard
+Your AI tool  →  localhost:4100  →  OpenAI / Anthropic / Google / etc.
+                      ↓
+                 SQLite DB  →  Dashboard (localhost:4200)
 ```
+
+Your API keys pass through transparently. They are never stored or logged.
 
 ---
 
 ## Quick Start
 
-> **Download:** Coming soon — check the [Releases](https://github.com/tokenpulse/tokenpulse/releases) page.
+**1. Install**
 
-1. Download and open `TokenPulse.dmg`
-2. Drag TokenPulse to your Applications folder
-3. Launch TokenPulse — it will appear in your menu bar
-4. Open the dashboard and click **Setup** to configure your tools
+Download the latest `.dmg` from the [Releases page](https://github.com/tokenpulse/tokenpulse/releases), mount it, and drag TokenPulse to your Applications folder. On first launch, right-click → Open (since the app isn't signed yet).
 
----
+**2. Configure**
 
-## Configuring Your Tools
-
-Point each tool at the TokenPulse proxy instead of the provider directly:
-
-| Provider | Original endpoint | TokenPulse proxy |
-|---|---|---|
-| OpenAI | `https://api.openai.com` | `http://localhost:4100/openai` |
-| Anthropic | `https://api.anthropic.com` | `http://localhost:4100/anthropic` |
-| Google Gemini | `https://generativelanguage.googleapis.com` | `http://localhost:4100/google` |
-| Mistral | `https://api.mistral.ai` | `http://localhost:4100/mistral` |
-| Groq | `https://api.groq.com` | `http://localhost:4100/groq` |
-| Ollama | `http://localhost:11434` | `http://localhost:4100/ollama` |
-| LM Studio | `http://localhost:1234` | `http://localhost:4100/lmstudio` |
-
-Most tools that support a custom base URL work with TokenPulse out of the box.
-
-### Example: Claude Code
+Point your AI tools at the TokenPulse proxy. For most tools, just change the base URL:
 
 ```bash
+# OpenAI-compatible tools
+export OPENAI_BASE_URL=http://localhost:4100
+
+# Anthropic tools (Claude Code, etc.)
 export ANTHROPIC_BASE_URL=http://localhost:4100/anthropic
-claude
 ```
 
-### Example: OpenAI Python SDK
+**3. Monitor**
 
-```python
-from openai import OpenAI
-client = OpenAI(base_url="http://localhost:4100/openai", api_key="your-key")
-```
+Open the dashboard at [http://localhost:4200](http://localhost:4200) (or use the desktop app window). Watch your token usage and costs update in real time.
 
-### Example: curl
-
-```bash
-curl http://localhost:4100/openai/v1/chat/completions \
-  -H "Authorization: Bearer $OPENAI_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"model": "gpt-4o", "messages": [{"role": "user", "content": "Hello"}]}'
-```
+→ **[Full setup guide →](GETTING_STARTED.md)**
 
 ---
 
-## Screenshots
+## Supported Providers
 
-> Coming soon.
+### Cloud APIs
+- **OpenAI** — GPT-4o, GPT-4o mini, o1, o3, and all OpenAI models
+- **Anthropic** — Claude Opus, Sonnet, Haiku, and all Claude models
+- **Google Gemini** — Gemini Pro, Flash, and all Gemini models
+- **Mistral** — Mistral Large, Medium, Small, and all Mistral models
+- **Groq** — Llama, Mixtral, and all Groq-hosted models
+
+### Local Models
+- **Ollama** — any model running locally via Ollama
+- **LM Studio** — any model loaded in LM Studio
+
+### Any OpenAI-Compatible Endpoint
+If it speaks the OpenAI API format, TokenPulse can proxy and track it.
 
 ---
 
 ## Tech Stack
 
-| Layer | Technology |
-|---|---|
-| Desktop shell | Tauri 2.x (Rust + React) |
-| Frontend | React 19, Recharts |
-| Database | SQLite (via rusqlite, bundled) |
-| Proxy server | Axum (async Rust HTTP) |
-| Pricing data | LiteLLM community pricing database |
+- **Desktop shell:** Tauri 2.x (Rust + React)
+- **Frontend:** React 19, Recharts
+- **Proxy server:** Axum (async Rust HTTP)
+- **Database:** SQLite via rusqlite (bundled, zero setup)
+- **Pricing data:** LiteLLM community pricing database with bundled fallback for 50+ common models
 
 ---
 
 ## Privacy
 
-TokenPulse runs entirely on your machine. No usage data, API keys, or request content is ever sent to any external server. The only network requests TokenPulse makes are:
+**Runs entirely on your machine. No data sent to any server.**
 
-1. Forwarding your AI API calls to the provider (same as before)
-2. Fetching updated pricing data from the LiteLLM GitHub repository (read-only, no auth)
-3. Checking for app updates from this repository (version number only)
+The only network requests TokenPulse makes are:
+1. Forwarding your AI API calls to the provider (same as without TokenPulse)
+2. Fetching updated model pricing from the LiteLLM GitHub repository (read-only, public)
+3. Checking for app updates (version number only)
 
-Your data lives at: `~/Library/Application Support/com.tokenpulse.app/tokenpulse.db`
+Your data lives locally at: `~/Library/Application Support/com.tokenpulse.app/tokenpulse.db`
 
 ---
 
@@ -130,6 +122,24 @@ The built app will be in `src-tauri/target/release/bundle/`.
 
 ---
 
+## Contributing
+
+Contributions are welcome! If you'd like to help improve TokenPulse:
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/my-feature`)
+3. Commit your changes (`git commit -m 'Add my feature'`)
+4. Push to the branch (`git push origin feature/my-feature`)
+5. Open a Pull Request
+
+Please open an issue first to discuss any significant changes.
+
+---
+
 ## License
 
-MIT
+[MIT](LICENSE)
+
+---
+
+**[Website](https://tokenpulse.to)** · **[Getting Started Guide](GETTING_STARTED.md)** · **[Changelog](CHANGELOG.md)** · **[Issues](https://github.com/tokenpulse/tokenpulse/issues)**
