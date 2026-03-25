@@ -19,6 +19,14 @@ pub struct RequestRecord {
     pub is_complete: bool,
     pub source_tag: String,
     pub error_message: Option<String>,
+    pub provider_type: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CostSummary {
+    pub total_api_cost: f64,
+    pub total_subscription_tokens: i64,
+    pub total_local_tokens: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -66,7 +74,8 @@ pub fn init_db(path: &str) -> Result<Connection> {
             is_streaming INTEGER NOT NULL DEFAULT 0,
             is_complete INTEGER NOT NULL DEFAULT 1,
             source_tag TEXT NOT NULL DEFAULT '',
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            provider_type TEXT NOT NULL DEFAULT 'api'
         );
 
         CREATE TABLE IF NOT EXISTS pricing (
@@ -90,16 +99,17 @@ pub fn init_db(path: &str) -> Result<Connection> {
         CREATE INDEX IF NOT EXISTS idx_requests_model ON requests(model);
     ")?;
 
-    // Migrations: add error_message column if it doesn't exist
+    // Migrations: add columns if they don't exist
     let _ = conn.execute("ALTER TABLE requests ADD COLUMN error_message TEXT", []);
+    let _ = conn.execute("ALTER TABLE requests ADD COLUMN provider_type TEXT NOT NULL DEFAULT 'api'", []);
 
     Ok(conn)
 }
 
 pub fn insert_request(conn: &Connection, req: &RequestRecord) -> Result<i64> {
     conn.execute(
-        "INSERT INTO requests (timestamp, provider, model, input_tokens, output_tokens, cached_tokens, reasoning_tokens, cost_usd, latency_ms, tokens_per_second, time_to_first_token_ms, is_streaming, is_complete, source_tag, error_message)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+        "INSERT INTO requests (timestamp, provider, model, input_tokens, output_tokens, cached_tokens, reasoning_tokens, cost_usd, latency_ms, tokens_per_second, time_to_first_token_ms, is_streaming, is_complete, source_tag, error_message, provider_type)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
         params![
             req.timestamp,
             req.provider,
@@ -116,6 +126,7 @@ pub fn insert_request(conn: &Connection, req: &RequestRecord) -> Result<i64> {
             req.is_complete as i64,
             req.source_tag,
             req.error_message,
+            req.provider_type,
         ],
     )?;
     Ok(conn.last_insert_rowid())
@@ -139,12 +150,13 @@ fn map_request_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RequestRecord> {
         is_complete: row.get::<_, i64>(13)? != 0,
         source_tag: row.get(14)?,
         error_message: row.get(15)?,
+        provider_type: row.get::<_, Option<String>>(16)?.unwrap_or_else(|| "api".to_string()),
     })
 }
 
 pub fn get_recent_requests(conn: &Connection, limit: u32) -> Result<Vec<RequestRecord>> {
     let mut stmt = conn.prepare(
-        "SELECT id, timestamp, provider, model, input_tokens, output_tokens, cached_tokens, reasoning_tokens, cost_usd, latency_ms, tokens_per_second, time_to_first_token_ms, is_streaming, is_complete, source_tag, error_message
+        "SELECT id, timestamp, provider, model, input_tokens, output_tokens, cached_tokens, reasoning_tokens, cost_usd, latency_ms, tokens_per_second, time_to_first_token_ms, is_streaming, is_complete, source_tag, error_message, COALESCE(provider_type, 'api')
          FROM requests ORDER BY timestamp DESC LIMIT ?1"
     )?;
 
@@ -244,7 +256,7 @@ pub fn get_setting(conn: &Connection, key: &str) -> Result<Option<String>> {
 
 pub fn get_all_requests(conn: &Connection) -> Result<Vec<RequestRecord>> {
     let mut stmt = conn.prepare(
-        "SELECT id, timestamp, provider, model, input_tokens, output_tokens, cached_tokens, reasoning_tokens, cost_usd, latency_ms, tokens_per_second, time_to_first_token_ms, is_streaming, is_complete, source_tag, error_message
+        "SELECT id, timestamp, provider, model, input_tokens, output_tokens, cached_tokens, reasoning_tokens, cost_usd, latency_ms, tokens_per_second, time_to_first_token_ms, is_streaming, is_complete, source_tag, error_message, COALESCE(provider_type, 'api')
          FROM requests ORDER BY timestamp DESC"
     )?;
     let records = stmt.query_map([], map_request_row)?
@@ -353,7 +365,7 @@ pub fn get_model_breakdown_for_range(conn: &Connection, time_range: &str) -> Res
 pub fn get_requests_for_range(conn: &Connection, limit: u32, time_range: &str) -> Result<Vec<RequestRecord>> {
     let where_clause = time_range_filter(time_range);
     let query = format!(
-        "SELECT id, timestamp, provider, model, input_tokens, output_tokens, cached_tokens, reasoning_tokens, cost_usd, latency_ms, tokens_per_second, time_to_first_token_ms, is_streaming, is_complete, source_tag, error_message
+        "SELECT id, timestamp, provider, model, input_tokens, output_tokens, cached_tokens, reasoning_tokens, cost_usd, latency_ms, tokens_per_second, time_to_first_token_ms, is_streaming, is_complete, source_tag, error_message, COALESCE(provider_type, 'api')
          FROM requests {} ORDER BY timestamp DESC LIMIT {}",
         where_clause, limit
     );
@@ -361,6 +373,39 @@ pub fn get_requests_for_range(conn: &Connection, limit: u32, time_range: &str) -
     let records = stmt.query_map([], map_request_row)?
         .collect::<Result<Vec<_>>>()?;
     Ok(records)
+}
+
+pub fn get_cost_summary(conn: &Connection, time_range: &str) -> Result<CostSummary> {
+    let time_cond = match time_range {
+        "today" => "timestamp >= datetime('now', 'start of day')",
+        "7d" => "timestamp >= datetime('now', '-7 days')",
+        "30d" => "timestamp >= datetime('now', '-30 days')",
+        _ => "1=1",
+    };
+
+    let api_cost: f64 = conn.query_row(
+        &format!("SELECT COALESCE(SUM(cost_usd), 0.0) FROM requests WHERE {} AND COALESCE(provider_type, 'api') = 'api'", time_cond),
+        [],
+        |row| row.get(0),
+    )?;
+
+    let sub_tokens: i64 = conn.query_row(
+        &format!("SELECT COALESCE(SUM(input_tokens + output_tokens), 0) FROM requests WHERE {} AND provider_type = 'subscription'", time_cond),
+        [],
+        |row| row.get(0),
+    )?;
+
+    let local_tokens: i64 = conn.query_row(
+        &format!("SELECT COALESCE(SUM(input_tokens + output_tokens), 0) FROM requests WHERE {} AND provider_type = 'local'", time_cond),
+        [],
+        |row| row.get(0),
+    )?;
+
+    Ok(CostSummary {
+        total_api_cost: api_cost,
+        total_subscription_tokens: sub_tokens,
+        total_local_tokens: local_tokens,
+    })
 }
 
 pub fn get_model_breakdown(conn: &Connection, days: u32) -> Result<Vec<ModelStats>> {

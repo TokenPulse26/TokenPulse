@@ -187,6 +187,14 @@ fn extract_usage(body: &Value, provider: &str) -> (i64, i64, i64, i64) {
     }
 }
 
+fn get_provider_type(provider: &str) -> String {
+    match provider {
+        "cliproxy" => "subscription".to_string(),
+        "ollama" | "lmstudio" => "local".to_string(),
+        _ => "api".to_string(),
+    }
+}
+
 fn is_streaming_request(body: &Value) -> bool {
     body.get("stream")
         .and_then(|v| v.as_bool())
@@ -322,6 +330,7 @@ async fn proxy_handler(
                 is_complete: false,
                 source_tag: String::new(),
                 error_message: Some(e.to_string()),
+                provider_type: get_provider_type(&provider.name),
             };
             if let Ok(conn) = state.db.lock() {
                 let _ = insert_request(&conn, &record);
@@ -355,6 +364,7 @@ async fn proxy_handler(
             is_complete: false,
             source_tag: String::new(),
             error_message: Some(format!("HTTP {}: {}", status.as_u16(), &error_text[..error_text.len().min(200)])),
+            provider_type: get_provider_type(&provider.name),
         };
         if let Ok(conn) = state.db.lock() {
             let _ = insert_request(&conn, &record);
@@ -373,6 +383,7 @@ async fn proxy_handler(
         let mut stream = response.bytes_stream();
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(100);
         let provider_name = provider.name.clone();
+        let provider_type = get_provider_type(&provider.name);
         let db = state.db.clone();
         let model_clone = model.clone();
 
@@ -380,6 +391,10 @@ async fn proxy_handler(
             let mut last_chunk_json: Option<Value> = None;
             let mut ttft_ms: i64 = -1;
             let mut first_chunk = true;
+            // For Anthropic streaming: accumulate tokens across event types
+            let mut anthropic_input: i64 = 0;
+            let mut anthropic_output: i64 = 0;
+            let mut anthropic_cached: i64 = 0;
 
             while let Some(chunk_result) = stream.next().await {
                 match chunk_result {
@@ -389,12 +404,32 @@ async fn proxy_handler(
                             first_chunk = false;
                         }
 
-                        // Try to parse SSE data lines for usage
+                        // Parse SSE data lines for usage
                         if let Ok(text) = std::str::from_utf8(&chunk) {
                             for line in text.lines() {
                                 if let Some(data) = line.strip_prefix("data: ") {
                                     if data.trim() != "[DONE]" {
                                         if let Ok(json) = serde_json::from_str::<Value>(data) {
+                                            // Anthropic: accumulate from message_start and message_delta events
+                                            if provider_name == "anthropic" {
+                                                // message_start: {"type":"message_start","message":{"usage":{"input_tokens":X}}}
+                                                if let Some(msg) = json.get("message") {
+                                                    if let Some(usage) = msg.get("usage") {
+                                                        if let Some(v) = usage.get("input_tokens").and_then(|v| v.as_i64()) {
+                                                            anthropic_input = v;
+                                                        }
+                                                        if let Some(v) = usage.get("cache_read_input_tokens").and_then(|v| v.as_i64()) {
+                                                            anthropic_cached = v;
+                                                        }
+                                                    }
+                                                }
+                                                // message_delta: {"type":"message_delta","usage":{"output_tokens":Y}}
+                                                if let Some(usage) = json.get("usage") {
+                                                    if let Some(v) = usage.get("output_tokens").and_then(|v| v.as_i64()) {
+                                                        anthropic_output = v;
+                                                    }
+                                                }
+                                            }
                                             last_chunk_json = Some(json);
                                         }
                                     }
@@ -411,44 +446,50 @@ async fn proxy_handler(
                 }
             }
 
-            // Extract usage from last chunk
-            if let Some(json) = last_chunk_json {
-                let (input_tokens, output_tokens, cached_tokens, reasoning_tokens) =
-                    extract_usage(&json, &provider_name);
-                let latency_ms = start_time.elapsed().as_millis() as i64;
-                let cost = if let Ok(conn) = db.lock() {
-                    calculate_cost_with_db(&conn, &model_clone, input_tokens as u32, output_tokens as u32)
+            // Extract usage: prefer accumulated Anthropic tokens, fall back to last chunk
+            let (input_tokens, output_tokens, cached_tokens, reasoning_tokens) =
+                if provider_name == "anthropic" && (anthropic_input > 0 || anthropic_output > 0) {
+                    (anthropic_input, anthropic_output, anthropic_cached, 0)
+                } else if let Some(ref json) = last_chunk_json {
+                    extract_usage(json, &provider_name)
                 } else {
-                    0.0
-                };
-                let tps = if latency_ms > 0 {
-                    (output_tokens as f64) / (latency_ms as f64 / 1000.0)
-                } else {
-                    0.0
+                    (0, 0, 0, 0)
                 };
 
-                let record = RequestRecord {
-                    id: None,
-                    timestamp: start_timestamp,
-                    provider: provider_name,
-                    model: model_clone,
-                    input_tokens,
-                    output_tokens,
-                    cached_tokens,
-                    reasoning_tokens,
-                    cost_usd: cost,
-                    latency_ms,
-                    tokens_per_second: tps,
-                    time_to_first_token_ms: ttft_ms,
-                    is_streaming: true,
-                    is_complete: true,
-                    source_tag: String::new(),
-                    error_message: None,
-                };
+            let latency_ms = start_time.elapsed().as_millis() as i64;
+            let cost = if let Ok(conn) = db.lock() {
+                calculate_cost_with_db(&conn, &model_clone, input_tokens as u32, output_tokens as u32)
+            } else {
+                0.0
+            };
+            let tps = if latency_ms > 0 && output_tokens > 0 {
+                (output_tokens as f64) / (latency_ms as f64 / 1000.0)
+            } else {
+                0.0
+            };
 
-                if let Ok(conn) = db.lock() {
-                    let _ = insert_request(&conn, &record);
-                }
+            let record = RequestRecord {
+                id: None,
+                timestamp: start_timestamp,
+                provider: provider_name,
+                model: model_clone,
+                input_tokens,
+                output_tokens,
+                cached_tokens,
+                reasoning_tokens,
+                cost_usd: cost,
+                latency_ms,
+                tokens_per_second: tps,
+                time_to_first_token_ms: ttft_ms,
+                is_streaming: true,
+                is_complete: true,
+                source_tag: String::new(),
+                error_message: None,
+                provider_type,
+            };
+
+            if let Ok(conn) = db.lock() {
+                let _ = insert_request(&conn, &record);
             }
         });
 
@@ -500,6 +541,7 @@ async fn proxy_handler(
                 is_complete: true,
                 source_tag: String::new(),
                 error_message: None,
+                provider_type: get_provider_type(&provider.name),
             };
 
             if let Ok(conn) = state.db.lock() {

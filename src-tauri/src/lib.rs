@@ -2,7 +2,7 @@ mod db;
 mod proxy;
 mod pricing;
 
-use db::{DailyProviderStat, DailyStats, DashboardSummary, ModelStats, RequestRecord};
+use db::{CostSummary, DailyProviderStat, DailyStats, DashboardSummary, ModelStats, RequestRecord};
 use once_cell::sync::OnceCell;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -117,6 +117,15 @@ fn get_requests_range(
 ) -> Result<Vec<RequestRecord>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::get_requests_for_range(&conn, limit, &time_range).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_cost_summary(
+    state: State<DbState>,
+    time_range: String,
+) -> Result<CostSummary, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::get_cost_summary(&conn, &time_range).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -404,6 +413,7 @@ pub fn run() {
             get_model_breakdown_range,
             get_requests_range,
             test_proxy,
+            get_cost_summary,
             update_pricing_now,
             export_csv,
             set_autostart,
