@@ -161,7 +161,6 @@ const s = {
 
 export default function Settings() {
   const navigate = useNavigate();
-  const [proxyPort, setProxyPort] = useState("4100");
   const [launchAtLogin, setLaunchAtLogin] = useState(false);
   const [dataRetention, setDataRetention] = useState("90d");
   const [pricingLastUpdated, setPricingLastUpdated] = useState(null);
@@ -171,7 +170,6 @@ export default function Settings() {
   const [proxyStatus, setProxyStatus] = useState({ running: false, port: 4100, paused: false });
 
   useEffect(() => {
-    invoke("get_setting", { key: "proxy_port" }).then((v) => v && setProxyPort(v)).catch(() => {});
     invoke("get_setting", { key: "launch_at_login" }).then((v) => v && setLaunchAtLogin(v === "true")).catch(() => {});
     invoke("get_setting", { key: "data_retention" }).then((v) => v && setDataRetention(v)).catch(() => {});
     invoke("get_setting", { key: "pricing_last_updated" }).then((v) => setPricingLastUpdated(v)).catch(() => {});
@@ -262,23 +260,7 @@ export default function Settings() {
 
         <div style={s.section}>
           <div style={s.sectionTitle}>Proxy</div>
-          <div style={s.row}>
-            <div>
-              <div style={s.label}>Proxy Port</div>
-              <div style={s.subLabel}>Restart required to apply changes</div>
-            </div>
-            <input
-              style={s.input}
-              type="number"
-              value={proxyPort}
-              onChange={(e) => {
-                setProxyPort(e.target.value);
-                saveSetting("proxy_port", e.target.value);
-              }}
-              min="1024"
-              max="65535"
-            />
-          </div>
+          {/* Proxy port is always 4100 — configuration not supported yet */}
           <div style={s.row}>
             <div>
               <div style={s.label}>Launch at Login</div>

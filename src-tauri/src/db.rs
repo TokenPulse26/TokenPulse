@@ -408,6 +408,24 @@ pub fn get_cost_summary(conn: &Connection, time_range: &str) -> Result<CostSumma
     })
 }
 
+pub fn count_pricing(conn: &Connection) -> Result<u32> {
+    conn.query_row("SELECT COUNT(*) FROM pricing", [], |row| row.get(0))
+}
+
+pub fn cleanup_old_requests(conn: &Connection, retention: &str) -> Result<usize> {
+    let interval = match retention {
+        "30d" => "-30 days",
+        "90d" => "-90 days",
+        "1y" => "-365 days",
+        _ => return Ok(0), // "forever" or unknown — skip
+    };
+    let n = conn.execute(
+        &format!("DELETE FROM requests WHERE timestamp < datetime('now', '{}')", interval),
+        [],
+    )?;
+    Ok(n)
+}
+
 pub fn get_model_breakdown(conn: &Connection, days: u32) -> Result<Vec<ModelStats>> {
     let mut stmt = conn.prepare(
         "SELECT

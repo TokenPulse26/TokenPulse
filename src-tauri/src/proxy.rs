@@ -132,13 +132,22 @@ fn detect_provider(headers: &HeaderMap, path: &str) -> ProviderInfo {
     }
 }
 
-fn extract_model(body: &Value, provider: &str) -> String {
+fn extract_model(body: &Value, provider: &str, path: &str) -> String {
     match provider {
         "google" => {
-            body.get("model")
-                .and_then(|v| v.as_str())
-                .unwrap_or("gemini-unknown")
-                .to_string()
+            // Try body first
+            if let Some(m) = body.get("model").and_then(|v| v.as_str()) {
+                return m.to_string();
+            }
+            // Google puts model in URL: /v1beta/models/gemini-1.5-pro:generateContent
+            if let Some(idx) = path.find("/models/") {
+                let after = &path[idx + "/models/".len()..];
+                let model_name = after.split(':').next().unwrap_or("").to_string();
+                if !model_name.is_empty() {
+                    return model_name;
+                }
+            }
+            "gemini-unknown".to_string()
         }
         _ => body
             .get("model")
@@ -244,14 +253,14 @@ async fn proxy_handler(
     let body_json_result: Result<Value, _> = serde_json::from_slice(&body_bytes);
     let mut body_json = body_json_result.unwrap_or(Value::Null);
     let has_json_body = body_json != Value::Null;
-    let model = extract_model(&body_json, &provider.name);
+    let model = extract_model(&body_json, &provider.name, &path);
     let is_streaming = is_streaming_request(&body_json);
 
     eprintln!("[TokenPulse] {} {} → {} (provider: {}, model: {}, streaming: {})",
         parts.method, path, target_url, provider.name, model, is_streaming);
 
-    // Inject stream_options for OpenAI streaming requests
-    if is_streaming && (provider.name == "openai" || provider.name == "cliproxy") {
+    // Inject stream_options for OpenAI-compatible streaming requests (all except Anthropic, Google, Ollama)
+    if is_streaming && !matches!(provider.name.as_str(), "anthropic" | "google" | "ollama") {
         if let Some(obj) = body_json.as_object_mut() {
             obj.insert(
                 "stream_options".to_string(),

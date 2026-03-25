@@ -140,6 +140,20 @@ async fn test_proxy() -> Result<bool, String> {
     }
 }
 
+#[derive(serde::Serialize)]
+pub struct PricingStatus {
+    total_models: u32,
+    last_updated: Option<String>,
+}
+
+#[tauri::command]
+fn get_pricing_status(state: State<DbState>) -> Result<PricingStatus, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let total_models = db::count_pricing(&conn).map_err(|e| e.to_string())?;
+    let last_updated = db::get_setting(&conn, "pricing_last_updated").map_err(|e| e.to_string())?;
+    Ok(PricingStatus { total_models, last_updated })
+}
+
 #[tauri::command]
 fn update_pricing_now(state: State<DbState>) -> Result<(), String> {
     let db = state.0.clone();
@@ -335,6 +349,13 @@ pub fn run() {
             let conn = db::init_db(&db_path_str).expect("Failed to initialize database");
             let db_arc = Arc::new(Mutex::new(conn));
 
+            // Enforce data retention on startup
+            if let Ok(conn) = db_arc.lock() {
+                if let Ok(Some(retention)) = db::get_setting(&conn, "data_retention") {
+                    let _ = db::cleanup_old_requests(&conn, &retention);
+                }
+            }
+
             // Store in global for window event handler
             let _ = DB_GLOBAL.set(db_arc.clone());
 
@@ -415,6 +436,7 @@ pub fn run() {
             test_proxy,
             get_cost_summary,
             update_pricing_now,
+            get_pricing_status,
             export_csv,
             set_autostart,
             toggle_proxy_pause,
