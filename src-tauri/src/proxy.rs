@@ -224,6 +224,47 @@ fn build_forward_path(provider: &ProviderInfo, original_path: &str) -> String {
     stripped.to_string()
 }
 
+fn detect_source_tag(headers: &HeaderMap) -> String {
+    // Explicit project header takes priority
+    for header_name in &["x-tokenpulse-project", "x-tokenpulse-tag"] {
+        if let Some(val) = headers.get(*header_name) {
+            if let Ok(s) = val.to_str() {
+                let trimmed = s.trim();
+                if !trimmed.is_empty() {
+                    return trimmed.to_string();
+                }
+            }
+        }
+    }
+
+    // User-Agent sniffing
+    if let Some(ua) = headers.get("user-agent") {
+        if let Ok(ua_str) = ua.to_str() {
+            let ua_lower = ua_str.to_lowercase();
+            if ua_lower.contains("cursor") {
+                return "cursor".to_string();
+            }
+            if ua_lower.contains("vscode") || ua_lower.contains("copilot") {
+                return "vscode".to_string();
+            }
+            if ua_lower.contains("openclaw") || ua_lower.contains("clawd") {
+                return "openclaw".to_string();
+            }
+            if ua_lower.contains("openwebui") {
+                return "open-webui".to_string();
+            }
+            if ua_lower.contains("python") {
+                return "python-sdk".to_string();
+            }
+            if ua_lower.contains("node") || ua_lower.contains("axios") {
+                return "node-sdk".to_string();
+            }
+        }
+    }
+
+    "unknown".to_string()
+}
+
 async fn proxy_handler(
     State(state): State<AppState>,
     req: Request<Body>,
@@ -243,6 +284,9 @@ async fn proxy_handler(
     let provider = detect_provider(&parts.headers, &path);
     let forward_path = build_forward_path(&provider, &path);
     let target_url = format!("{}{}{}", provider.base_url, forward_path, query);
+
+    // Detect source tag from headers
+    let source_tag = detect_source_tag(&parts.headers);
 
     // Read request body
     let body_bytes = match axum::body::to_bytes(body, 10 * 1024 * 1024).await {
@@ -337,7 +381,7 @@ async fn proxy_handler(
                 time_to_first_token_ms: -1,
                 is_streaming,
                 is_complete: false,
-                source_tag: String::new(),
+                source_tag: source_tag.clone(),
                 error_message: Some(e.to_string()),
                 provider_type: get_provider_type(&provider.name),
             };
@@ -371,7 +415,7 @@ async fn proxy_handler(
             time_to_first_token_ms: -1,
             is_streaming: false,
             is_complete: false,
-            source_tag: String::new(),
+            source_tag: source_tag.clone(),
             error_message: Some(format!("HTTP {}: {}", status.as_u16(), &error_text[..error_text.len().min(200)])),
             provider_type: get_provider_type(&provider.name),
         };
@@ -492,7 +536,7 @@ async fn proxy_handler(
                 time_to_first_token_ms: ttft_ms,
                 is_streaming: true,
                 is_complete: true,
-                source_tag: String::new(),
+                source_tag: source_tag.clone(),
                 error_message: None,
                 provider_type,
             };
@@ -548,7 +592,7 @@ async fn proxy_handler(
                 time_to_first_token_ms: -1,
                 is_streaming: false,
                 is_complete: true,
-                source_tag: String::new(),
+                source_tag: source_tag.clone(),
                 error_message: None,
                 provider_type: get_provider_type(&provider.name),
             };

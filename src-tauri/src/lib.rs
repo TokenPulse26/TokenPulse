@@ -2,7 +2,7 @@ mod db;
 mod proxy;
 mod pricing;
 
-use db::{CostSummary, DailyProviderStat, DailyStats, DashboardSummary, ModelStats, RequestRecord};
+use db::{Budget, BudgetStatus, CostSummary, DailyProviderStat, DailyStats, DashboardSummary, ModelStats, RequestRecord};
 use once_cell::sync::OnceCell;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -325,6 +325,45 @@ fn spawn_pricing_update(db: Arc<Mutex<rusqlite::Connection>>) {
     });
 }
 
+// ─── Budget commands ──────────────────────────────────────────────────────────
+
+#[tauri::command]
+fn create_budget(
+    state: State<DbState>,
+    name: String,
+    period: String,
+    threshold_usd: f64,
+    provider_filter: Option<String>,
+) -> Result<i64, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::create_budget(&conn, &name, &period, threshold_usd, provider_filter.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_budgets(state: State<DbState>) -> Result<Vec<Budget>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::get_budgets(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn update_budget(state: State<DbState>, id: i64, enabled: bool) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::update_budget(&conn, id, enabled).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_budget(state: State<DbState>, id: i64) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::delete_budget(&conn, id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn check_budgets(state: State<DbState>) -> Result<Vec<BudgetStatus>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::check_budgets(&conn).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -441,6 +480,11 @@ pub fn run() {
             set_autostart,
             toggle_proxy_pause,
             check_for_update,
+            create_budget,
+            get_budgets,
+            update_budget,
+            delete_budget,
+            check_budgets,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

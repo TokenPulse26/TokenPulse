@@ -15,7 +15,32 @@ DB_PATH = os.environ.get(
         "~/Library/Application Support/com.tokenpulse.desktop/tokenpulse.db"
     ),
 )
-VERSION = "0.2.0"
+VERSION = "0.3.0"
+
+# ─── Cost Optimization constants ──────────────────────────────────────────────
+MODEL_COSTS = {
+    "claude-opus-4-6": {"input": 15.0, "output": 75.0, "tier": "premium"},
+    "claude-sonnet-4-6": {"input": 3.0, "output": 15.0, "tier": "mid"},
+    "claude-haiku-3-5": {"input": 0.80, "output": 4.0, "tier": "budget"},
+    "gpt-4o": {"input": 2.50, "output": 10.0, "tier": "mid"},
+    "gpt-4o-mini": {"input": 0.15, "output": 0.60, "tier": "budget"},
+    "gpt-4.1": {"input": 2.0, "output": 8.0, "tier": "mid"},
+    "gpt-4.1-mini": {"input": 0.40, "output": 1.60, "tier": "budget"},
+    "gpt-4.1-nano": {"input": 0.10, "output": 0.40, "tier": "budget"},
+}
+DOWNGRADE_MAP = {
+    "claude-opus-4-6": "claude-sonnet-4-6",
+    "claude-sonnet-4-6": "claude-haiku-3-5",
+    "gpt-4o": "gpt-4o-mini",
+    "gpt-4.1": "gpt-4.1-mini",
+    "gpt-4.1-mini": "gpt-4.1-nano",
+}
+
+# Project tag colors for the "By Project" breakdown
+PROJECT_COLORS = [
+    "#22c55e", "#58a6ff", "#a78bfa", "#f59e0b", "#f87171",
+    "#34d399", "#818cf8", "#fb923c", "#e879f9", "#38bdf8",
+]
 
 PROVIDER_COLORS = {
     "openai": "#10a37f",
@@ -242,6 +267,72 @@ td{padding:11px 16px;font-size:12px;border-top:1px solid rgba(42,45,58,.5);white
   .insights-grid{grid-template-columns:1fr}
 }
 @media(max-width:400px){.stats{grid-template-columns:1fr}}
+
+/* ── Budget Alerts ─────────────────────────────────── */
+.budget-section{background:#1a1d27;border:1px solid #2a2d3a;border-radius:14px;padding:22px 24px;margin-bottom:20px}
+.budget-empty{color:#6e7681;font-size:13px;padding:12px 0}
+.budget-item{margin-bottom:16px}
+.budget-item:last-child{margin-bottom:0}
+.budget-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}
+.budget-name{font-size:14px;font-weight:600;color:#f0f6fc}
+.budget-meta{display:flex;align-items:center;gap:10px;font-size:12px;color:#8b949e}
+.budget-amount{font-size:13px;font-weight:600}
+.budget-bar-bg{height:8px;background:#2a2d3a;border-radius:4px;overflow:hidden}
+.budget-bar-fill{height:8px;border-radius:4px;transition:width .4s ease}
+.budget-bar-green{background:#22c55e}
+.budget-bar-yellow{background:#eab308}
+.budget-bar-orange{background:#f97316}
+.budget-bar-red{background:#ef4444}
+.budget-bar-over{background:#ef4444;animation:budget-pulse 1s ease-in-out infinite}
+@keyframes budget-pulse{0%,100%{opacity:1}50%{opacity:.5}}
+.over-badge{display:inline-flex;align-items:center;gap:4px;background:rgba(239,68,68,.15);color:#ef4444;border:1px solid rgba(239,68,68,.3);padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700;animation:budget-pulse 1s ease-in-out infinite}
+.budget-period-badge{display:inline-block;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:600;background:rgba(88,166,255,.1);color:#58a6ff}
+.budget-manage-link{display:inline-block;margin-top:14px;font-size:12px;color:#58a6ff;cursor:pointer}
+.budget-manage-link:hover{text-decoration:underline}
+
+/* Budget management panel */
+.budget-manage-panel{display:none;margin-top:16px;padding-top:16px;border-top:1px solid #2a2d3a}
+.budget-manage-panel.open{display:block}
+.budget-form{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:16px}
+.budget-form input,.budget-form select{background:#161922;border:1px solid #2a2d3a;color:#c9d1d9;border-radius:7px;padding:7px 12px;font-size:13px;outline:none;transition:border-color .15s}
+.budget-form input:focus,.budget-form select:focus{border-color:#58a6ff}
+.budget-form input[type=text]{min-width:140px}
+.budget-form input[type=number]{width:100px}
+.budget-form-group{display:flex;flex-direction:column;gap:4px}
+.budget-form-label{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.6px;color:#6e7681}
+.btn-add-budget{background:#22c55e;color:#0f1117;border:none;border-radius:7px;padding:8px 16px;font-size:13px;font-weight:700;cursor:pointer;transition:background .15s}
+.btn-add-budget:hover{background:#16a34a}
+.budget-list-manage{display:flex;flex-direction:column;gap:8px}
+.budget-manage-row{display:flex;align-items:center;justify-content:space-between;background:#161922;border:1px solid #2a2d3a;border-radius:8px;padding:10px 14px}
+.budget-manage-info{font-size:13px;color:#c9d1d9}
+.budget-manage-sub{font-size:11px;color:#6e7681;margin-top:2px}
+.btn-delete-budget{background:rgba(239,68,68,.1);color:#ef4444;border:1px solid rgba(239,68,68,.2);border-radius:6px;padding:4px 10px;font-size:12px;cursor:pointer;transition:background .15s}
+.btn-delete-budget:hover{background:rgba(239,68,68,.25)}
+
+/* ── Cost Optimizer ────────────────────────────────── */
+.optimizer-section{background:#1a1d27;border:1px solid #2a2d3a;border-radius:14px;padding:22px 24px;margin-bottom:20px}
+.optimizer-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px;margin-top:14px}
+.optimizer-card{background:#161922;border:1px solid #2a2d3a;border-radius:12px;padding:16px 18px;transition:border-color .2s}
+.optimizer-card:hover{border-color:#3d4250}
+.optimizer-card-header{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.optimizer-icon{font-size:20px}
+.optimizer-title{font-size:13px;font-weight:700;color:#f0f6fc}
+.optimizer-savings{font-size:12px;font-weight:700;color:#22c55e;margin-left:auto;white-space:nowrap}
+.optimizer-desc{font-size:12px;color:#8b949e;line-height:1.55}
+.optimizer-empty{color:#6e7681;font-size:13px;padding:12px 0}
+
+/* ── Project Breakdown ─────────────────────────────── */
+.project-section{background:#1a1d27;border:1px solid #2a2d3a;border-radius:14px;padding:22px 24px;margin-bottom:20px}
+.project-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-top:14px}
+.project-card{background:#161922;border:1px solid #2a2d3a;border-radius:12px;padding:14px 16px;transition:border-color .2s;border-left:3px solid transparent}
+.project-card:hover{border-color:#3d4250}
+.project-name{font-size:14px;font-weight:700;color:#f0f6fc;margin-bottom:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.project-stats{display:flex;flex-direction:column;gap:3px}
+.project-stat{display:flex;justify-content:space-between;align-items:center;font-size:12px}
+.project-stat-label{color:#8b949e}
+.project-stat-value{color:#c9d1d9;font-weight:600}
+.project-cost{font-size:18px;font-weight:800;margin-bottom:8px}
+.project-empty{color:#6e7681;font-size:13px;padding:12px 0}
 </style>
 </head>
 <body>
@@ -802,6 +893,589 @@ def _trend_html(current, prev):
     if pct > 0:
         return f'<span class="stat-trend up">&#8593; {abs(pct):.0f}% vs prev</span>'
     return f'<span class="stat-trend down">&#8595; {abs(pct):.0f}% vs prev</span>'
+
+
+def _fetch_budgets_with_status():
+    """Fetch all budgets with their current spend status."""
+    try:
+        conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+
+        # Ensure table exists
+        try:
+            c.execute("SELECT COUNT(*) FROM budgets")
+        except Exception:
+            conn.close()
+            return []
+
+        c.execute(
+            "SELECT id, name, period, threshold_usd, provider_filter, enabled "
+            "FROM budgets WHERE enabled=1 ORDER BY created_at ASC"
+        )
+        budgets = [dict(r) for r in c.fetchall()]
+
+        results = []
+        for b in budgets:
+            period = b["period"]
+            if period == "daily":
+                time_expr = "datetime('now', 'start of day')"
+            elif period == "weekly":
+                time_expr = "datetime('now', '-7 days')"
+            else:
+                time_expr = "datetime('now', '-30 days')"
+
+            pf = b["provider_filter"]
+            try:
+                if pf:
+                    c.execute(
+                        f"SELECT COALESCE(SUM(cost_usd),0) FROM requests "
+                        f"WHERE timestamp >= {time_expr} "
+                        f"AND COALESCE(provider_type,'api')='api' AND provider=?",
+                        (pf,)
+                    )
+                else:
+                    c.execute(
+                        f"SELECT COALESCE(SUM(cost_usd),0) FROM requests "
+                        f"WHERE timestamp >= {time_expr} "
+                        f"AND COALESCE(provider_type,'api')='api'"
+                    )
+                current_spend = c.fetchone()[0] or 0.0
+            except Exception:
+                current_spend = 0.0
+
+            threshold = b["threshold_usd"] or 0.001
+            pct = (current_spend / threshold) * 100.0 if threshold > 0 else 0.0
+            results.append({
+                "id": b["id"],
+                "name": b["name"],
+                "period": period,
+                "threshold_usd": b["threshold_usd"],
+                "provider_filter": pf,
+                "current_spend": current_spend,
+                "percentage": pct,
+                "is_over": current_spend >= b["threshold_usd"],
+            })
+
+        conn.close()
+        return results
+    except Exception:
+        return []
+
+
+def _fetch_all_budgets():
+    """Fetch all budgets (including disabled) for management panel."""
+    try:
+        conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        try:
+            c.execute(
+                "SELECT id, name, period, threshold_usd, provider_filter, enabled "
+                "FROM budgets ORDER BY created_at ASC"
+            )
+            rows = [dict(r) for r in c.fetchall()]
+        except Exception:
+            rows = []
+        conn.close()
+        return rows
+    except Exception:
+        return []
+
+
+def _fetch_project_breakdown():
+    """Fetch per-project cost/request/token breakdown."""
+    try:
+        conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        try:
+            c.execute(
+                "SELECT COALESCE(source_tag,'unknown') as tag, "
+                "COUNT(*) as cnt, "
+                "COALESCE(SUM(cost_usd),0) as cost, "
+                "COALESCE(SUM(input_tokens+output_tokens),0) as tokens "
+                "FROM requests "
+                "GROUP BY tag ORDER BY cost DESC"
+            )
+            rows = [dict(r) for r in c.fetchall()]
+        except Exception:
+            rows = []
+        conn.close()
+        return rows
+    except Exception:
+        return []
+
+
+def _fetch_optimizer_data():
+    """Fetch raw data needed for optimization recommendations."""
+    try:
+        conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+
+        # Per-model avg token counts and costs (API only)
+        try:
+            c.execute(
+                "SELECT model, "
+                "AVG(input_tokens+output_tokens) as avg_tokens, "
+                "AVG(input_tokens) as avg_input, "
+                "AVG(output_tokens) as avg_output, "
+                "COUNT(*) as cnt, "
+                "SUM(cost_usd) as total_cost, "
+                "SUM(input_tokens) as sum_input, "
+                "SUM(output_tokens) as sum_output "
+                "FROM requests "
+                "WHERE COALESCE(provider_type,'api')='api' "
+                "GROUP BY model"
+            )
+            model_stats = [dict(r) for r in c.fetchall()]
+        except Exception:
+            model_stats = []
+
+        # Failed requests cost last 7 days
+        try:
+            c.execute(
+                "SELECT COUNT(*) as cnt, COALESCE(SUM(cost_usd),0) as cost "
+                "FROM requests "
+                "WHERE error_message IS NOT NULL AND error_message != '' "
+                "AND timestamp >= datetime('now','-7 days')"
+            )
+            row = c.fetchone()
+            failed_cnt = row["cnt"] or 0
+            failed_cost = row["cost"] or 0.0
+        except Exception:
+            failed_cnt = 0
+            failed_cost = 0.0
+
+        # Over-prompting: high input, low output
+        try:
+            c.execute(
+                "SELECT COUNT(*) as cnt, COALESCE(SUM(cost_usd),0) as cost "
+                "FROM requests "
+                "WHERE input_tokens > 2000 AND output_tokens < 50 "
+                "AND COALESCE(provider_type,'api')='api' "
+                "AND timestamp >= datetime('now','-7 days')"
+            )
+            row = c.fetchone()
+            overprompt_cnt = row["cnt"] or 0
+            overprompt_cost = row["cost"] or 0.0
+        except Exception:
+            overprompt_cnt = 0
+            overprompt_cost = 0.0
+
+        # Provider cost per 1K tokens
+        try:
+            c.execute(
+                "SELECT provider, "
+                "SUM(cost_usd) as total_cost, "
+                "SUM(input_tokens+output_tokens) as total_tokens "
+                "FROM requests "
+                "WHERE COALESCE(provider_type,'api')='api' "
+                "GROUP BY provider"
+            )
+            provider_eff = [dict(r) for r in c.fetchall()]
+        except Exception:
+            provider_eff = []
+
+        # Peak hour analysis (last 30 days)
+        try:
+            c.execute(
+                "SELECT CAST(strftime('%H',timestamp) AS INTEGER) as hr, COUNT(*) as cnt "
+                "FROM requests "
+                "WHERE timestamp >= datetime('now','-30 days') "
+                "GROUP BY hr ORDER BY cnt DESC"
+            )
+            hour_rows = [dict(r) for r in c.fetchall()]
+        except Exception:
+            hour_rows = []
+
+        # Local model usage check
+        try:
+            c.execute(
+                "SELECT COUNT(*) as cnt FROM requests "
+                "WHERE COALESCE(provider_type,'api')='local' "
+                "AND timestamp >= datetime('now','-30 days')"
+            )
+            local_cnt = c.fetchone()["cnt"] or 0
+
+            c.execute(
+                "SELECT COUNT(*) as cnt FROM requests "
+                "WHERE (input_tokens+output_tokens) < 500 "
+                "AND COALESCE(provider_type,'api')='api' "
+                "AND timestamp >= datetime('now','-30 days')"
+            )
+            small_api_cnt = c.fetchone()["cnt"] or 0
+        except Exception:
+            local_cnt = 0
+            small_api_cnt = 0
+
+        conn.close()
+        return {
+            "model_stats": model_stats,
+            "failed_cnt": failed_cnt,
+            "failed_cost": failed_cost,
+            "overprompt_cnt": overprompt_cnt,
+            "overprompt_cost": overprompt_cost,
+            "provider_eff": provider_eff,
+            "hour_rows": hour_rows,
+            "local_cnt": local_cnt,
+            "small_api_cnt": small_api_cnt,
+        }
+    except Exception:
+        return {}
+
+
+def _build_budget_section(budgets, all_budgets):
+    """Build the budget status section with progress bars."""
+    # Budget status cards
+    if not budgets:
+        status_html = '<div class="budget-empty">No budgets configured — set one up to control your spending.</div>'
+    else:
+        items = []
+        for b in budgets:
+            name = _escape_html(b["name"])
+            period = b["period"]
+            current = b["current_spend"]
+            threshold = b["threshold_usd"]
+            pct = min(b["percentage"], 100.0)  # cap bar at 100%
+            pct_raw = b["percentage"]
+            is_over = b["is_over"]
+
+            # Bar color
+            if is_over:
+                bar_class = "budget-bar-fill budget-bar-over"
+            elif pct_raw >= 95:
+                bar_class = "budget-bar-fill budget-bar-red"
+            elif pct_raw >= 80:
+                bar_class = "budget-bar-fill budget-bar-orange"
+            elif pct_raw >= 60:
+                bar_class = "budget-bar-fill budget-bar-yellow"
+            else:
+                bar_class = "budget-bar-fill budget-bar-green"
+
+            pf = b.get("provider_filter")
+            pf_html = f' &middot; <span style="color:#8b949e">{_escape_html(pf)}</span>' if pf else ""
+
+            over_badge = ""
+            if is_over:
+                over_badge = '<span class="over-badge">&#9888; OVER BUDGET</span>'
+
+            items.append(
+                f'<div class="budget-item">'
+                f'<div class="budget-header">'
+                f'<div style="display:flex;align-items:center;gap:8px">'
+                f'<span class="budget-name">{name}</span>'
+                f'<span class="budget-period-badge">{period}</span>'
+                f'{pf_html}'
+                f'</div>'
+                f'<div style="display:flex;align-items:center;gap:8px">'
+                f'{over_badge}'
+                f'<span class="budget-amount" style="color:{"#ef4444" if is_over else "#f0f6fc"}">'
+                f'{fmt_cost(current)} / {fmt_cost(threshold)}</span>'
+                f'<span style="font-size:12px;color:#8b949e">{pct_raw:.0f}%</span>'
+                f'</div>'
+                f'</div>'
+                f'<div class="budget-bar-bg">'
+                f'<div class="{bar_class}" style="width:{pct:.1f}%"></div>'
+                f'</div>'
+                f'</div>'
+            )
+        status_html = "\n".join(items)
+
+    # Management panel
+    # Build existing budget rows
+    manage_rows = ""
+    for b in all_budgets:
+        bid = b["id"]
+        bname = _escape_html(b["name"])
+        period = b["period"]
+        threshold = b["threshold_usd"]
+        pf = b.get("provider_filter") or "all providers"
+        manage_rows += (
+            f'<div class="budget-manage-row" id="bmrow-{bid}">'
+            f'<div>'
+            f'<div class="budget-manage-info">{bname} &mdash; {fmt_cost(threshold)} / {period}</div>'
+            f'<div class="budget-manage-sub">{_escape_html(pf)}</div>'
+            f'</div>'
+            f'<button class="btn-delete-budget" onclick="deleteBudget({bid})">Delete</button>'
+            f'</div>'
+        )
+    if not manage_rows:
+        manage_rows = '<div style="color:#6e7681;font-size:13px">No budgets yet.</div>'
+
+    return f"""<div class="budget-section">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+    <div class="section-title" style="margin-bottom:0">Budget Alerts</div>
+  </div>
+  {status_html}
+  <a class="budget-manage-link" onclick="toggleBudgetPanel()">&#9881; Manage Budgets</a>
+  <div class="budget-manage-panel" id="budgetManagePanel">
+    <div style="font-size:13px;font-weight:600;color:#f0f6fc;margin-bottom:10px">Add Budget</div>
+    <div class="budget-form" id="budgetForm">
+      <div class="budget-form-group">
+        <label class="budget-form-label">Name</label>
+        <input type="text" id="bName" placeholder="e.g. Monthly API Budget">
+      </div>
+      <div class="budget-form-group">
+        <label class="budget-form-label">Period</label>
+        <select id="bPeriod">
+          <option value="daily">Daily</option>
+          <option value="weekly">Weekly</option>
+          <option value="monthly" selected>Monthly</option>
+        </select>
+      </div>
+      <div class="budget-form-group">
+        <label class="budget-form-label">Threshold ($)</label>
+        <input type="number" id="bThreshold" placeholder="10.00" min="0.01" step="0.01">
+      </div>
+      <div class="budget-form-group">
+        <label class="budget-form-label">Provider (optional)</label>
+        <input type="text" id="bProvider" placeholder="all providers">
+      </div>
+      <button class="btn-add-budget" onclick="addBudget()">+ Add</button>
+    </div>
+    <div style="font-size:13px;font-weight:600;color:#f0f6fc;margin-bottom:8px">Existing Budgets</div>
+    <div class="budget-list-manage" id="budgetListManage">
+      {manage_rows}
+    </div>
+  </div>
+</div>"""
+
+
+def _build_optimizer_section(opt_data):
+    """Build cost optimization recommendation cards."""
+    if not opt_data:
+        return ""
+
+    recommendations = []
+
+    # 1. Model downgrade opportunities
+    for ms in opt_data.get("model_stats", []):
+        model = (ms.get("model") or "").lower()
+        avg_tokens = ms.get("avg_tokens") or 0
+        cnt = ms.get("cnt") or 0
+        sum_input = ms.get("sum_input") or 0
+        sum_output = ms.get("sum_output") or 0
+        total_cost = ms.get("total_cost") or 0
+
+        if cnt < 3:
+            continue
+
+        # Check if model is expensive
+        model_info = None
+        for key in MODEL_COSTS:
+            if key in model:
+                model_info = MODEL_COSTS[key]
+                break
+
+        if not model_info or model_info["tier"] == "budget":
+            continue
+
+        # Find downgrade candidate
+        downgrade = None
+        for key, cheaper in DOWNGRADE_MAP.items():
+            if key in model:
+                downgrade = cheaper
+                break
+
+        if not downgrade or avg_tokens >= 1000:
+            continue
+
+        # Estimate savings
+        cheaper_info = None
+        for key in MODEL_COSTS:
+            if key in downgrade:
+                cheaper_info = MODEL_COSTS[key]
+                break
+
+        savings = 0.0
+        if cheaper_info and sum_input > 0:
+            current_estimated = (sum_input / 1_000_000 * model_info["input"] +
+                                  sum_output / 1_000_000 * model_info["output"])
+            cheaper_estimated = (sum_input / 1_000_000 * cheaper_info["input"] +
+                                  sum_output / 1_000_000 * cheaper_info["output"])
+            savings = max(0.0, current_estimated - cheaper_estimated)
+
+        pct_under = 100
+        desc = (f"{cnt} requests to {model} averaged {int(avg_tokens):,} tokens — "
+                f"under the 1K threshold. {downgrade} handles simple tasks at a fraction of the cost.")
+        savings_str = f"~{fmt_cost(savings)}" if savings > 0.001 else None
+        recommendations.append({
+            "icon": "💰",
+            "title": f"Downgrade {model} → {downgrade}",
+            "desc": desc,
+            "savings": savings,
+            "savings_str": savings_str,
+        })
+
+    # 2. Provider efficiency
+    prov_eff = opt_data.get("provider_eff", [])
+    if len(prov_eff) >= 2:
+        prov_costs = []
+        for p in prov_eff:
+            toks = p.get("total_tokens") or 0
+            cost = p.get("total_cost") or 0
+            if toks > 1000 and cost > 0:
+                per_1k = (cost / toks) * 1000
+                prov_costs.append((p["provider"], per_1k))
+        if len(prov_costs) >= 2:
+            prov_costs.sort(key=lambda x: x[1])
+            cheapest = prov_costs[0]
+            most_exp = prov_costs[-1]
+            if most_exp[1] > cheapest[1] * 1.5:
+                desc = (f"Cost per 1K tokens: {cheapest[0]} ${cheapest[1]:.4f} vs "
+                        f"{most_exp[0]} ${most_exp[1]:.4f}. "
+                        f"Consider {cheapest[0]} for cost-sensitive workloads.")
+                recommendations.append({
+                    "icon": "💰",
+                    "title": "Provider Efficiency Gap",
+                    "desc": desc,
+                    "savings": 0,
+                    "savings_str": None,
+                })
+
+    # 3. Waste detection — failed requests
+    failed_cnt = opt_data.get("failed_cnt", 0)
+    failed_cost = opt_data.get("failed_cost", 0.0)
+    if failed_cnt > 0 and failed_cost > 0.001:
+        desc = (f"{failed_cnt} failed request{'s' if failed_cnt != 1 else ''} cost "
+                f"{fmt_cost(failed_cost)} in wasted tokens this week. "
+                f"Review error patterns to reduce waste.")
+        recommendations.append({
+            "icon": "⚠️",
+            "title": "Wasted Spend on Errors",
+            "desc": desc,
+            "savings": failed_cost,
+            "savings_str": fmt_cost(failed_cost),
+        })
+
+    # 4. Over-prompting
+    overprompt_cnt = opt_data.get("overprompt_cnt", 0)
+    overprompt_cost = opt_data.get("overprompt_cost", 0.0)
+    if overprompt_cnt >= 3:
+        desc = (f"{overprompt_cnt} requests sent large prompts (&gt;2K input tokens) "
+                f"but got tiny responses (&lt;50 output tokens). "
+                f"Consider trimming context windows.")
+        recommendations.append({
+            "icon": "⚠️",
+            "title": "Possible Over-Prompting",
+            "desc": desc,
+            "savings": overprompt_cost,
+            "savings_str": fmt_cost(overprompt_cost) if overprompt_cost > 0.001 else None,
+        })
+
+    # 5. Peak hour pattern
+    hour_rows = opt_data.get("hour_rows", [])
+    if hour_rows:
+        total_hr = sum(r.get("cnt", 0) for r in hour_rows)
+        if total_hr > 10:
+            # Find top 3-hour window
+            top3 = hour_rows[:3]
+            top3_cnt = sum(r.get("cnt", 0) for r in top3)
+            top3_pct = (top3_cnt / total_hr) * 100 if total_hr > 0 else 0
+            if top3_pct >= 50 and top3:
+                hrs = [r["hr"] for r in top3]
+                h_start = min(hrs)
+                h_end = max(hrs)
+                def fmth(h):
+                    ampm = "am" if h < 12 else "pm"
+                    return f"{h % 12 or 12}{ampm}"
+                desc = (f"{top3_pct:.0f}% of your usage occurs between "
+                        f"{fmth(h_start)}–{fmth(h_end)}. "
+                        f"Spreading non-urgent requests could reduce rate limit hits.")
+                recommendations.append({
+                    "icon": "💡",
+                    "title": "Request Concentration",
+                    "desc": desc,
+                    "savings": 0,
+                    "savings_str": None,
+                })
+
+    # 6. Local model suggestion
+    local_cnt = opt_data.get("local_cnt", 0)
+    small_api_cnt = opt_data.get("small_api_cnt", 0)
+    if local_cnt == 0 and small_api_cnt >= 50:
+        desc = (f"You made {small_api_cnt:,} API requests under 500 tokens this month. "
+                f"A local 7B model (Ollama, LM Studio) could handle many of these for free.")
+        recommendations.append({
+            "icon": "💡",
+            "title": "Local Model Opportunity",
+            "desc": desc,
+            "savings": 0,
+            "savings_str": None,
+        })
+
+    if not recommendations:
+        return f"""<div class="optimizer-section">
+  <div class="section-title">Cost Optimizer</div>
+  <div class="optimizer-empty">&#10003; No optimization opportunities found — your usage looks efficient!</div>
+</div>"""
+
+    # Sort by savings desc
+    recommendations.sort(key=lambda x: x["savings"], reverse=True)
+
+    cards = []
+    for rec in recommendations:
+        savings_html = ""
+        if rec.get("savings_str"):
+            savings_html = f'<span class="optimizer-savings">Save {rec["savings_str"]}</span>'
+        cards.append(
+            f'<div class="optimizer-card">'
+            f'<div class="optimizer-card-header">'
+            f'<span class="optimizer-icon">{rec["icon"]}</span>'
+            f'<span class="optimizer-title">{_escape_html(rec["title"])}</span>'
+            f'{savings_html}'
+            f'</div>'
+            f'<div class="optimizer-desc">{rec["desc"]}</div>'
+            f'</div>'
+        )
+
+    cards_html = "\n".join(cards)
+    return f"""<div class="optimizer-section">
+  <div class="section-title">Cost Optimizer</div>
+  <div class="optimizer-grid">
+    {cards_html}
+  </div>
+</div>"""
+
+
+def _build_project_section(projects):
+    """Build the By Project breakdown section."""
+    if not projects:
+        return f"""<div class="project-section">
+  <div class="section-title">By Project</div>
+  <div class="project-empty">No tagged requests yet. Source tags are auto-detected from User-Agent, or set <code>X-TokenPulse-Project</code> header.</div>
+</div>"""
+
+    cards = []
+    for i, p in enumerate(projects):
+        tag = p.get("tag") or "unknown"
+        cnt = p.get("cnt") or 0
+        cost = p.get("cost") or 0.0
+        tokens = p.get("tokens") or 0
+        color = PROJECT_COLORS[i % len(PROJECT_COLORS)]
+
+        cards.append(
+            f'<div class="project-card" style="border-left-color:{color}">'
+            f'<div class="project-name" title="{_escape_html(tag)}">{_escape_html(tag)}</div>'
+            f'<div class="project-cost" style="color:{color}">{fmt_cost(cost)}</div>'
+            f'<div class="project-stats">'
+            f'<div class="project-stat"><span class="project-stat-label">Requests</span>'
+            f'<span class="project-stat-value">{cnt:,}</span></div>'
+            f'<div class="project-stat"><span class="project-stat-label">Tokens</span>'
+            f'<span class="project-stat-value">{fmt_tokens(tokens)}</span></div>'
+            f'</div>'
+            f'</div>'
+        )
+
+    cards_html = "\n".join(cards)
+    return f"""<div class="project-section">
+  <div class="section-title">By Project</div>
+  <div class="project-grid">
+    {cards_html}
+  </div>
+</div>"""
 
 
 def _build_stats_cards(data):
@@ -1607,6 +2281,54 @@ function startAutoRefresh(seconds) {{
   setTimeout(function() {{ location.reload(); }}, seconds * 1000);
 }}
 
+// ── Budget management ─────────────────────────────────────
+function toggleBudgetPanel() {{
+  var panel = document.getElementById('budgetManagePanel');
+  if (panel) panel.classList.toggle('open');
+}}
+
+function addBudget() {{
+  var nameEl = document.getElementById('bName');
+  var periodEl = document.getElementById('bPeriod');
+  var threshEl = document.getElementById('bThreshold');
+  var provEl = document.getElementById('bProvider');
+  var name = nameEl ? nameEl.value : '';
+  var period = periodEl ? periodEl.value : 'monthly';
+  var threshold = parseFloat(threshEl ? threshEl.value : '0');
+  var provider = provEl ? provEl.value.trim() : '';
+
+  if (!name.trim()) {{ alert('Please enter a budget name.'); return; }}
+  if (!threshold || threshold <= 0) {{ alert('Please enter a valid threshold.'); return; }}
+
+  var body = 'name=' + encodeURIComponent(name.trim()) +
+    '&period=' + encodeURIComponent(period) +
+    '&threshold=' + encodeURIComponent(threshold);
+  if (provider) body += '&provider_filter=' + encodeURIComponent(provider);
+
+  fetch('/api/budgets', {{
+    method: 'POST',
+    headers: {{'Content-Type': 'application/x-www-form-urlencoded'}},
+    body: body
+  }})
+  .then(function(r) {{ return r.json(); }})
+  .then(function(data) {{
+    if (data.ok) {{ location.reload(); }}
+    else {{ alert('Error: ' + (data.error || 'unknown')); }}
+  }})
+  .catch(function(e) {{ alert('Request failed: ' + e); }});
+}}
+
+function deleteBudget(id) {{
+  if (!confirm('Delete this budget?')) return;
+  fetch('/api/budgets/' + id, {{ method: 'DELETE' }})
+  .then(function(r) {{ return r.json(); }})
+  .then(function(data) {{
+    if (data.ok) {{ location.reload(); }}
+    else {{ alert('Error: ' + (data.error || 'unknown')); }}
+  }})
+  .catch(function(e) {{ alert('Request failed: ' + e); }});
+}}
+
 // ── Init ─────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', function() {{
   initStickyNav();
@@ -1616,7 +2338,7 @@ document.addEventListener('DOMContentLoaded', function() {{
   initSpendChart();
   initExpandableRows();
   updatePulseDots(recentCount);
-  startAutoRefresh(3);
+  startAutoRefresh(30);
 }});
 </script>"""
 
@@ -1681,9 +2403,26 @@ def build_page(time_range, page=1):
     insights_html = _build_insights(data)
     requests_table = _build_requests_table(data, time_range=time_range, page=page)
 
+    # Paid feature sections
+    budgets_status = _fetch_budgets_with_status()
+    all_budgets = _fetch_all_budgets()
+    budget_html = _build_budget_section(budgets_status, all_budgets)
+
+    opt_data = _fetch_optimizer_data()
+    optimizer_html = _build_optimizer_section(opt_data)
+
+    projects = _fetch_project_breakdown()
+    project_html = _build_project_section(projects)
+
     body = f"""{activity_section}
 
 {stats_html}
+
+  {budget_html}
+
+  {optimizer_html}
+
+  {project_html}
 
   <!-- Charts -->
   <div class="charts-row">
@@ -1729,9 +2468,79 @@ def build_page(time_range, page=1):
 # HTTP Server
 # ---------------------------------------------------------------------------
 
+def _json_response(handler, status, data):
+    body = json.dumps(data).encode("utf-8")
+    handler.send_response(status)
+    handler.send_header("Content-Type", "application/json")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.send_header("Access-Control-Allow-Origin", "*")
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
+def _api_get_budgets():
+    """Return all budgets with current status as JSON."""
+    budgets = _fetch_budgets_with_status()
+    return {"ok": True, "budgets": budgets}
+
+
+def _api_create_budget(form_data):
+    """Create a new budget from POST form data."""
+    name = (form_data.get("name") or [""])[0].strip()
+    period = (form_data.get("period") or ["monthly"])[0].strip()
+    try:
+        threshold = float((form_data.get("threshold") or ["0"])[0])
+    except (ValueError, TypeError):
+        return {"ok": False, "error": "Invalid threshold value"}
+    provider_filter = (form_data.get("provider_filter") or [""])[0].strip() or None
+
+    if not name:
+        return {"ok": False, "error": "Name is required"}
+    if period not in ("daily", "weekly", "monthly"):
+        return {"ok": False, "error": "Period must be daily, weekly, or monthly"}
+    if threshold <= 0:
+        return {"ok": False, "error": "Threshold must be positive"}
+
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute(
+            "INSERT INTO budgets (name, period, threshold_usd, provider_filter, enabled, created_at) "
+            "VALUES (?, ?, ?, ?, 1, datetime('now'))",
+            (name, period, threshold, provider_filter)
+        )
+        bid = c.lastrowid
+        conn.commit()
+        conn.close()
+        return {"ok": True, "id": bid}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def _api_delete_budget(budget_id):
+    """Delete a budget by ID."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("DELETE FROM budget_alerts WHERE budget_id=?", (budget_id,))
+        c.execute("DELETE FROM budgets WHERE id=?", (budget_id,))
+        conn.commit()
+        conn.close()
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
+        path = parsed.path
+
+        # API endpoint: GET /api/budgets
+        if path == "/api/budgets":
+            _json_response(self, 200, _api_get_budgets())
+            return
+
         params = parse_qs(parsed.query)
         time_range = params.get("range", ["today"])[0]
         if time_range not in RANGE_LABELS:
@@ -1748,6 +2557,47 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
         self.end_headers()
         self.wfile.write(html)
+
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        # API endpoint: POST /api/budgets
+        if path == "/api/budgets":
+            content_length = int(self.headers.get("Content-Length", 0))
+            raw_body = self.rfile.read(content_length).decode("utf-8") if content_length else ""
+            form_data = parse_qs(raw_body)
+            result = _api_create_budget(form_data)
+            _json_response(self, 200 if result.get("ok") else 400, result)
+            return
+
+        self.send_response(404)
+        self.end_headers()
+
+    def do_DELETE(self):
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        # API endpoint: DELETE /api/budgets/{id}
+        if path.startswith("/api/budgets/"):
+            try:
+                bid = int(path.split("/")[-1])
+            except (ValueError, IndexError):
+                _json_response(self, 400, {"ok": False, "error": "Invalid budget ID"})
+                return
+            result = _api_delete_budget(bid)
+            _json_response(self, 200 if result.get("ok") else 500, result)
+            return
+
+        self.send_response(404)
+        self.end_headers()
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
 
     def log_message(self, fmt, *args):
         pass

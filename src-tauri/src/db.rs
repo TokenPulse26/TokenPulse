@@ -97,6 +97,25 @@ pub fn init_db(path: &str) -> Result<Connection> {
         CREATE INDEX IF NOT EXISTS idx_requests_timestamp ON requests(timestamp);
         CREATE INDEX IF NOT EXISTS idx_requests_provider ON requests(provider);
         CREATE INDEX IF NOT EXISTS idx_requests_model ON requests(model);
+
+        CREATE TABLE IF NOT EXISTS budgets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            period TEXT NOT NULL CHECK(period IN ('daily','weekly','monthly')),
+            threshold_usd REAL NOT NULL,
+            provider_filter TEXT,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS budget_alerts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            budget_id INTEGER NOT NULL,
+            triggered_at TEXT NOT NULL DEFAULT (datetime('now')),
+            current_spend REAL NOT NULL,
+            threshold_usd REAL NOT NULL,
+            FOREIGN KEY (budget_id) REFERENCES budgets(id)
+        );
     ")?;
 
     // Migrations: add columns if they don't exist
@@ -406,6 +425,148 @@ pub fn get_cost_summary(conn: &Connection, time_range: &str) -> Result<CostSumma
         total_subscription_tokens: sub_tokens,
         total_local_tokens: local_tokens,
     })
+}
+
+// ─── Budget types ────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Budget {
+    pub id: i64,
+    pub name: String,
+    pub period: String,
+    pub threshold_usd: f64,
+    pub provider_filter: Option<String>,
+    pub enabled: bool,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BudgetStatus {
+    pub id: i64,
+    pub name: String,
+    pub period: String,
+    pub threshold_usd: f64,
+    pub provider_filter: Option<String>,
+    pub enabled: bool,
+    pub current_spend: f64,
+    pub percentage: f64,
+    pub is_over: bool,
+}
+
+// ─── Budget functions ─────────────────────────────────────────────────────────
+
+pub fn create_budget(
+    conn: &Connection,
+    name: &str,
+    period: &str,
+    threshold: f64,
+    provider_filter: Option<&str>,
+) -> Result<i64> {
+    conn.execute(
+        "INSERT INTO budgets (name, period, threshold_usd, provider_filter, enabled, created_at)
+         VALUES (?1, ?2, ?3, ?4, 1, datetime('now'))",
+        params![name, period, threshold, provider_filter],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn get_budgets(conn: &Connection) -> Result<Vec<Budget>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, period, threshold_usd, provider_filter, enabled, created_at
+         FROM budgets ORDER BY created_at ASC",
+    )?;
+    let records = stmt
+        .query_map([], |row| {
+            Ok(Budget {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                period: row.get(2)?,
+                threshold_usd: row.get(3)?,
+                provider_filter: row.get(4)?,
+                enabled: row.get::<_, i64>(5)? != 0,
+                created_at: row.get(6)?,
+            })
+        })?
+        .collect::<Result<Vec<_>>>()?;
+    Ok(records)
+}
+
+pub fn update_budget(conn: &Connection, id: i64, enabled: bool) -> Result<()> {
+    conn.execute(
+        "UPDATE budgets SET enabled = ?1 WHERE id = ?2",
+        params![enabled as i64, id],
+    )?;
+    Ok(())
+}
+
+pub fn delete_budget(conn: &Connection, id: i64) -> Result<()> {
+    conn.execute("DELETE FROM budget_alerts WHERE budget_id = ?1", params![id])?;
+    conn.execute("DELETE FROM budgets WHERE id = ?1", params![id])?;
+    Ok(())
+}
+
+pub fn check_budgets(conn: &Connection) -> Result<Vec<BudgetStatus>> {
+    let budgets = get_budgets(conn)?;
+    let mut statuses = Vec::new();
+
+    for budget in budgets.iter().filter(|b| b.enabled) {
+        let time_expr = match budget.period.as_str() {
+            "daily" => "datetime('now', 'start of day')",
+            "weekly" => "datetime('now', '-7 days')",
+            _ => "datetime('now', '-30 days')", // monthly
+        };
+
+        let current_spend: f64 = match &budget.provider_filter {
+            Some(pf) => conn.query_row(
+                &format!(
+                    "SELECT COALESCE(SUM(cost_usd), 0.0) FROM requests \
+                     WHERE timestamp >= {} AND COALESCE(provider_type,'api') = 'api' \
+                     AND provider = ?1",
+                    time_expr
+                ),
+                params![pf],
+                |row| row.get(0),
+            )?,
+            None => conn.query_row(
+                &format!(
+                    "SELECT COALESCE(SUM(cost_usd), 0.0) FROM requests \
+                     WHERE timestamp >= {} AND COALESCE(provider_type,'api') = 'api'",
+                    time_expr
+                ),
+                [],
+                |row| row.get(0),
+            )?,
+        };
+
+        let percentage = if budget.threshold_usd > 0.0 {
+            (current_spend / budget.threshold_usd) * 100.0
+        } else {
+            0.0
+        };
+
+        statuses.push(BudgetStatus {
+            id: budget.id,
+            name: budget.name.clone(),
+            period: budget.period.clone(),
+            threshold_usd: budget.threshold_usd,
+            provider_filter: budget.provider_filter.clone(),
+            enabled: budget.enabled,
+            current_spend,
+            percentage,
+            is_over: current_spend >= budget.threshold_usd,
+        });
+    }
+
+    Ok(statuses)
+}
+
+pub fn record_alert(conn: &Connection, budget_id: i64, current_spend: f64, threshold: f64) -> Result<()> {
+    conn.execute(
+        "INSERT INTO budget_alerts (budget_id, triggered_at, current_spend, threshold_usd)
+         VALUES (?1, datetime('now'), ?2, ?3)",
+        params![budget_id, current_spend, threshold],
+    )?;
+    Ok(())
 }
 
 pub fn count_pricing(conn: &Connection) -> Result<u32> {
