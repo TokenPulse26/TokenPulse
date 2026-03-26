@@ -156,7 +156,7 @@ a{color:inherit;text-decoration:none}
 .prov-badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:600;white-space:nowrap}
 
 /* Heatmap */
-.heatmap-section{background:#1a1d27;border:1px solid #2a2d3a;border-radius:14px;padding:22px 24px;margin-bottom:20px}
+.heatmap-section{background:#1a1d27;border:1px solid #2a2d3a;border-radius:14px;padding:22px 24px;margin-bottom:0}
 .heatmap-scroll{overflow-x:auto}
 .heatmap-grid-wrap{display:flex;gap:0}
 .heatmap-hour-labels{display:flex;flex-direction:column;justify-content:space-between;padding:26px 8px 0 0;min-width:30px}
@@ -169,7 +169,7 @@ a{color:inherit;text-decoration:none}
 .heatmap-cell{width:14px;height:14px;border-radius:2px;flex-shrink:0;cursor:default}
 
 /* Insights */
-.insights-section{margin-bottom:20px}
+.insights-section{margin-bottom:0;background:#1a1d27;border:1px solid #2a2d3a;border-radius:14px;padding:22px 24px}
 .insights-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
 .insight-card{background:#1a1d27;border:1px solid #2a2d3a;border-radius:12px;padding:18px 20px;transition:border-color .2s}
 .insight-card:hover{border-color:#3d4250}
@@ -588,23 +588,32 @@ def _fetch_data(time_range):
                 })
             requests_rows = rows_base
 
-    # Activity feed (last 60 seconds)
+    # Activity feed — try last 5 minutes first, fall back to last 20 requests
     activity_60s = []
+    activity_window = "5 minutes"
     try:
         c.execute(
             "SELECT timestamp, provider, COALESCE(provider_type,'api') as ptype "
-            "FROM requests WHERE timestamp >= datetime('now', '-60 seconds') "
+            "FROM requests WHERE timestamp >= datetime('now', '-5 minutes') "
             "ORDER BY timestamp ASC"
         )
         activity_60s = [dict(r) for r in c.fetchall()]
+        # If no activity in 5 min, grab the last 20 requests regardless of time
+        if not activity_60s:
+            c.execute(
+                "SELECT timestamp, provider, COALESCE(provider_type,'api') as ptype "
+                "FROM requests ORDER BY timestamp DESC LIMIT 20"
+            )
+            activity_60s = list(reversed([dict(r) for r in c.fetchall()]))
+            activity_window = "recent"
     except Exception:
         try:
             c.execute(
                 "SELECT timestamp, provider, 'api' as ptype "
-                "FROM requests WHERE timestamp >= datetime('now', '-60 seconds') "
-                "ORDER BY timestamp ASC"
+                "FROM requests ORDER BY timestamp DESC LIMIT 20"
             )
-            activity_60s = [dict(r) for r in c.fetchall()]
+            activity_60s = list(reversed([dict(r) for r in c.fetchall()]))
+            activity_window = "recent"
         except Exception:
             pass
 
@@ -983,7 +992,7 @@ def _build_svg_spend_chart(data):
             f'<path d="{stroke_d}" fill="none" stroke="{color}" stroke-width="1.8"'
             f' stroke-linejoin="round"'
             f' style="stroke-dasharray:1000;stroke-dashoffset:1000;'
-            f'animation:draw-path 1.2s ease forwards"/>'
+            f'animation:draw-path 2.8s ease forwards"/>'
         )
 
     # X-axis date labels
@@ -1333,7 +1342,16 @@ def _build_page_scripts(data):
                 ts_str.replace("T", " ").replace("Z", "").split(".")[0]
             )
             diff = (now_ts - ts).total_seconds()
-            pct = max(0.0, min(100.0, (1.0 - diff / 60.0) * 100.0))
+            # Use 300s (5 min) window, or spread evenly if showing recent history
+            window = 300.0
+            if len(activity_60s) > 0:
+                # Calculate actual time span of the data
+                first_ts = datetime.fromisoformat(
+                    activity_60s[0].get("timestamp", "").replace("T", " ").replace("Z", "").split(".")[0]
+                )
+                span = max((now_ts - first_ts).total_seconds(), 60.0)
+                window = min(span, 300.0)
+            pct = max(0.0, min(100.0, (1.0 - diff / window) * 100.0))
             return round(pct, 1)
         except Exception:
             return 50.0
@@ -1443,7 +1461,7 @@ function initActivityFeed(dots, count) {{
 
   if (count === 0) {{
     timeline.innerHTML = '<div class="activity-waiting"><span class="breathing">&#9679;</span> Waiting for requests...</div>';
-    if (counter) counter.textContent = '0 requests in the last 60 seconds';
+    if (counter) counter.textContent = 'No recent activity — showing last known requests';
     return;
   }}
 
@@ -1461,7 +1479,7 @@ function initActivityFeed(dots, count) {{
   }});
 
   if (counter) {{
-    counter.textContent = count + ' request' + (count === 1 ? '' : 's') + ' in the last 60 seconds';
+    counter.textContent = count + ' request' + (count === 1 ? '' : 's') + ' in the last 5 minutes';
   }}
 }}
 
@@ -1651,7 +1669,7 @@ def build_page(time_range, page=1):
     activity_60s = data.get("activity_60s", [])
     recent_count = len(activity_60s)
     activity_section = f"""<div class="activity-section">
-  <div class="activity-label">Live Activity (last 60s)</div>
+  <div class="activity-label">Live Activity</div>
   <div class="activity-timeline" id="activityTimeline"></div>
   <div class="activity-count" id="activityCount"></div>
 </div>"""
@@ -1679,9 +1697,15 @@ def build_page(time_range, page=1):
     </div>
   </div>
 
-{heatmap_html}
-
-{insights_html}
+  <!-- Heatmap + Insights side by side -->
+  <div class="charts-row">
+    <div style="flex:1;min-width:0">
+      {heatmap_html}
+    </div>
+    <div style="flex:1;min-width:0">
+      {insights_html}
+    </div>
+  </div>
 
   <!-- Recent Requests -->
   <div class="table-section">
@@ -1730,6 +1754,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    HTTPServer.allow_reuse_address = True
     server = HTTPServer(("0.0.0.0", 4200), DashboardHandler)
     print(f"TokenPulse Web Dashboard v{VERSION}")
     print(f"  -> http://0.0.0.0:4200")
