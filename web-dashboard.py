@@ -408,7 +408,7 @@ def provider_badge_html(provider):
     color = _provider_color(p)
     bg = _provider_bg(p)
     label = "LM Studio" if p == "lmstudio" else p
-    return f'<span class="prov-badge" style="background:{bg};color:{color}">{label}</span>'
+    return f'<span class="prov-badge" style="background:{bg};color:{color}">{_escape_html(label)}</span>'
 
 
 def fmt_tokens(n):
@@ -1298,12 +1298,12 @@ def _build_optimizer_section(opt_data):
             savings = max(0.0, current_estimated - cheaper_estimated)
 
         pct_under = 100
-        desc = (f"{cnt} requests to {model} averaged {int(avg_tokens):,} tokens — "
-                f"under the 1K threshold. {downgrade} handles simple tasks at a fraction of the cost.")
+        desc = (f"{cnt} requests to {_escape_html(model)} averaged {int(avg_tokens):,} tokens — "
+                f"under the 1K threshold. {_escape_html(downgrade)} handles simple tasks at a fraction of the cost.")
         savings_str = f"~{fmt_cost(savings)}" if savings > 0.001 else None
         recommendations.append({
             "icon": "💰",
-            "title": f"Downgrade {model} → {downgrade}",
+            "title": f"Downgrade {_escape_html(model)} → {_escape_html(downgrade)}",
             "desc": desc,
             "savings": savings,
             "savings_str": savings_str,
@@ -1324,9 +1324,9 @@ def _build_optimizer_section(opt_data):
             cheapest = prov_costs[0]
             most_exp = prov_costs[-1]
             if most_exp[1] > cheapest[1] * 1.5:
-                desc = (f"Cost per 1K tokens: {cheapest[0]} ${cheapest[1]:.4f} vs "
-                        f"{most_exp[0]} ${most_exp[1]:.4f}. "
-                        f"Consider {cheapest[0]} for cost-sensitive workloads.")
+                desc = (f"Cost per 1K tokens: {_escape_html(cheapest[0])} ${cheapest[1]:.4f} vs "
+                        f"{_escape_html(most_exp[0])} ${most_exp[1]:.4f}. "
+                        f"Consider {_escape_html(cheapest[0])} for cost-sensitive workloads.")
                 recommendations.append({
                     "icon": "💰",
                     "title": "Provider Efficiency Gap",
@@ -1591,6 +1591,7 @@ def _build_svg_spend_chart(data):
     # Defs: gradients
     svg_parts.append("<defs>")
     for prov in all_provs:
+        prov_safe = _escape_html(prov)
         color = _provider_color(prov)
         if color.startswith("#") and len(color) == 7:
             r2, g2, b2 = int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
@@ -1599,7 +1600,7 @@ def _build_svg_spend_chart(data):
         else:
             top_c, bot_c = "rgba(255,255,255,0.4)", "rgba(255,255,255,0.05)"
         svg_parts.append(
-            f'<linearGradient id="grad_{prov}" x1="0" y1="0" x2="0" y2="1">'
+            f'<linearGradient id="grad_{prov_safe}" x1="0" y1="0" x2="0" y2="1">'
             f'<stop offset="0%" stop-color="{top_c}"/>'
             f'<stop offset="100%" stop-color="{bot_c}"/>'
             f'</linearGradient>'
@@ -1625,6 +1626,7 @@ def _build_svg_spend_chart(data):
     cum_bottom = {d: 0.0 for d in date_range}
 
     for prov in all_provs:
+        prov_safe = _escape_html(prov)
         color = _provider_color(prov)
         # Points for this provider's band
         top_pts = []
@@ -1660,7 +1662,7 @@ def _build_svg_spend_chart(data):
         stroke_d = pts_to_d(top_pts)
 
         svg_parts.append(
-            f'<path d="{area_d}" fill="url(#grad_{prov})" opacity="0.85"/>'
+            f'<path d="{area_d}" fill="url(#grad_{prov_safe})" opacity="0.85"/>'
         )
         svg_parts.append(
             f'<path d="{stroke_d}" fill="none" stroke="{color}" stroke-width="1.8"'

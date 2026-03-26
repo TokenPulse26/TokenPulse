@@ -57,6 +57,9 @@ pub struct ModelStats {
 pub fn init_db(path: &str) -> Result<Connection> {
     let conn = Connection::open(path)?;
 
+    // Enable WAL mode for better concurrent read/write performance
+    conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+
     conn.execute_batch("
         CREATE TABLE IF NOT EXISTS requests (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

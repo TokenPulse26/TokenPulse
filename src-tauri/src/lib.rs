@@ -168,15 +168,21 @@ fn export_csv(app: tauri::AppHandle, state: State<DbState>) -> Result<String, St
     let csv = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
         let requests = db::get_all_requests(&conn).map_err(|e| e.to_string())?;
-        let mut s = String::from("timestamp,provider,model,input_tokens,output_tokens,cost_usd,latency_ms,is_streaming,error_message\n");
+        let mut s = String::from("timestamp,provider,model,input_tokens,output_tokens,cost_usd,latency_ms,is_streaming,error_message,cached_tokens,reasoning_tokens,tokens_per_second,time_to_first_token_ms,source_tag,provider_type\n");
         for r in &requests {
             s.push_str(&format!(
-                "{},{},{},{},{},{:.6},{},{},{}\n",
+                "{},{},{},{},{},{:.6},{},{},{},{},{},{:.1},{},{},{}\n",
                 r.timestamp, r.provider, r.model,
                 r.input_tokens, r.output_tokens,
                 r.cost_usd, r.latency_ms,
                 r.is_streaming,
                 r.error_message.as_deref().unwrap_or(""),
+                r.cached_tokens,
+                r.reasoning_tokens,
+                r.tokens_per_second,
+                r.time_to_first_token_ms,
+                r.source_tag,
+                r.provider_type,
             ));
         }
         s
@@ -566,14 +572,46 @@ fn setup_tray(
         })
         .build(app)?;
 
-    // Update "Today" spend label every 30 seconds
+    // Update "Today" spend label every 30 seconds and check budgets
+    let app_handle_for_tray = app.handle().clone();
     tauri::async_runtime::spawn(async move {
+        use tauri_plugin_notification::NotificationExt;
+        let mut notified_budgets: std::collections::HashSet<i64> = std::collections::HashSet::new();
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
             if let Ok(conn) = db.lock() {
                 if let Ok(summary) = db::get_summary_stats(&conn, "today") {
                     let text = format!("Today: ${:.2}", summary.total_cost);
                     let _ = today_item_clone.set_text(text);
+                }
+
+                // Check budgets and send notifications for over-threshold budgets
+                if let Ok(statuses) = db::check_budgets(&conn) {
+                    for status in &statuses {
+                        if status.is_over && !notified_budgets.contains(&status.id) {
+                            // Send macOS notification
+                            let _ = app_handle_for_tray
+                                .notification()
+                                .builder()
+                                .title("⚠ Budget Alert")
+                                .body(format!(
+                                    "{} — ${:.2} / ${:.2}",
+                                    status.name,
+                                    status.current_spend,
+                                    status.threshold_usd,
+                                ))
+                                .show();
+
+                            // Record alert in DB (wires up previously dead code)
+                            let _ = db::record_alert(
+                                &conn,
+                                status.id,
+                                status.current_spend,
+                                status.threshold_usd,
+                            );
+                            notified_budgets.insert(status.id);
+                        }
+                    }
                 }
             }
         }

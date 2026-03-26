@@ -1,3 +1,4 @@
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -12,12 +13,12 @@ pub struct PricingEntry {
 
 static PRICING_JSON: &str = include_str!("../pricing.json");
 
-pub fn load_pricing() -> Vec<PricingEntry> {
+static BUNDLED_PRICING: Lazy<Vec<PricingEntry>> = Lazy::new(|| {
     serde_json::from_str(PRICING_JSON).unwrap_or_default()
-}
+});
 
 pub fn calculate_cost(model: &str, input_tokens: u32, output_tokens: u32) -> f64 {
-    let pricing = load_pricing();
+    let pricing = &*BUNDLED_PRICING;
 
     let entry = pricing.iter().find(|p| {
         model.to_lowercase() == p.model.to_lowercase()
