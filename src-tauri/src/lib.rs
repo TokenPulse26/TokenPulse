@@ -3,7 +3,6 @@ mod proxy;
 mod pricing;
 
 use db::{Budget, BudgetStatus, CostSummary, DailyProviderStat, DailyStats, DashboardSummary, ModelStats, RequestRecord};
-use once_cell::sync::OnceCell;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{Emitter, Manager, State};
@@ -11,9 +10,6 @@ use tauri::{Emitter, Manager, State};
 pub struct DbState(pub Arc<Mutex<rusqlite::Connection>>);
 pub struct ProxyRunningState(pub Arc<AtomicBool>);
 pub struct ProxyPausedState(pub Arc<AtomicBool>);
-
-// Global DB reference for use in window event handler (which can't access managed state directly)
-static DB_GLOBAL: OnceCell<Arc<Mutex<rusqlite::Connection>>> = OnceCell::new();
 
 #[tauri::command]
 fn get_recent_requests(
@@ -401,9 +397,6 @@ pub fn run() {
                 }
             }
 
-            // Store in global for window event handler
-            let _ = DB_GLOBAL.set(db_arc.clone());
-
             let proxy_running = Arc::new(AtomicBool::new(false));
             let proxy_paused = Arc::new(AtomicBool::new(false));
 
@@ -432,40 +425,8 @@ pub fn run() {
 
             Ok(())
         })
-        .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                // Hide to tray instead of quitting
-                let _ = window.hide();
-                api.prevent_close();
-
-                // Show one-time notification
-                let app = window.app_handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    if let Some(db) = DB_GLOBAL.get() {
-                        let already_shown = if let Ok(conn) = db.lock() {
-                            db::get_setting(&conn, "has_shown_hide_notification")
-                                .ok()
-                                .flatten()
-                                .is_some()
-                        } else {
-                            true
-                        };
-                        if !already_shown {
-                            if let Ok(conn) = db.lock() {
-                                let _ = db::set_setting(&conn, "has_shown_hide_notification", "true");
-                            }
-                            use tauri_plugin_notification::NotificationExt;
-                            let _ = app
-                                .notification()
-                                .builder()
-                                .title("TokenPulse")
-                                .body("TokenPulse is still running in your menu bar")
-                                .show();
-                        }
-                    }
-                });
-            }
-        })
+        // Tray-only mode: no window close interception needed.
+        // The window is hidden on startup via tauri.conf.json (visible: false).
         .invoke_handler(tauri::generate_handler![
             get_recent_requests,
             get_daily_stats,
@@ -502,12 +463,11 @@ fn setup_tray(
     proxy_paused: Arc<AtomicBool>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
-    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+    use tauri::tray::TrayIconBuilder;
 
     let today_item = MenuItem::with_id(app, "today_spend", "Today: $0.00", false, None::<&str>)?;
     let open_item = MenuItem::with_id(app, "open", "Open Dashboard", true, None::<&str>)?;
     let pause_item = MenuItem::with_id(app, "toggle_proxy", "Pause Proxy", true, None::<&str>)?;
-    let settings_item = MenuItem::with_id(app, "settings_nav", "Settings", true, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, "quit", "Quit TokenPulse", true, None::<&str>)?;
 
     let menu = Menu::with_items(app, &[
@@ -515,8 +475,6 @@ fn setup_tray(
         &PredefinedMenuItem::separator(app)?,
         &open_item,
         &pause_item,
-        &PredefinedMenuItem::separator(app)?,
-        &settings_item,
         &PredefinedMenuItem::separator(app)?,
         &quit_item,
     ])?;
@@ -528,14 +486,15 @@ fn setup_tray(
     let _tray = TrayIconBuilder::with_id("main")
         .icon(app.default_window_icon().unwrap().clone())
         .menu(&menu)
-        .show_menu_on_left_click(false)
+        .show_menu_on_left_click(true)
         .on_menu_event(move |app, event| {
             match event.id.as_ref() {
                 "open" => {
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.show();
-                        let _ = window.set_focus();
-                    }
+                    // Open the web dashboard in the default browser
+                    let _ = tauri::async_runtime::spawn(async {
+                        let _ = open::that("http://localhost:4200");
+                    });
+                    let _ = app; // suppress unused warning
                 }
                 "toggle_proxy" => {
                     let was_paused = proxy_paused_for_menu.load(Ordering::SeqCst);
@@ -543,31 +502,10 @@ fn setup_tray(
                     let new_label = if was_paused { "Pause Proxy" } else { "Resume Proxy" };
                     let _ = pause_item_clone.set_text(new_label);
                 }
-                "settings_nav" => {
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.show();
-                        let _ = window.set_focus();
-                        let _ = window.emit("navigate-to", "/settings");
-                    }
-                }
                 "quit" => {
                     app.exit(0);
                 }
                 _ => {}
-            }
-        })
-        .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                ..
-            } = event
-            {
-                let app = tray.app_handle();
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
             }
         })
         .build(app)?;

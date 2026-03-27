@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""TokenPulse Web Dashboard v0.2.0 — full-featured analytics dashboard."""
+"""TokenPulse Web Dashboard v0.4.0 — full-featured analytics dashboard."""
 import sqlite3
 import os
 import json
 import math
+import calendar
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 from datetime import datetime, timedelta
@@ -15,7 +16,7 @@ DB_PATH = os.environ.get(
         "~/Library/Application Support/com.tokenpulse.desktop/tokenpulse.db"
     ),
 )
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 
 # ─── Cost Optimization constants ──────────────────────────────────────────────
 MODEL_COSTS = {
@@ -308,6 +309,59 @@ td{padding:11px 16px;font-size:12px;border-top:1px solid rgba(42,45,58,.5);white
 .budget-manage-sub{font-size:11px;color:#6e7681;margin-top:2px}
 .btn-delete-budget{background:rgba(239,68,68,.1);color:#ef4444;border:1px solid rgba(239,68,68,.2);border-radius:6px;padding:4px 10px;font-size:12px;cursor:pointer;transition:background .15s}
 .btn-delete-budget:hover{background:rgba(239,68,68,.25)}
+
+/* ── Spending Forecast ──────────────────────────────── */
+.forecast-section{background:#1a1d27;border:1px solid #2a2d3a;border-radius:14px;padding:22px 24px;margin-bottom:20px}
+.forecast-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px;margin-top:14px}
+.forecast-card{background:#161922;border:1px solid #2a2d3a;border-radius:12px;padding:18px 20px;transition:border-color .2s}
+.forecast-card:hover{border-color:#3d4250}
+.forecast-label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.8px;color:#8b949e;margin-bottom:8px}
+.forecast-value{font-size:24px;font-weight:800;line-height:1}
+.forecast-sub{font-size:11px;color:#6e7681;margin-top:6px;line-height:1.5}
+.forecast-trend{font-size:11px;margin-top:5px;font-weight:600}
+.forecast-trend.over{color:#f85149}
+.forecast-trend.under{color:#22c55e}
+.forecast-trend.neutral{color:#8b949e}
+.clr-amber{color:#f59e0b}
+.clr-red{color:#f85149}
+
+/* ── Error Monitor ─────────────────────────────────── */
+.error-section{background:#1a1d27;border:1px solid rgba(248,81,73,0.15);border-radius:14px;padding:22px 24px;margin-bottom:20px}
+.error-summary-bar{display:flex;align-items:center;gap:12px;padding:12px 16px;background:#161922;border-radius:10px;margin-bottom:14px}
+.error-indicator{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+.error-indicator.green{background:#22c55e}
+.error-indicator.yellow{background:#eab308}
+.error-indicator.red{background:#f85149}
+.error-summary-text{font-size:13px;color:#c9d1d9}
+.error-summary-text strong{color:#f0f6fc}
+.error-models{display:flex;flex-direction:column;gap:8px;margin-bottom:14px}
+.error-model-item{display:flex;align-items:center;justify-content:space-between;background:#161922;border:1px solid #2a2d3a;border-radius:10px;padding:12px 16px;transition:border-color .2s}
+.error-model-item:hover{border-color:#3d4250}
+.error-model-item.high-error{border-color:rgba(248,81,73,0.3)}
+.error-model-left{display:flex;align-items:center;gap:10px}
+.error-model-name{font-size:13px;font-weight:600;color:#f0f6fc}
+.error-model-stats{display:flex;gap:14px;font-size:12px;color:#8b949e}
+.error-rate-badge{padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700}
+.error-rate-badge.green{background:rgba(34,197,94,0.1);color:#22c55e}
+.error-rate-badge.yellow{background:rgba(234,179,8,0.1);color:#eab308}
+.error-rate-badge.red{background:rgba(248,81,73,0.15);color:#f85149}
+.error-timeline-wrap{margin-bottom:14px}
+.error-timeline-label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.8px;color:#8b949e;margin-bottom:8px}
+.error-timeline-chart{display:flex;align-items:flex-end;gap:2px;height:60px;background:#161922;border-radius:8px;padding:8px 6px 4px}
+.error-bar{flex:1;background:#f85149;border-radius:2px 2px 0 0;min-width:4px;position:relative;cursor:default;transition:opacity .15s}
+.error-bar:hover{opacity:.8}
+.error-bar-empty{flex:1;min-height:2px;min-width:4px;background:rgba(248,81,73,0.1);border-radius:2px}
+.error-recent-list{display:flex;flex-direction:column;gap:6px}
+.error-recent-item{background:#161922;border:1px solid #2a2d3a;border-radius:8px;padding:10px 14px;cursor:pointer;transition:border-color .2s}
+.error-recent-item:hover{border-color:#3d4250}
+.error-recent-header{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.error-recent-time{font-size:11px;color:#6e7681}
+.error-recent-model{font-size:12px;font-weight:600;color:#f0f6fc}
+.error-recent-cost{font-size:11px;color:#f85149;font-weight:600}
+.error-recent-msg{font-size:11px;color:#8b949e;margin-top:4px;line-height:1.4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.error-recent-full{display:none;font-size:11px;color:#c9d1d9;margin-top:6px;line-height:1.5;word-break:break-all;background:#0f1117;border-radius:6px;padding:8px 10px}
+.error-recent-item.expanded .error-recent-msg{white-space:normal}
+.error-recent-item.expanded .error-recent-full{display:block}
 
 /* ── Cost Optimizer ────────────────────────────────── */
 .optimizer-section{background:#1a1d27;border:1px solid #2a2d3a;border-radius:14px;padding:22px 24px;margin-bottom:20px}
@@ -1007,6 +1061,165 @@ def _fetch_project_breakdown():
         return []
 
 
+def _fetch_forecast_data():
+    """Fetch cost projection / spending forecast data."""
+    try:
+        conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+
+        # Daily average spend over last 7 days (API only)
+        c.execute(
+            "SELECT COALESCE(AVG(daily_cost), 0) FROM ("
+            "  SELECT date(timestamp) as day, SUM(cost_usd) as daily_cost"
+            "  FROM requests"
+            "  WHERE provider_type = 'api' AND timestamp >= datetime('now', '-7 days')"
+            "  GROUP BY day"
+            ")"
+        )
+        daily_avg = c.fetchone()[0] or 0.0
+
+        # Current month spend so far
+        c.execute(
+            "SELECT COALESCE(SUM(cost_usd), 0) FROM requests "
+            "WHERE provider_type = 'api' AND timestamp >= datetime('now', 'start of month')"
+        )
+        month_to_date = c.fetchone()[0] or 0.0
+
+        # Last month's total spend
+        c.execute(
+            "SELECT COALESCE(SUM(cost_usd), 0) FROM requests "
+            "WHERE provider_type = 'api' "
+            "AND timestamp >= datetime('now', 'start of month', '-1 month') "
+            "AND timestamp < datetime('now', 'start of month')"
+        )
+        last_month_total = c.fetchone()[0] or 0.0
+
+        # Busiest single day cost (last 30 days)
+        c.execute(
+            "SELECT COALESCE(MAX(daily_cost), 0) FROM ("
+            "  SELECT date(timestamp) as day, SUM(cost_usd) as daily_cost"
+            "  FROM requests"
+            "  WHERE provider_type = 'api' AND timestamp >= datetime('now', '-30 days')"
+            "  GROUP BY day"
+            ")"
+        )
+        busiest_day_cost = c.fetchone()[0] or 0.0
+
+        conn.close()
+
+        # Calculate projections
+        now = datetime.now()
+        days_in_month = calendar.monthrange(now.year, now.month)[1]
+        projected_month = daily_avg * days_in_month
+        days_elapsed = now.day
+        days_remaining = days_in_month - days_elapsed
+
+        # Budget hit date calculation
+        budget_hit_date = None  # Will be set if budgets exist
+
+        return {
+            "daily_avg": daily_avg,
+            "month_to_date": month_to_date,
+            "last_month_total": last_month_total,
+            "projected_month": projected_month,
+            "days_in_month": days_in_month,
+            "days_elapsed": days_elapsed,
+            "days_remaining": days_remaining,
+            "busiest_day_cost": busiest_day_cost,
+        }
+    except Exception:
+        return {}
+
+
+def _fetch_error_data(time_range):
+    """Fetch error monitoring data."""
+    try:
+        conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+
+        where = _time_filter_sql(time_range, "WHERE")
+        and_clause = _time_filter_sql(time_range, "AND")
+
+        # Total error count and rate for current time range
+        c.execute(
+            f"SELECT COUNT(*) as total, "
+            f"SUM(CASE WHEN error_message IS NOT NULL AND error_message != '' THEN 1 ELSE 0 END) as errors "
+            f"FROM requests{where}"
+        )
+        row = c.fetchone()
+        total_requests = row["total"] or 0
+        total_errors = row["errors"] or 0
+        error_rate = (100.0 * total_errors / total_requests) if total_requests > 0 else 0.0
+
+        # Wasted cost on errors
+        c.execute(
+            f"SELECT COALESCE(SUM(cost_usd), 0) as wasted "
+            f"FROM requests WHERE error_message IS NOT NULL AND error_message != ''{and_clause}"
+        )
+        wasted_cost = c.fetchone()["wasted"] or 0.0
+
+        # Error rate by model (last 7 days)
+        c.execute(
+            "SELECT model, provider, "
+            "COUNT(*) as total, "
+            "SUM(CASE WHEN error_message IS NOT NULL AND error_message != '' THEN 1 ELSE 0 END) as errors, "
+            "ROUND(100.0 * SUM(CASE WHEN error_message IS NOT NULL AND error_message != '' THEN 1 ELSE 0 END) / COUNT(*), 1) as error_rate "
+            "FROM requests "
+            "WHERE timestamp >= datetime('now', '-7 days') "
+            "GROUP BY model, provider "
+            "HAVING errors > 0 "
+            "ORDER BY error_rate DESC"
+        )
+        error_by_model = [dict(r) for r in c.fetchall()]
+
+        # Error timeline (errors per hour, last 24 hours)
+        c.execute(
+            "SELECT strftime('%Y-%m-%d %H:00', timestamp) as hour, COUNT(*) as cnt "
+            "FROM requests "
+            "WHERE error_message IS NOT NULL AND error_message != '' "
+            "AND timestamp >= datetime('now', '-24 hours') "
+            "GROUP BY hour ORDER BY hour"
+        )
+        error_timeline = [dict(r) for r in c.fetchall()]
+
+        # Recent errors (last 10)
+        c.execute(
+            "SELECT timestamp, provider, model, error_message, input_tokens, cost_usd "
+            "FROM requests "
+            "WHERE error_message IS NOT NULL AND error_message != '' "
+            "ORDER BY timestamp DESC LIMIT 10"
+        )
+        recent_errors = [dict(r) for r in c.fetchall()]
+
+        # Worst model by error rate (for insights)
+        worst_model = None
+        worst_model_rate = 0.0
+        if error_by_model:
+            worst_model = error_by_model[0].get("model", "unknown")
+            worst_model_rate = error_by_model[0].get("error_rate", 0.0)
+
+        conn.close()
+        return {
+            "total_requests": total_requests,
+            "total_errors": total_errors,
+            "error_rate": error_rate,
+            "wasted_cost": wasted_cost,
+            "error_by_model": error_by_model,
+            "error_timeline": error_timeline,
+            "recent_errors": recent_errors,
+            "worst_model": worst_model,
+            "worst_model_rate": worst_model_rate,
+        }
+    except Exception:
+        return {
+            "total_requests": 0, "total_errors": 0, "error_rate": 0.0,
+            "wasted_cost": 0.0, "error_by_model": [], "error_timeline": [],
+            "recent_errors": [], "worst_model": None, "worst_model_rate": 0.0,
+        }
+
+
 def _fetch_optimizer_data():
     """Fetch raw data needed for optimization recommendations."""
     try:
@@ -1478,6 +1691,247 @@ def _build_project_section(projects):
 </div>"""
 
 
+def _build_forecast_section(forecast, budgets):
+    """Build the spending forecast section."""
+    if not forecast or forecast.get("daily_avg", 0) == 0:
+        return f"""<div class="forecast-section">
+  <div class="section-title">Spending Forecast</div>
+  <div style="color:#6e7681;font-size:13px;padding:12px 0">Not enough data yet — need at least one day of API spend to project.</div>
+</div>"""
+
+    daily_avg = forecast["daily_avg"]
+    month_to_date = forecast["month_to_date"]
+    projected_month = forecast["projected_month"]
+    last_month_total = forecast["last_month_total"]
+    days_in_month = forecast["days_in_month"]
+    days_remaining = forecast["days_remaining"]
+    busiest_day_cost = forecast["busiest_day_cost"]
+
+    # Trend indicator
+    if last_month_total > 0:
+        if projected_month > last_month_total:
+            pct_diff = ((projected_month - last_month_total) / last_month_total) * 100
+            trend_html = f'<span class="forecast-trend over">&#8593; {pct_diff:.0f}% vs last month ({fmt_cost(last_month_total)})</span>'
+        elif projected_month < last_month_total:
+            pct_diff = ((last_month_total - projected_month) / last_month_total) * 100
+            trend_html = f'<span class="forecast-trend under">&#8595; {pct_diff:.0f}% vs last month ({fmt_cost(last_month_total)})</span>'
+        else:
+            trend_html = '<span class="forecast-trend neutral">&#8212; same as last month</span>'
+    else:
+        trend_html = '<span class="forecast-trend neutral">No last month data for comparison</span>'
+
+    # Budget projection
+    budget_html = ""
+    if budgets:
+        for b in budgets:
+            if b.get("period") == "monthly" and not b.get("is_over"):
+                threshold = b.get("threshold_usd", 0)
+                current = b.get("current_spend", 0)
+                remaining_budget = threshold - current
+                if daily_avg > 0 and remaining_budget > 0:
+                    days_until_hit = remaining_budget / daily_avg
+                    if days_until_hit <= days_remaining:
+                        hit_date = datetime.now() + timedelta(days=days_until_hit)
+                        budget_html += (
+                            f'<div class="forecast-sub" style="color:#f59e0b;margin-top:8px">'
+                            f'&#9888; You\'ll hit your {fmt_cost(threshold)}/month budget by {hit_date.strftime("%b %d")}'
+                            f'</div>'
+                        )
+                    else:
+                        budget_html += (
+                            f'<div class="forecast-sub" style="color:#22c55e;margin-top:8px">'
+                            f'&#10003; On track to stay under {fmt_cost(threshold)}/month budget'
+                            f'</div>'
+                        )
+            elif b.get("period") == "monthly" and b.get("is_over"):
+                threshold = b.get("threshold_usd", 0)
+                budget_html += (
+                    f'<div class="forecast-sub" style="color:#f85149;margin-top:8px">'
+                    f'&#9888; Already over your {fmt_cost(threshold)}/month budget!'
+                    f'</div>'
+                )
+
+    # Busiest day projection
+    busiest_month_cost = busiest_day_cost * days_in_month
+
+    return f"""<div class="forecast-section">
+  <div class="section-title">Spending Forecast</div>
+  <div class="forecast-grid">
+    <div class="forecast-card">
+      <div class="forecast-label">Projected This Month</div>
+      <div class="forecast-value clr-amber">{fmt_cost(projected_month)}</div>
+      <div class="forecast-sub">Based on your 7-day average of {fmt_cost(daily_avg)}/day</div>
+      {trend_html}
+      {budget_html}
+    </div>
+    <div class="forecast-card">
+      <div class="forecast-label">Month to Date</div>
+      <div class="forecast-value clr-green">{fmt_cost(month_to_date)}</div>
+      <div class="forecast-sub">{forecast['days_elapsed']} days elapsed &middot; {days_remaining} remaining</div>
+    </div>
+    <div class="forecast-card">
+      <div class="forecast-label">Busiest Day Scenario</div>
+      <div class="forecast-value" style="color:#f87171">{fmt_cost(busiest_month_cost)}</div>
+      <div class="forecast-sub">If every day cost {fmt_cost(busiest_day_cost)} (your peak)</div>
+    </div>
+  </div>
+</div>"""
+
+
+def _build_error_section(error_data, time_range):
+    """Build the error monitor section."""
+    if not error_data:
+        return ""
+
+    total_errors = error_data.get("total_errors", 0)
+    total_requests = error_data.get("total_requests", 0)
+    error_rate = error_data.get("error_rate", 0.0)
+    wasted_cost = error_data.get("wasted_cost", 0.0)
+    error_by_model = error_data.get("error_by_model", [])
+    error_timeline = error_data.get("error_timeline", [])
+    recent_errors = error_data.get("recent_errors", [])
+
+    range_label = RANGE_LABELS.get(time_range, "today").lower()
+
+    # Summary bar
+    if total_errors == 0:
+        indicator_class = "green"
+        summary_text = '<strong>No errors detected &#10003;</strong>'
+    elif error_rate < 1:
+        indicator_class = "green"
+        summary_text = f'<strong>{total_errors}</strong> error{"s" if total_errors != 1 else ""} out of <strong>{total_requests:,}</strong> requests ({error_rate:.1f}%)'
+    elif error_rate < 5:
+        indicator_class = "yellow"
+        summary_text = f'<strong>{total_errors}</strong> errors out of <strong>{total_requests:,}</strong> requests ({error_rate:.1f}%)'
+    else:
+        indicator_class = "red"
+        summary_text = f'<strong>{total_errors}</strong> errors out of <strong>{total_requests:,}</strong> requests ({error_rate:.1f}%)'
+
+    summary_bar = f"""<div class="error-summary-bar">
+  <div class="error-indicator {indicator_class}"></div>
+  <div class="error-summary-text">{summary_text}</div>
+</div>"""
+
+    # If no errors at all, just show the summary bar
+    if total_errors == 0:
+        return f"""<div class="error-section">
+  <div class="section-title" style="margin-bottom:14px">Error Monitor</div>
+  {summary_bar}
+</div>"""
+
+    # Error rate by model
+    model_items = ""
+    for m in error_by_model[:8]:
+        model_name = _escape_html(m.get("model", "unknown"))
+        provider = m.get("provider", "unknown")
+        total = m.get("total", 0)
+        errors = m.get("errors", 0)
+        rate = m.get("error_rate", 0.0)
+
+        if rate > 5:
+            rate_class = "red"
+            item_class = "error-model-item high-error"
+        elif rate > 1:
+            rate_class = "yellow"
+            item_class = "error-model-item"
+        else:
+            rate_class = "green"
+            item_class = "error-model-item"
+
+        model_items += (
+            f'<div class="{item_class}">'
+            f'<div class="error-model-left">'
+            f'<span class="error-model-name" title="{model_name}">{model_name}</span>'
+            f'{provider_badge_html(provider)}'
+            f'</div>'
+            f'<div class="error-model-stats">'
+            f'<span>{total:,} reqs</span>'
+            f'<span>{errors} errors</span>'
+            f'<span class="error-rate-badge {rate_class}">{rate}%</span>'
+            f'</div>'
+            f'</div>'
+        )
+
+    model_section = ""
+    if model_items:
+        model_section = f"""<div style="margin-bottom:14px">
+  <div style="font-size:12px;font-weight:600;color:#f0f6fc;margin-bottom:8px">Error Rate by Model (7 days)</div>
+  <div class="error-models">{model_items}</div>
+</div>"""
+
+    # Error timeline (last 24 hours bar chart)
+    timeline_section = ""
+    if error_timeline:
+        now = datetime.now()
+        # Build all 24 hours
+        hours_map = {}
+        for et in error_timeline:
+            hours_map[et["hour"]] = et["cnt"]
+
+        max_cnt = max((et["cnt"] for et in error_timeline), default=1)
+        if max_cnt == 0:
+            max_cnt = 1
+
+        bars_html = ""
+        for i in range(24):
+            h = now - timedelta(hours=23 - i)
+            hour_key = h.strftime("%Y-%m-%d %H:00")
+            cnt = hours_map.get(hour_key, 0)
+            if cnt > 0:
+                height_pct = max(4, int((cnt / max_cnt) * 100))
+                tooltip = f"{h.strftime('%b %d, %H:00')} — {cnt} error{'s' if cnt != 1 else ''}"
+                bars_html += f'<div class="error-bar" style="height:{height_pct}%" title="{_escape_html(tooltip)}"></div>'
+            else:
+                bars_html += '<div class="error-bar-empty"></div>'
+
+        timeline_section = f"""<div class="error-timeline-wrap">
+  <div class="error-timeline-label">Error Timeline (last 24h)</div>
+  <div class="error-timeline-chart">{bars_html}</div>
+</div>"""
+
+    # Recent errors list
+    recent_section = ""
+    if recent_errors:
+        items_html = ""
+        for idx, err in enumerate(recent_errors):
+            ts = relative_time(err.get("timestamp", ""))
+            model = _escape_html(err.get("model", "unknown"))
+            provider = err.get("provider", "unknown")
+            msg = err.get("error_message", "")
+            cost = err.get("cost_usd", 0)
+            short_msg = _escape_html(msg[:100]) + ("..." if len(msg) > 100 else "")
+            full_msg = _escape_html(msg)
+            cost_html = f'<span class="error-recent-cost">{fmt_cost(cost)} wasted</span>' if cost > 0 else ""
+
+            items_html += (
+                f'<div class="error-recent-item" onclick="this.classList.toggle(\'expanded\')">'
+                f'<div class="error-recent-header">'
+                f'<div style="display:flex;align-items:center;gap:8px">'
+                f'<span class="error-recent-time">{ts}</span>'
+                f'<span class="error-recent-model">{model}</span>'
+                f'{provider_badge_html(provider)}'
+                f'</div>'
+                f'{cost_html}'
+                f'</div>'
+                f'<div class="error-recent-msg">{short_msg}</div>'
+                f'<div class="error-recent-full">{full_msg}</div>'
+                f'</div>'
+            )
+
+        recent_section = f"""<div>
+  <div style="font-size:12px;font-weight:600;color:#f0f6fc;margin-bottom:8px">Recent Errors</div>
+  <div class="error-recent-list">{items_html}</div>
+</div>"""
+
+    return f"""<div class="error-section">
+  <div class="section-title" style="margin-bottom:14px">Error Monitor</div>
+  {summary_bar}
+  {model_section}
+  {timeline_section}
+  {recent_section}
+</div>"""
+
+
 def _build_stats_cards(data):
     trend = data.get("trend", {})
     sparklines = data.get("sparklines", {})
@@ -1839,12 +2293,60 @@ def _build_heatmap(data):
 </div>"""
 
 
-def _build_insights(data):
+def _build_insights(data, forecast=None, error_data=None):
     """Build auto-generated insights panel."""
     ir = data.get("insights_raw", {})
     time_range = data.get("time_range", "today")
+    range_label = RANGE_LABELS.get(time_range, "today").lower()
 
     cards = []
+
+    # Forecast insights
+    if forecast and forecast.get("daily_avg", 0) > 0:
+        projected = forecast["projected_month"]
+        last_month = forecast["last_month_total"]
+        if last_month > 0:
+            cards.append(
+                ('<span class="insight-emoji">&#128200;</span>',
+                 "Monthly Projection",
+                 f"At current rates, you'll spend {fmt_cost(projected)} this month (vs {fmt_cost(last_month)} last month)")
+            )
+        else:
+            cards.append(
+                ('<span class="insight-emoji">&#128200;</span>',
+                 "Monthly Projection",
+                 f"At current rates, you'll spend {fmt_cost(projected)} this month")
+            )
+
+        busiest = forecast.get("busiest_day_cost", 0)
+        if busiest > 0:
+            busiest_monthly = busiest * forecast.get("days_in_month", 30)
+            cards.append(
+                ('<span class="insight-emoji">&#128293;</span>',
+                 "Peak Day Impact",
+                 f"Your busiest day cost {fmt_cost(busiest)} — if every day was like that, monthly cost would be {fmt_cost(busiest_monthly)}")
+            )
+
+    # Error insights
+    if error_data and error_data.get("total_errors", 0) > 0:
+        err_total = error_data["total_errors"]
+        err_rate = error_data["error_rate"]
+        wasted = error_data["wasted_cost"]
+        if wasted > 0:
+            cards.append(
+                ('<span class="insight-emoji">&#9888;</span>',
+                 "Error Waste",
+                 f"{err_rate:.1f}% of requests failed {range_label} — costing {fmt_cost(wasted)} in wasted tokens")
+            )
+
+        worst = error_data.get("worst_model")
+        worst_rate = error_data.get("worst_model_rate", 0)
+        if worst and worst_rate > 2:
+            cards.append(
+                ('<span class="insight-emoji">&#128308;</span>',
+                 "Model Alert",
+                 f"{_escape_html(worst)} has a {worst_rate:.1f}% error rate — check your configuration")
+            )
 
     if ir.get("busiest_hour"):
         cards.append(
@@ -2402,7 +2904,6 @@ def build_page(time_range, page=1):
     spend_chart = _build_svg_spend_chart(data)
     model_breakdown = _build_model_breakdown(data)
     heatmap_html = _build_heatmap(data)
-    insights_html = _build_insights(data)
     requests_table = _build_requests_table(data, time_range=time_range, page=page)
 
     # Paid feature sections
@@ -2410,17 +2911,30 @@ def build_page(time_range, page=1):
     all_budgets = _fetch_all_budgets()
     budget_html = _build_budget_section(budgets_status, all_budgets)
 
+    # Spending forecast
+    forecast = _fetch_forecast_data()
+    forecast_html = _build_forecast_section(forecast, budgets_status)
+
+    # Error monitoring
+    error_data = _fetch_error_data(time_range)
+    error_html = _build_error_section(error_data, time_range)
+
     opt_data = _fetch_optimizer_data()
     optimizer_html = _build_optimizer_section(opt_data)
 
     projects = _fetch_project_breakdown()
     project_html = _build_project_section(projects)
 
+    # Insights (now with forecast and error data)
+    insights_html = _build_insights(data, forecast=forecast, error_data=error_data)
+
     body = f"""{activity_section}
 
 {stats_html}
 
   {budget_html}
+
+  {forecast_html}
 
   {optimizer_html}
 
@@ -2437,6 +2951,9 @@ def build_page(time_range, page=1):
       {model_breakdown}
     </div>
   </div>
+
+  <!-- Error Monitor -->
+  {error_html}
 
   <!-- Heatmap + Insights side by side -->
   <div class="charts-row">
