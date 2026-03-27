@@ -1,46 +1,34 @@
-# Logs
-logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
-
-node_modules
-dist
-dist-ssr
-*.local
-
-# Editor directories and files
-.vscode/*
-!.vscode/extensions.json
-.idea
-.DS_Store
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
-
-# Rust / Tauri build output
+# Build artifacts
 target/
-src-tauri/target/
+dist/
+build/
 
-# macOS app bundles and installers
-*.dmg
-*.app
-*.pkg
+# Node (removed but just in case)
+node_modules/
 
-# Windows installers
-*.exe
-*.msi
-*.nsis
+# Python
+__pycache__/
+*.pyc
+*.pyo
 
-# Linux packages
-*.AppImage
-*.deb
-*.rpm
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
 
-# Tauri generated files (regenerated on build)
-src-tauri/gen/schemas/
+# OS
+.DS_Store
+Thumbs.db
+
+# Database (user data, don't commit)
+*.db
+*.db-journal
+*.db-wal
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.local
