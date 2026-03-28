@@ -281,6 +281,26 @@ async fn proxy_handler(
     let path = parts.uri.path().to_string();
     let query = parts.uri.query().map(|q| format!("?{}", q)).unwrap_or_default();
 
+    // Health check endpoint — don't forward bare GET / or /health to upstream
+    if (path == "/" || path == "/health") && parts.method == Method::GET {
+        let count: i64 = if let Ok(conn) = state.db.lock() {
+            conn.query_row("SELECT COUNT(*) FROM requests", [], |row| row.get(0)).unwrap_or(0)
+        } else {
+            -1
+        };
+        let body = serde_json::json!({
+            "status": "ok",
+            "service": "tokenpulse-proxy",
+            "port": 4100,
+            "total_requests_tracked": count,
+        });
+        return Ok(Response::builder()
+            .status(200)
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap());
+    }
+
     let provider = detect_provider(&parts.headers, &path);
     let forward_path = build_forward_path(&provider, &path);
     let target_url = format!("{}{}{}", provider.base_url, forward_path, query);

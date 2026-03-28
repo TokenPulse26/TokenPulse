@@ -3123,9 +3123,41 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    import socket
+    import time
+
+    PORT = 4200
+    MAX_RETRIES = 5
+
     HTTPServer.allow_reuse_address = True
-    server = HTTPServer(("0.0.0.0", 4200), DashboardHandler)
-    print(f"TokenPulse Web Dashboard v{VERSION}")
-    print(f"  -> http://0.0.0.0:4200")
-    print(f"  -> Database: {DB_PATH}")
+
+    # Use dual-stack IPv6 socket so both IPv4 and IPv6 work
+    import http.server
+
+    class DualStackHTTPServer(HTTPServer):
+        address_family = socket.AF_INET6
+        allow_reuse_address = True
+
+        def server_bind(self):
+            # Allow IPv4 connections on the IPv6 socket (dual-stack)
+            self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            super().server_bind()
+
+    for attempt in range(MAX_RETRIES):
+        try:
+            server = DualStackHTTPServer(("::", PORT), DashboardHandler)
+            break
+        except OSError as e:
+            if attempt < MAX_RETRIES - 1:
+                print(f"Port {PORT} busy, retrying in 2s (attempt {attempt + 1}/{MAX_RETRIES})...",
+                      flush=True)
+                time.sleep(2)
+            else:
+                print(f"FATAL: Could not bind to port {PORT} after {MAX_RETRIES} attempts: {e}",
+                      flush=True)
+                raise
+    print(f"TokenPulse Web Dashboard v{VERSION}", flush=True)
+    print(f"  -> http://0.0.0.0:{PORT}", flush=True)
+    print(f"  -> Database: {DB_PATH}", flush=True)
     server.serve_forever()
