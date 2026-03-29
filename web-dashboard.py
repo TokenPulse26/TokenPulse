@@ -122,6 +122,8 @@ a{color:inherit;text-decoration:none}
 .range-btn{padding:6px 18px;border-radius:8px;font-size:13px;font-weight:500;background:#1a1d27;border:1px solid #2a2d3a;color:#8b949e;cursor:pointer;transition:all .15s ease}
 .range-btn:hover{border-color:#3d4250;color:#e6edf3}
 .range-btn.active{background:#22c55e;border-color:#22c55e;color:#0f1117;font-weight:600}
+.export-btn{padding:6px 14px;border-radius:8px;font-size:11px;font-weight:500;background:transparent;border:1px solid #3d4250;color:#8b949e;cursor:pointer;transition:all .15s ease;text-decoration:none;display:inline-flex;align-items:center;gap:5px}
+.export-btn:hover{border-color:#58a6ff;color:#c9d1d9}
 
 /* Activity feed */
 .activity-section{background:#1a1d27;border:1px solid #2a2d3a;border-radius:14px;padding:18px 24px;margin-bottom:20px}
@@ -931,6 +933,7 @@ def _build_range_buttons(active):
     for key, label in RANGE_LABELS.items():
         cls = "range-btn active" if key == active else "range-btn"
         parts.append(f'<a href="?range={key}" class="{cls}">{label}</a>')
+    parts.append(f'<a href="/export/csv?range={active}" class="export-btn" title="Export CSV">&#128229; CSV</a>')
     return "\n      ".join(parts)
 
 
@@ -3050,6 +3053,59 @@ def _api_delete_budget(budget_id):
         return {"ok": False, "error": str(e)}
 
 
+def _export_csv(time_range):
+    """Generate CSV content for all requests in the given time range."""
+    import csv
+    import io
+
+    conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+
+    where = _time_filter_sql(time_range, "WHERE")
+
+    try:
+        c.execute(
+            f"SELECT timestamp, provider, model, input_tokens, output_tokens, "
+            f"COALESCE(cached_tokens, 0) as cached_tokens, "
+            f"COALESCE(reasoning_tokens, 0) as reasoning_tokens, "
+            f"cost_usd, latency_ms, "
+            f"COALESCE(tokens_per_second, 0) as tokens_per_second, "
+            f"COALESCE(time_to_first_token_ms, 0) as time_to_first_token_ms, "
+            f"is_streaming, "
+            f"COALESCE(source_tag, '') as source_tag, "
+            f"COALESCE(provider_type, 'api') as provider_type, "
+            f"COALESCE(error_message, '') as error_message "
+            f"FROM requests{where} ORDER BY timestamp DESC"
+        )
+        rows = c.fetchall()
+    except Exception:
+        rows = []
+
+    conn.close()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "timestamp", "provider", "model", "input_tokens", "output_tokens",
+        "cached_tokens", "reasoning_tokens", "cost_usd", "latency_ms",
+        "tokens_per_second", "time_to_first_token_ms", "is_streaming",
+        "source_tag", "provider_type", "error_message",
+    ])
+    for r in rows:
+        writer.writerow([
+            r["timestamp"], r["provider"], r["model"],
+            r["input_tokens"], r["output_tokens"],
+            r["cached_tokens"], r["reasoning_tokens"],
+            f"{r['cost_usd']:.6f}", r["latency_ms"],
+            f"{r['tokens_per_second']:.1f}", r["time_to_first_token_ms"],
+            bool(r["is_streaming"]),
+            r["source_tag"], r["provider_type"], r["error_message"],
+        ])
+
+    return output.getvalue()
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -3058,6 +3114,35 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # API endpoint: GET /api/budgets
         if path == "/api/budgets":
             _json_response(self, 200, _api_get_budgets())
+            return
+
+        # CSV export endpoint
+        if path == "/export/csv":
+            params = parse_qs(parsed.query)
+            time_range = params.get("range", ["all"])[0]
+            if time_range not in RANGE_LABELS:
+                time_range = "all"
+
+            try:
+                csv_content = _export_csv(time_range)
+                csv_bytes = csv_content.encode("utf-8")
+                date_str = datetime.now().strftime("%Y-%m-%d")
+                filename = f"tokenpulse-export-{time_range}-{date_str}.csv"
+
+                self.send_response(200)
+                self.send_header("Content-Type", "text/csv")
+                self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+                self.send_header("Content-Length", str(len(csv_bytes)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(csv_bytes)
+            except Exception as e:
+                error_body = json.dumps({"ok": False, "error": str(e)}).encode("utf-8")
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(error_body)))
+                self.end_headers()
+                self.wfile.write(error_body)
             return
 
         params = parse_qs(parsed.query)

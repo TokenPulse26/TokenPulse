@@ -9,14 +9,18 @@ use bytes::Bytes;
 use chrono::Utc;
 use futures::StreamExt;
 use http::{HeaderMap, Method, StatusCode};
+use once_cell::sync::Lazy;
 use reqwest::Client;
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tower_http::cors::{Any, CorsLayer};
 
-use crate::db::{insert_request, RequestRecord};
+use crate::db::{self, insert_request, RequestRecord};
 use crate::pricing::calculate_cost_with_db;
+
+/// Process start time for uptime calculation.
+static PROCESS_START: Lazy<std::time::Instant> = Lazy::new(std::time::Instant::now);
 
 #[derive(Clone)]
 pub struct AppState {
@@ -281,23 +285,189 @@ async fn proxy_handler(
     let path = parts.uri.path().to_string();
     let query = parts.uri.query().map(|q| format!("?{}", q)).unwrap_or_default();
 
-    // Health check endpoint — don't forward bare GET / or /health to upstream
+    // ── Health check endpoint ─────────────────────────────────────────
     if (path == "/" || path == "/health") && parts.method == Method::GET {
         let count: i64 = if let Ok(conn) = state.db.lock() {
             conn.query_row("SELECT COUNT(*) FROM requests", [], |row| row.get(0)).unwrap_or(0)
         } else {
             -1
         };
+        let uptime_secs = PROCESS_START.elapsed().as_secs();
         let body = serde_json::json!({
             "status": "ok",
             "service": "tokenpulse-proxy",
+            "version": "0.2.0",
             "port": 4100,
+            "uptime_seconds": uptime_secs,
+            "proxy_paused": state.proxy_paused.load(Ordering::SeqCst),
             "total_requests_tracked": count,
+            "dashboard_url": "http://localhost:4200",
         });
         return Ok(Response::builder()
             .status(200)
             .header("content-type", "application/json")
             .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap());
+    }
+
+    // ── /api/stats endpoint ───────────────────────────────────────────
+    if path == "/api/stats" && parts.method == Method::GET {
+        let range = parts.uri.query()
+            .and_then(|q| {
+                url::form_urlencoded::parse(q.as_bytes())
+                    .find(|(k, _)| k == "range")
+                    .map(|(_, v)| v.to_string())
+            })
+            .unwrap_or_else(|| "all".to_string());
+        let range_str = match range.as_str() {
+            "today" | "7d" | "30d" | "all" => range.as_str(),
+            _ => "all",
+        };
+
+        let result = if let Ok(conn) = state.db.lock() {
+            let summary = db::get_summary_stats(&conn, range_str).ok();
+            let cost_summary = db::get_cost_summary(&conn, range_str).ok();
+            let models = db::get_model_breakdown_for_range(&conn, range_str).ok();
+
+            // Project breakdown
+            let time_cond = match range_str {
+                "today" => "WHERE timestamp >= datetime('now', 'start of day')",
+                "7d" => "WHERE timestamp >= datetime('now', '-7 days')",
+                "30d" => "WHERE timestamp >= datetime('now', '-30 days')",
+                _ => "",
+            };
+            let projects: Vec<serde_json::Value> = {
+                let query = if time_cond.is_empty() {
+                    "SELECT COALESCE(source_tag,'unknown') as tag, COUNT(*) as cnt, \
+                     COALESCE(SUM(cost_usd),0) as cost \
+                     FROM requests GROUP BY tag ORDER BY cost DESC".to_string()
+                } else {
+                    format!(
+                        "SELECT COALESCE(source_tag,'unknown') as tag, COUNT(*) as cnt, \
+                         COALESCE(SUM(cost_usd),0) as cost \
+                         FROM requests {} GROUP BY tag ORDER BY cost DESC",
+                        time_cond
+                    )
+                };
+                let mut stmt = conn.prepare(&query).ok();
+                if let Some(ref mut s) = stmt {
+                    s.query_map([], |row| {
+                        Ok(serde_json::json!({
+                            "tag": row.get::<_, String>(0).unwrap_or_default(),
+                            "requests": row.get::<_, i64>(1).unwrap_or(0),
+                            "cost_usd": row.get::<_, f64>(2).unwrap_or(0.0),
+                        }))
+                    }).ok()
+                    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                    .unwrap_or_default()
+                } else {
+                    Vec::new()
+                }
+            };
+
+            let s = summary.unwrap_or(db::DashboardSummary {
+                total_cost: 0.0, total_requests: 0, total_input_tokens: 0, total_output_tokens: 0,
+            });
+            let cs = cost_summary.unwrap_or(db::CostSummary {
+                total_api_cost: 0.0, total_subscription_tokens: 0, total_local_tokens: 0,
+            });
+
+            let model_arr: Vec<serde_json::Value> = models.unwrap_or_default().iter().map(|m| {
+                let ptype = if m.provider == "cliproxy" {
+                    "subscription"
+                } else if m.provider == "ollama" || m.provider == "lmstudio" {
+                    "local"
+                } else {
+                    "api"
+                };
+                serde_json::json!({
+                    "model": m.model,
+                    "provider": m.provider,
+                    "requests": m.total_requests,
+                    "tokens": m.total_tokens,
+                    "cost_usd": m.total_cost,
+                    "type": ptype,
+                })
+            }).collect();
+
+            serde_json::json!({
+                "status": "ok",
+                "range": range_str,
+                "total_requests": s.total_requests,
+                "total_input_tokens": s.total_input_tokens,
+                "total_output_tokens": s.total_output_tokens,
+                "api_cost_usd": cs.total_api_cost,
+                "subscription_tokens": cs.total_subscription_tokens,
+                "local_tokens": cs.total_local_tokens,
+                "models": model_arr,
+                "projects": projects,
+            })
+        } else {
+            serde_json::json!({"status": "error", "message": "database lock failed"})
+        };
+
+        return Ok(Response::builder()
+            .status(200)
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&result).unwrap()))
+            .unwrap());
+    }
+
+    // ── /api/requests endpoint ────────────────────────────────────────
+    if path == "/api/requests" && parts.method == Method::GET {
+        let params: std::collections::HashMap<String, String> = parts.uri.query()
+            .map(|q| url::form_urlencoded::parse(q.as_bytes())
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect())
+            .unwrap_or_default();
+
+        let limit: u32 = params.get("limit").and_then(|v| v.parse().ok()).unwrap_or(50).min(500);
+        let range = params.get("range").map(|s| s.as_str()).unwrap_or("all");
+        let range_str = match range {
+            "today" | "7d" | "30d" | "all" => range,
+            _ => "all",
+        };
+
+        let result = if let Ok(conn) = state.db.lock() {
+            match db::get_requests_for_range(&conn, limit, range_str) {
+                Ok(records) => serde_json::json!({
+                    "status": "ok",
+                    "range": range_str,
+                    "limit": limit,
+                    "count": records.len(),
+                    "requests": records,
+                }),
+                Err(e) => serde_json::json!({"status": "error", "message": e.to_string()}),
+            }
+        } else {
+            serde_json::json!({"status": "error", "message": "database lock failed"})
+        };
+
+        return Ok(Response::builder()
+            .status(200)
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&result).unwrap()))
+            .unwrap());
+    }
+
+    // ── /api/budgets endpoint ─────────────────────────────────────────
+    if path == "/api/budgets" && parts.method == Method::GET {
+        let result = if let Ok(conn) = state.db.lock() {
+            match db::check_budgets(&conn) {
+                Ok(statuses) => serde_json::json!({
+                    "status": "ok",
+                    "budgets": statuses,
+                }),
+                Err(e) => serde_json::json!({"status": "error", "message": e.to_string()}),
+            }
+        } else {
+            serde_json::json!({"status": "error", "message": "database lock failed"})
+        };
+
+        return Ok(Response::builder()
+            .status(200)
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&result).unwrap()))
             .unwrap());
     }
 
