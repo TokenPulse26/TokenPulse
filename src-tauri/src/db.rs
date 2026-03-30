@@ -162,6 +162,7 @@ pub fn init_db(path: &str) -> Result<Connection> {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             budget_id INTEGER NOT NULL,
             triggered_at TEXT NOT NULL DEFAULT (datetime('now')),
+            resolved_at TEXT,
             current_spend REAL NOT NULL,
             threshold_usd REAL NOT NULL,
             FOREIGN KEY (budget_id) REFERENCES budgets(id)
@@ -173,6 +174,7 @@ pub fn init_db(path: &str) -> Result<Connection> {
     let _ = conn.execute("ALTER TABLE requests ADD COLUMN provider_type TEXT NOT NULL DEFAULT 'api'", []);
     let _ = conn.execute("ALTER TABLE budgets ADD COLUMN scope_kind TEXT NOT NULL DEFAULT 'global'", []);
     let _ = conn.execute("ALTER TABLE budgets ADD COLUMN scope_value TEXT", []);
+    let _ = conn.execute("ALTER TABLE budget_alerts ADD COLUMN resolved_at TEXT", []);
 
     migrate_pricing_table(&conn)?;
 
@@ -577,6 +579,8 @@ pub struct BudgetStatus {
     pub current_spend: f64,
     pub percentage: f64,
     pub is_over: bool,
+    pub alert_active: bool,
+    pub last_alert_triggered_at: Option<String>,
 }
 
 // ─── Budget functions ─────────────────────────────────────────────────────────
@@ -715,11 +719,37 @@ pub fn get_budgets(conn: &Connection) -> Result<Vec<Budget>> {
     Ok(records)
 }
 
-pub fn update_budget(conn: &Connection, id: i64, enabled: bool) -> Result<()> {
+pub fn update_budget(
+    conn: &Connection,
+    id: i64,
+    name: &str,
+    period: &str,
+    threshold: f64,
+    provider_filter: Option<&str>,
+    scope_kind: Option<&str>,
+    scope_value: Option<&str>,
+    enabled: bool,
+) -> Result<()> {
+    let (scope_kind, scope_value) = normalize_budget_scope(scope_kind, scope_value)?;
+    conn.execute(
+        "UPDATE budgets
+         SET name = ?1, period = ?2, threshold_usd = ?3, provider_filter = ?4,
+             scope_kind = ?5, scope_value = ?6, enabled = ?7
+         WHERE id = ?8",
+        params![name, period, threshold, provider_filter, scope_kind, scope_value, enabled as i64, id],
+    )?;
+    resolve_budget_alerts(conn, id)?;
+    Ok(())
+}
+
+pub fn set_budget_enabled(conn: &Connection, id: i64, enabled: bool) -> Result<()> {
     conn.execute(
         "UPDATE budgets SET enabled = ?1 WHERE id = ?2",
         params![enabled as i64, id],
     )?;
+    if !enabled {
+        resolve_budget_alerts(conn, id)?;
+    }
     Ok(())
 }
 
@@ -729,44 +759,96 @@ pub fn delete_budget(conn: &Connection, id: i64) -> Result<()> {
     Ok(())
 }
 
+fn get_active_alert_metadata(conn: &Connection, budget_id: i64) -> Result<(bool, Option<String>)> {
+    let mut stmt = conn.prepare(
+        "SELECT triggered_at
+         FROM budget_alerts
+         WHERE budget_id = ?1 AND resolved_at IS NULL
+         ORDER BY triggered_at DESC
+         LIMIT 1",
+    )?;
+    let mut rows = stmt.query(params![budget_id])?;
+    if let Some(row) = rows.next()? {
+        Ok((true, Some(row.get(0)?)))
+    } else {
+        Ok((false, None))
+    }
+}
+
+fn build_budget_status(conn: &Connection, budget: &Budget) -> Result<BudgetStatus> {
+    let current_spend = budget_current_spend(conn, budget)?;
+    let percentage = if budget.threshold_usd > 0.0 {
+        (current_spend / budget.threshold_usd) * 100.0
+    } else {
+        0.0
+    };
+    let (alert_active, last_alert_triggered_at) = get_active_alert_metadata(conn, budget.id)?;
+
+    Ok(BudgetStatus {
+        id: budget.id,
+        name: budget.name.clone(),
+        period: budget.period.clone(),
+        threshold_usd: budget.threshold_usd,
+        provider_filter: budget.provider_filter.clone(),
+        scope_kind: budget.scope_kind.clone(),
+        scope_value: budget.scope_value.clone(),
+        enabled: budget.enabled,
+        current_spend,
+        percentage,
+        is_over: current_spend >= budget.threshold_usd,
+        alert_active,
+        last_alert_triggered_at,
+    })
+}
+
 pub fn check_budgets(conn: &Connection) -> Result<Vec<BudgetStatus>> {
     let budgets = get_budgets(conn)?;
-    let mut statuses = Vec::new();
+    budgets
+        .iter()
+        .filter(|b| b.enabled)
+        .map(|budget| build_budget_status(conn, budget))
+        .collect()
+}
 
-    for budget in budgets.iter().filter(|b| b.enabled) {
-        let current_spend = budget_current_spend(conn, budget)?;
-
-        let percentage = if budget.threshold_usd > 0.0 {
-            (current_spend / budget.threshold_usd) * 100.0
-        } else {
-            0.0
-        };
-
-        statuses.push(BudgetStatus {
-            id: budget.id,
-            name: budget.name.clone(),
-            period: budget.period.clone(),
-            threshold_usd: budget.threshold_usd,
-            provider_filter: budget.provider_filter.clone(),
-            scope_kind: budget.scope_kind.clone(),
-            scope_value: budget.scope_value.clone(),
-            enabled: budget.enabled,
-            current_spend,
-            percentage,
-            is_over: current_spend >= budget.threshold_usd,
-        });
-    }
-
-    Ok(statuses)
+pub fn resolve_budget_alerts(conn: &Connection, budget_id: i64) -> Result<usize> {
+    conn.execute(
+        "UPDATE budget_alerts
+         SET resolved_at = datetime('now')
+         WHERE budget_id = ?1 AND resolved_at IS NULL",
+        params![budget_id],
+    )
 }
 
 pub fn record_alert(conn: &Connection, budget_id: i64, current_spend: f64, threshold: f64) -> Result<()> {
     conn.execute(
-        "INSERT INTO budget_alerts (budget_id, triggered_at, current_spend, threshold_usd)
-         VALUES (?1, datetime('now'), ?2, ?3)",
+        "INSERT INTO budget_alerts (budget_id, triggered_at, current_spend, threshold_usd, resolved_at)
+         VALUES (?1, datetime('now'), ?2, ?3, NULL)",
         params![budget_id, current_spend, threshold],
     )?;
     Ok(())
+}
+
+pub fn sync_budget_alerts(conn: &Connection) -> Result<Vec<BudgetStatus>> {
+    let budgets = get_budgets(conn)?;
+    let mut newly_triggered = Vec::new();
+
+    for budget in budgets {
+        let status = build_budget_status(conn, &budget)?;
+        if !budget.enabled || !status.is_over {
+            resolve_budget_alerts(conn, budget.id)?;
+            continue;
+        }
+
+        if !status.alert_active {
+            record_alert(conn, budget.id, status.current_spend, status.threshold_usd)?;
+            let mut triggered = status.clone();
+            triggered.alert_active = true;
+            triggered.last_alert_triggered_at = Some(chrono::Utc::now().naive_utc().format("%Y-%m-%d %H:%M:%S").to_string());
+            newly_triggered.push(triggered);
+        }
+    }
+
+    Ok(newly_triggered)
 }
 
 pub fn count_pricing(conn: &Connection) -> Result<u32> {
@@ -1050,6 +1132,87 @@ mod tests {
         assert_eq!(snapshot.summary.failed_requests, 2);
         assert!(snapshot.anomalies.iter().any(|a| a.kind == "latency_spike"));
         assert!(snapshot.anomalies.iter().any(|a| a.kind == "error_spike"));
+
+        drop(conn);
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn budget_editing_and_alert_lifecycle_reset_cleanly() {
+        let db_path = std::env::temp_dir().join(format!(
+            "tokenpulse-budget-alert-test-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let conn = init_db(db_path.to_str().unwrap()).unwrap();
+
+        conn.execute(
+            "INSERT INTO requests (timestamp, provider, model, input_tokens, output_tokens, cached_tokens, reasoning_tokens, cost_usd, latency_ms, tokens_per_second, time_to_first_token_ms, is_streaming, is_complete, source_tag, error_message, provider_type)
+             VALUES (datetime('now', '-1 hour'), 'openai', 'gpt-4o', 100, 50, 0, 0, 6.00, 800, 0.0, 0, 0, 1, 'project-a', NULL, 'api')",
+            [],
+        ).unwrap();
+
+        let budget_id = create_budget(
+            &conn,
+            "Project A",
+            "monthly",
+            5.0,
+            Some("openai"),
+            Some("source_tag"),
+            Some("project-a"),
+        ).unwrap();
+
+        let triggered = sync_budget_alerts(&conn).unwrap();
+        assert_eq!(triggered.len(), 1);
+        assert_eq!(triggered[0].id, budget_id);
+        assert!(triggered[0].alert_active);
+
+        let statuses = check_budgets(&conn).unwrap();
+        assert_eq!(statuses.len(), 1);
+        assert!(statuses[0].alert_active);
+        assert!(statuses[0].is_over);
+
+        update_budget(
+            &conn,
+            budget_id,
+            "Project A relaxed",
+            "monthly",
+            10.0,
+            Some("openai"),
+            Some("source_tag"),
+            Some("project-a"),
+            true,
+        ).unwrap();
+
+        let statuses = check_budgets(&conn).unwrap();
+        assert_eq!(statuses[0].name, "Project A relaxed");
+        assert!(!statuses[0].is_over);
+        assert!(!statuses[0].alert_active);
+
+        update_budget(
+            &conn,
+            budget_id,
+            "All Anthropic",
+            "monthly",
+            1.0,
+            Some("anthropic"),
+            Some("global"),
+            None,
+            true,
+        ).unwrap();
+
+        let statuses = check_budgets(&conn).unwrap();
+        assert_eq!(statuses[0].provider_filter.as_deref(), Some("anthropic"));
+        assert_eq!(statuses[0].scope_kind, "global");
+        assert_eq!(statuses[0].scope_value, None);
+        assert_eq!(statuses[0].current_spend, 0.0);
+
+        set_budget_enabled(&conn, budget_id, false).unwrap();
+        let statuses = check_budgets(&conn).unwrap();
+        assert!(statuses.is_empty());
 
         drop(conn);
         let _ = std::fs::remove_file(db_path);

@@ -371,9 +371,36 @@ fn get_budgets(state: State<DbState>) -> Result<Vec<Budget>, String> {
 }
 
 #[tauri::command]
-fn update_budget(state: State<DbState>, id: i64, enabled: bool) -> Result<(), String> {
+fn update_budget(
+    state: State<DbState>,
+    id: i64,
+    name: String,
+    period: String,
+    threshold_usd: f64,
+    provider_filter: Option<String>,
+    scope_kind: Option<String>,
+    scope_value: Option<String>,
+    enabled: bool,
+) -> Result<(), String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::update_budget(&conn, id, enabled).map_err(|e| e.to_string())
+    db::update_budget(
+        &conn,
+        id,
+        &name,
+        &period,
+        threshold_usd,
+        provider_filter.as_deref(),
+        scope_kind.as_deref(),
+        scope_value.as_deref(),
+        enabled,
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_budget_enabled(state: State<DbState>, id: i64, enabled: bool) -> Result<(), String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::set_budget_enabled(&conn, id, enabled).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -472,6 +499,7 @@ pub fn run() {
             create_budget,
             get_budgets,
             update_budget,
+            set_budget_enabled,
             delete_budget,
             check_budgets,
         ])
@@ -536,7 +564,6 @@ fn setup_tray(
     let app_handle_for_tray = app.handle().clone();
     tauri::async_runtime::spawn(async move {
         use tauri_plugin_notification::NotificationExt;
-        let mut notified_budgets: std::collections::HashSet<i64> = std::collections::HashSet::new();
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
             if let Ok(conn) = db.lock() {
@@ -545,32 +572,20 @@ fn setup_tray(
                     let _ = today_item_clone.set_text(text);
                 }
 
-                // Check budgets and send notifications for over-threshold budgets
-                if let Ok(statuses) = db::check_budgets(&conn) {
-                    for status in &statuses {
-                        if status.is_over && !notified_budgets.contains(&status.id) {
-                            // Send macOS notification
-                            let _ = app_handle_for_tray
-                                .notification()
-                                .builder()
-                                .title("⚠ Budget Alert")
-                                .body(format!(
-                                    "{} — ${:.2} / ${:.2}",
-                                    status.name,
-                                    status.current_spend,
-                                    status.threshold_usd,
-                                ))
-                                .show();
-
-                            // Record alert in DB (wires up previously dead code)
-                            let _ = db::record_alert(
-                                &conn,
-                                status.id,
+                // Check budgets and send notifications for newly triggered alerts.
+                if let Ok(triggered_alerts) = db::sync_budget_alerts(&conn) {
+                    for status in &triggered_alerts {
+                        let _ = app_handle_for_tray
+                            .notification()
+                            .builder()
+                            .title("⚠ Budget Alert")
+                            .body(format!(
+                                "{} — ${:.2} / ${:.2}",
+                                status.name,
                                 status.current_spend,
                                 status.threshold_usd,
-                            );
-                            notified_budgets.insert(status.id);
-                        }
+                            ))
+                            .show();
                     }
                 }
             }

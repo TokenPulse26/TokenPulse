@@ -305,11 +305,18 @@ td{padding:11px 16px;font-size:12px;border-top:1px solid rgba(42,45,58,.5);white
 .budget-form-label{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.6px;color:#6e7681}
 .btn-add-budget{background:#22c55e;color:#0f1117;border:none;border-radius:7px;padding:8px 16px;font-size:13px;font-weight:700;cursor:pointer;transition:background .15s}
 .btn-add-budget:hover{background:#16a34a}
+.btn-secondary-budget{background:#212734;color:#c9d1d9;border:1px solid #2a2d3a;border-radius:7px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer}
+.btn-secondary-budget:hover{border-color:#58a6ff;color:#f0f6fc}
 .budget-list-manage{display:flex;flex-direction:column;gap:8px}
-.budget-manage-row{display:flex;align-items:center;justify-content:space-between;background:#161922;border:1px solid #2a2d3a;border-radius:8px;padding:10px 14px}
+.budget-manage-row{display:flex;align-items:center;justify-content:space-between;background:#161922;border:1px solid #2a2d3a;border-radius:8px;padding:10px 14px;gap:12px}
 .budget-manage-info{font-size:13px;color:#c9d1d9}
 .budget-manage-sub{font-size:11px;color:#6e7681;margin-top:2px}
-.btn-delete-budget{background:rgba(239,68,68,.1);color:#ef4444;border:1px solid rgba(239,68,68,.2);border-radius:6px;padding:4px 10px;font-size:12px;cursor:pointer;transition:background .15s}
+.budget-manage-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.budget-toggle{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:#8b949e}
+.btn-edit-budget,.btn-delete-budget{border-radius:6px;padding:4px 10px;font-size:12px;cursor:pointer;transition:background .15s}
+.btn-edit-budget{background:rgba(88,166,255,.1);color:#58a6ff;border:1px solid rgba(88,166,255,.2)}
+.btn-edit-budget:hover{background:rgba(88,166,255,.2)}
+.btn-delete-budget{background:rgba(239,68,68,.1);color:#ef4444;border:1px solid rgba(239,68,68,.2)}
 .btn-delete-budget:hover{background:rgba(239,68,68,.25)}
 
 /* ── Spending Forecast ──────────────────────────────── */
@@ -973,7 +980,7 @@ def _trend_html(current, prev):
 def _fetch_budgets_with_status():
     """Fetch all budgets with their current spend status."""
     try:
-        conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+        conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
 
@@ -1007,11 +1014,15 @@ def _fetch_budgets_with_status():
                 "provider_filter": pf,
                 "scope_kind": scope_kind,
                 "scope_value": scope_value,
+                "enabled": bool(b.get("enabled", 1)),
                 "current_spend": current_spend,
                 "percentage": pct,
                 "is_over": current_spend >= b["threshold_usd"],
+                "alert_active": False,
+                "last_alert_triggered_at": None,
             })
 
+        _sync_budget_alert_states(conn, results)
         conn.close()
         return results
     except Exception:
@@ -1075,6 +1086,14 @@ def _ensure_budget_scope_columns(conn):
         c.execute("ALTER TABLE budgets ADD COLUMN scope_value TEXT")
 
 
+def _ensure_budget_alert_columns(conn):
+    c = conn.cursor()
+    c.execute("PRAGMA table_info(budget_alerts)")
+    columns = {row[1] for row in c.fetchall()}
+    if "resolved_at" not in columns:
+        c.execute("ALTER TABLE budget_alerts ADD COLUMN resolved_at TEXT")
+
+
 def _budget_time_expr(period):
     if period == "daily":
         return "datetime('now', 'start of day')"
@@ -1111,6 +1130,59 @@ def _budget_scope_label(scope_kind, scope_value):
 def _budget_scope_badge(scope_kind, scope_value):
     label = _budget_scope_label(scope_kind, scope_value)
     return f'<span style="color:#8b949e">{_escape_html(label)}</span>'
+
+
+def _get_active_budget_alert(cursor, budget_id):
+    cursor.execute(
+        "SELECT triggered_at FROM budget_alerts WHERE budget_id=? AND resolved_at IS NULL ORDER BY triggered_at DESC LIMIT 1",
+        (budget_id,),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    if isinstance(row, sqlite3.Row):
+        return row[0]
+    return row[0]
+
+
+def _resolve_budget_alerts(cursor, budget_id):
+    cursor.execute(
+        "UPDATE budget_alerts SET resolved_at=datetime('now') WHERE budget_id=? AND resolved_at IS NULL",
+        (budget_id,),
+    )
+
+
+def _record_budget_alert(cursor, budget_id, current_spend, threshold_usd):
+    cursor.execute(
+        "INSERT INTO budget_alerts (budget_id, triggered_at, resolved_at, current_spend, threshold_usd) VALUES (?, datetime('now'), NULL, ?, ?)",
+        (budget_id, current_spend, threshold_usd),
+    )
+
+
+def _sync_budget_alert_states(conn, statuses):
+    c = conn.cursor()
+    _ensure_budget_alert_columns(conn)
+    triggered_ids = set()
+    for status in statuses:
+        active_triggered_at = _get_active_budget_alert(c, status["id"])
+        status["alert_active"] = bool(active_triggered_at)
+        status["last_alert_triggered_at"] = active_triggered_at
+        if status["is_over"]:
+            if not active_triggered_at:
+                _record_budget_alert(c, status["id"], status["current_spend"], status["threshold_usd"])
+                status["alert_active"] = True
+                status["last_alert_triggered_at"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                triggered_ids.add(status["id"])
+        else:
+            if active_triggered_at:
+                _resolve_budget_alerts(c, status["id"])
+                status["alert_active"] = False
+                status["last_alert_triggered_at"] = None
+    if triggered_ids:
+        conn.commit()
+    else:
+        conn.commit()
+    return triggered_ids
 
 
 def _fetch_project_breakdown():
@@ -1601,15 +1673,27 @@ def _build_budget_section(budgets, all_budgets):
         bname = _escape_html(b["name"])
         period = b["period"]
         threshold = b["threshold_usd"]
-        meta_parts = [_budget_scope_label(b.get("scope_kind"), b.get("scope_value"))]
-        meta_parts.append(b.get("provider_filter") or "all providers")
+        scope_kind = _normalize_budget_scope_kind(b.get("scope_kind")) or "global"
+        scope_value = (b.get("scope_value") or "").strip()
+        provider_filter = (b.get("provider_filter") or "").strip()
+        enabled_checked = "checked" if b.get("enabled", 1) else ""
+        meta_parts = [_budget_scope_label(scope_kind, scope_value)]
+        meta_parts.append(provider_filter or "all providers")
         manage_rows += (
-            f'<div class="budget-manage-row" id="bmrow-{bid}">'
+            f'<div class="budget-manage-row" id="bmrow-{bid}" '
+            f'data-name="{bname}" data-period="{_escape_html(period)}" '
+            f'data-threshold="{threshold}" data-provider="{_escape_html(provider_filter)}" '
+            f'data-scope-kind="{_escape_html(scope_kind)}" data-scope-value="{_escape_html(scope_value)}" '
+            f'data-enabled="{1 if b.get("enabled", 1) else 0}">'
             f'<div>'
             f'<div class="budget-manage-info">{bname} &mdash; {fmt_cost(threshold)} / {period}</div>'
             f'<div class="budget-manage-sub">{_escape_html(" · ".join(meta_parts))}</div>'
             f'</div>'
+            f'<div class="budget-manage-actions">'
+            f'<label class="budget-toggle"><input type="checkbox" onchange="toggleBudgetEnabled({bid}, this.checked)" {enabled_checked}> enabled</label>'
+            f'<button class="btn-edit-budget" onclick="startBudgetEdit({bid})">Edit</button>'
             f'<button class="btn-delete-budget" onclick="deleteBudget({bid})">Delete</button>'
+            f'</div>'
             f'</div>'
         )
     if not manage_rows:
@@ -1622,7 +1706,8 @@ def _build_budget_section(budgets, all_budgets):
   {status_html}
   <a class="budget-manage-link" onclick="toggleBudgetPanel()">&#9881; Manage Budgets</a>
   <div class="budget-manage-panel" id="budgetManagePanel">
-    <div style="font-size:13px;font-weight:600;color:#f0f6fc;margin-bottom:10px">Add Budget</div>
+    <div style="font-size:13px;font-weight:600;color:#f0f6fc;margin-bottom:10px" id="budgetFormTitle">Add Budget</div>
+    <input type="hidden" id="bEditId" value="">
     <div class="budget-form" id="budgetForm">
       <div class="budget-form-group">
         <label class="budget-form-label">Name</label>
@@ -1655,7 +1740,8 @@ def _build_budget_section(budgets, all_budgets):
         <label class="budget-form-label">Provider (optional)</label>
         <input type="text" id="bProvider" placeholder="all providers">
       </div>
-      <button class="btn-add-budget" onclick="addBudget()">+ Add</button>
+      <button class="btn-add-budget" id="bSubmitBtn" onclick="submitBudgetForm()">+ Add</button>
+      <button class="btn-secondary-budget" id="bCancelBtn" onclick="cancelBudgetEdit()" style="display:none">Cancel</button>
     </div>
     <div style="font-size:13px;font-weight:600;color:#f0f6fc;margin-bottom:8px">Existing Budgets</div>
     <div class="budget-list-manage" id="budgetListManage">
@@ -3105,33 +3191,97 @@ function syncBudgetScopeInput() {{
   if (!scoped) scopeValueEl.value = '';
 }}
 
-function addBudget() {{
+function collectBudgetFormState() {{
+  var editIdEl = document.getElementById('bEditId');
   var nameEl = document.getElementById('bName');
   var periodEl = document.getElementById('bPeriod');
   var scopeKindEl = document.getElementById('bScopeKind');
   var scopeValueEl = document.getElementById('bScopeValue');
   var threshEl = document.getElementById('bThreshold');
   var provEl = document.getElementById('bProvider');
-  var name = nameEl ? nameEl.value : '';
-  var period = periodEl ? periodEl.value : 'monthly';
-  var scopeKind = scopeKindEl ? scopeKindEl.value : 'global';
-  var scopeValue = scopeValueEl ? scopeValueEl.value.trim() : '';
-  var threshold = parseFloat(threshEl ? threshEl.value : '0');
-  var provider = provEl ? provEl.value.trim() : '';
+  return {{
+    id: editIdEl ? editIdEl.value : '',
+    name: nameEl ? nameEl.value.trim() : '',
+    period: periodEl ? periodEl.value : 'monthly',
+    scopeKind: scopeKindEl ? scopeKindEl.value : 'global',
+    scopeValue: scopeValueEl ? scopeValueEl.value.trim() : '',
+    threshold: parseFloat(threshEl ? threshEl.value : '0'),
+    provider: provEl ? provEl.value.trim() : ''
+  }};
+}}
 
-  if (!name.trim()) {{ alert('Please enter a budget name.'); return; }}
-  if (scopeKind === 'source_tag' && !scopeValue) {{ alert('Please enter a project/source tag.'); return; }}
-  if (!threshold || threshold <= 0) {{ alert('Please enter a valid threshold.'); return; }}
+function resetBudgetForm() {{
+  var ids = ['bEditId','bName','bScopeValue','bThreshold','bProvider'];
+  ids.forEach(function(id) {{ var el = document.getElementById(id); if (el) el.value = ''; }});
+  var periodEl = document.getElementById('bPeriod');
+  if (periodEl) periodEl.value = 'monthly';
+  var scopeKindEl = document.getElementById('bScopeKind');
+  if (scopeKindEl) scopeKindEl.value = 'global';
+  syncBudgetScopeInput();
+  var titleEl = document.getElementById('budgetFormTitle');
+  if (titleEl) titleEl.textContent = 'Add Budget';
+  var submitEl = document.getElementById('bSubmitBtn');
+  if (submitEl) submitEl.textContent = '+ Add';
+  var cancelEl = document.getElementById('bCancelBtn');
+  if (cancelEl) cancelEl.style.display = 'none';
+}}
 
-  var body = 'name=' + encodeURIComponent(name.trim()) +
-    '&period=' + encodeURIComponent(period) +
-    '&threshold=' + encodeURIComponent(threshold);
-  if (provider) body += '&provider_filter=' + encodeURIComponent(provider);
-  if (scopeKind) body += '&scope_kind=' + encodeURIComponent(scopeKind);
-  if (scopeValue) body += '&scope_value=' + encodeURIComponent(scopeValue);
+function startBudgetEdit(id) {{
+  var row = document.getElementById('bmrow-' + id);
+  if (!row) return;
+  document.getElementById('bEditId').value = id;
+  document.getElementById('bName').value = row.dataset.name || '';
+  document.getElementById('bPeriod').value = row.dataset.period || 'monthly';
+  document.getElementById('bScopeKind').value = row.dataset.scopeKind || 'global';
+  document.getElementById('bScopeValue').value = row.dataset.scopeValue || '';
+  document.getElementById('bThreshold').value = row.dataset.threshold || '';
+  document.getElementById('bProvider').value = row.dataset.provider || '';
+  syncBudgetScopeInput();
+  var titleEl = document.getElementById('budgetFormTitle');
+  if (titleEl) titleEl.textContent = 'Edit Budget';
+  var submitEl = document.getElementById('bSubmitBtn');
+  if (submitEl) submitEl.textContent = 'Save';
+  var cancelEl = document.getElementById('bCancelBtn');
+  if (cancelEl) cancelEl.style.display = 'inline-block';
+}}
 
-  fetch('/api/budgets', {{
-    method: 'POST',
+function cancelBudgetEdit() {{
+  resetBudgetForm();
+}}
+
+function submitBudgetForm() {{
+  var form = collectBudgetFormState();
+  if (!form.name) {{ alert('Please enter a budget name.'); return; }}
+  if (form.scopeKind === 'source_tag' && !form.scopeValue) {{ alert('Please enter a project/source tag.'); return; }}
+  if (!form.threshold || form.threshold <= 0) {{ alert('Please enter a valid threshold.'); return; }}
+
+  var body = 'name=' + encodeURIComponent(form.name) +
+    '&period=' + encodeURIComponent(form.period) +
+    '&threshold=' + encodeURIComponent(form.threshold);
+  if (form.provider) body += '&provider_filter=' + encodeURIComponent(form.provider);
+  if (form.scopeKind) body += '&scope_kind=' + encodeURIComponent(form.scopeKind);
+  if (form.scopeValue) body += '&scope_value=' + encodeURIComponent(form.scopeValue);
+
+  var isEdit = !!form.id;
+  if (isEdit) body += '&enabled=' + encodeURIComponent(1);
+
+  fetch(isEdit ? '/api/budgets/' + form.id : '/api/budgets', {{
+    method: isEdit ? 'PUT' : 'POST',
+    headers: {{'Content-Type': 'application/x-www-form-urlencoded'}},
+    body: body
+  }})
+  .then(function(r) {{ return r.json(); }})
+  .then(function(data) {{
+    if (data.ok) {{ location.reload(); }}
+    else {{ alert('Error: ' + (data.error || 'unknown')); }}
+  }})
+  .catch(function(e) {{ alert('Request failed: ' + e); }});
+}}
+
+function toggleBudgetEnabled(id, enabled) {{
+  var body = 'enabled=' + encodeURIComponent(enabled ? '1' : '0');
+  fetch('/api/budgets/' + id + '/enabled', {{
+    method: 'PUT',
     headers: {{'Content-Type': 'application/x-www-form-urlencoded'}},
     body: body
   }})
@@ -3160,7 +3310,7 @@ document.addEventListener('DOMContentLoaded', function() {{
   var actLevel = Math.min(10, Math.round(recentCount / 2));
   initTokenFlow(actLevel);
   initActivityFeed(activityDots, recentCount);
-  syncBudgetScopeInput();
+  resetBudgetForm();
   initSpendChart();
   initExpandableRows();
   updatePulseDots(recentCount);
@@ -3330,45 +3480,103 @@ def _api_get_budgets():
     return {"ok": True, "budgets": budgets}
 
 
-def _api_create_budget(form_data):
-    """Create a new budget from POST form data."""
+def _parse_budget_form(form_data):
     name = (form_data.get("name") or [""])[0].strip()
     period = (form_data.get("period") or ["monthly"])[0].strip()
     try:
         threshold = float((form_data.get("threshold") or ["0"])[0])
     except (ValueError, TypeError):
-        return {"ok": False, "error": "Invalid threshold value"}
+        return None, {"ok": False, "error": "Invalid threshold value"}
     provider_filter = (form_data.get("provider_filter") or [""])[0].strip() or None
     scope_kind_raw = (form_data.get("scope_kind") or ["global"])[0].strip()
     scope_kind = _normalize_budget_scope_kind(scope_kind_raw)
     scope_value = (form_data.get("scope_value") or [""])[0].strip() or None
+    enabled_raw = (form_data.get("enabled") or ["1"])[0].strip().lower()
+    enabled = enabled_raw not in ("0", "false", "off", "no")
 
     if not name:
-        return {"ok": False, "error": "Name is required"}
+        return None, {"ok": False, "error": "Name is required"}
     if period not in ("daily", "weekly", "monthly"):
-        return {"ok": False, "error": "Period must be daily, weekly, or monthly"}
+        return None, {"ok": False, "error": "Period must be daily, weekly, or monthly"}
     if threshold <= 0:
-        return {"ok": False, "error": "Threshold must be positive"}
+        return None, {"ok": False, "error": "Threshold must be positive"}
     if scope_kind is None:
-        return {"ok": False, "error": "Scope must be overall or project/source tag"}
+        return None, {"ok": False, "error": "Scope must be overall or project/source tag"}
     if scope_kind == "source_tag" and not scope_value:
-        return {"ok": False, "error": "Project/source tag budgets require a scope value"}
+        return None, {"ok": False, "error": "Project/source tag budgets require a scope value"}
     if scope_kind == "global":
         scope_value = None
+
+    return {
+        "name": name,
+        "period": period,
+        "threshold": threshold,
+        "provider_filter": provider_filter,
+        "scope_kind": scope_kind,
+        "scope_value": scope_value,
+        "enabled": enabled,
+    }, None
+
+
+def _api_create_budget(form_data):
+    """Create a new budget from POST form data."""
+    payload, error = _parse_budget_form(form_data)
+    if error:
+        return error
 
     try:
         conn = sqlite3.connect(DB_PATH)
         _ensure_budget_scope_columns(conn)
+        _ensure_budget_alert_columns(conn)
         c = conn.cursor()
         c.execute(
             "INSERT INTO budgets (name, period, threshold_usd, provider_filter, scope_kind, scope_value, enabled, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, 1, datetime('now'))",
-            (name, period, threshold, provider_filter, scope_kind, scope_value)
+            "VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))",
+            (payload["name"], payload["period"], payload["threshold"], payload["provider_filter"], payload["scope_kind"], payload["scope_value"], 1 if payload["enabled"] else 0)
         )
         bid = c.lastrowid
         conn.commit()
         conn.close()
         return {"ok": True, "id": bid}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def _api_update_budget(budget_id, form_data):
+    payload, error = _parse_budget_form(form_data)
+    if error:
+        return error
+
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        _ensure_budget_scope_columns(conn)
+        _ensure_budget_alert_columns(conn)
+        c = conn.cursor()
+        c.execute(
+            "UPDATE budgets SET name=?, period=?, threshold_usd=?, provider_filter=?, scope_kind=?, scope_value=?, enabled=? WHERE id=?",
+            (payload["name"], payload["period"], payload["threshold"], payload["provider_filter"], payload["scope_kind"], payload["scope_value"], 1 if payload["enabled"] else 0, budget_id)
+        )
+        _resolve_budget_alerts(c, budget_id)
+        conn.commit()
+        conn.close()
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def _api_set_budget_enabled(budget_id, form_data):
+    enabled_raw = (form_data.get("enabled") or ["1"])[0].strip().lower()
+    enabled = enabled_raw not in ("0", "false", "off", "no")
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        _ensure_budget_alert_columns(conn)
+        c = conn.cursor()
+        c.execute("UPDATE budgets SET enabled=? WHERE id=?", (1 if enabled else 0, budget_id))
+        if not enabled:
+            _resolve_budget_alerts(c, budget_id)
+        conn.commit()
+        conn.close()
+        return {"ok": True}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
@@ -3512,6 +3720,36 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_response(404)
         self.end_headers()
 
+    def do_PUT(self):
+        parsed = urlparse(self.path)
+        path = parsed.path
+        content_length = int(self.headers.get("Content-Length", 0))
+        raw_body = self.rfile.read(content_length).decode("utf-8") if content_length else ""
+        form_data = parse_qs(raw_body)
+
+        if path.startswith("/api/budgets/") and path.endswith("/enabled"):
+            try:
+                bid = int(path.split("/")[-2])
+            except (ValueError, IndexError):
+                _json_response(self, 400, {"ok": False, "error": "Invalid budget ID"})
+                return
+            result = _api_set_budget_enabled(bid, form_data)
+            _json_response(self, 200 if result.get("ok") else 400, result)
+            return
+
+        if path.startswith("/api/budgets/"):
+            try:
+                bid = int(path.split("/")[-1])
+            except (ValueError, IndexError):
+                _json_response(self, 400, {"ok": False, "error": "Invalid budget ID"})
+                return
+            result = _api_update_budget(bid, form_data)
+            _json_response(self, 200 if result.get("ok") else 400, result)
+            return
+
+        self.send_response(404)
+        self.end_headers()
+
     def do_DELETE(self):
         parsed = urlparse(self.path)
         path = parsed.path
@@ -3533,7 +3771,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
 
