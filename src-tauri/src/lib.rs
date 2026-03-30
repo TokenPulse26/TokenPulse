@@ -2,7 +2,7 @@ mod db;
 mod proxy;
 mod pricing;
 
-use db::{Budget, BudgetStatus, CostSummary, DailyProviderStat, DailyStats, DashboardSummary, ModelStats, RequestRecord};
+use db::{Budget, BudgetAlertHistoryItem, BudgetForecast, BudgetStatus, CostSummary, DailyProviderStat, DailyStats, DashboardSummary, ModelStats, RequestRecord};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{Emitter, Manager, State};
@@ -415,6 +415,22 @@ fn check_budgets(state: State<DbState>) -> Result<Vec<BudgetStatus>, String> {
     db::check_budgets(&conn).map_err(|e| e.to_string())
 }
 
+
+#[tauri::command]
+fn get_budget_alert_history(
+    state: State<DbState>,
+    limit: Option<i64>,
+) -> Result<Vec<BudgetAlertHistoryItem>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::get_budget_alert_history(&conn, limit.unwrap_or(20)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_budget_forecasts(state: State<DbState>) -> Result<Vec<BudgetForecast>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::get_budget_forecasts(&conn).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -502,6 +518,8 @@ pub fn run() {
             set_budget_enabled,
             delete_budget,
             check_budgets,
+            get_budget_alert_history,
+            get_budget_forecasts,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

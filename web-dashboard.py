@@ -318,6 +318,30 @@ td{padding:11px 16px;font-size:12px;border-top:1px solid rgba(42,45,58,.5);white
 .btn-edit-budget:hover{background:rgba(88,166,255,.2)}
 .btn-delete-budget{background:rgba(239,68,68,.1);color:#ef4444;border:1px solid rgba(239,68,68,.2)}
 .btn-delete-budget:hover{background:rgba(239,68,68,.25)}
+.budget-alert-state{margin-top:8px;font-size:11px;color:#8b949e}
+.budget-alert-state.active{color:#f59e0b}
+.budget-alert-state.resolved{color:#22c55e}
+.budget-history{margin-top:16px;padding-top:16px;border-top:1px solid #2a2d3a}
+.budget-history-list{display:flex;flex-direction:column;gap:10px;margin-top:12px}
+.budget-history-item{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;background:#161922;border:1px solid #2a2d3a;border-radius:10px;padding:12px 14px}
+.budget-history-main{display:flex;flex-direction:column;gap:4px}
+.budget-history-title{font-size:13px;font-weight:600;color:#f0f6fc}
+.budget-history-meta{font-size:11px;color:#8b949e;line-height:1.5}
+.budget-history-empty{color:#6e7681;font-size:13px;padding:8px 0 2px}
+.budget-history-status{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px}
+.budget-history-status.active{color:#f59e0b}
+.budget-history-status.resolved{color:#22c55e}
+.forecast-budget-list{display:flex;flex-direction:column;gap:10px;margin-top:12px}
+.forecast-budget-item{padding:12px 14px;border:1px solid #2a2d3a;border-radius:10px;background:#161922}
+.forecast-budget-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.forecast-budget-name{font-size:13px;font-weight:600;color:#f0f6fc}
+.forecast-budget-metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-top:10px}
+.forecast-budget-metric{font-size:11px;color:#8b949e;line-height:1.5}
+.forecast-budget-metric strong{display:block;font-size:14px;color:#f0f6fc}
+.forecast-budget-note{font-size:11px;line-height:1.5;margin-top:8px}
+.forecast-budget-note.over{color:#f85149}
+.forecast-budget-note.warn{color:#f59e0b}
+.forecast-budget-note.ok{color:#22c55e}
 
 /* ── Spending Forecast ──────────────────────────────── */
 .forecast-section{background:#1a1d27;border:1px solid #2a2d3a;border-radius:14px;padding:22px 24px;margin-bottom:20px}
@@ -1099,6 +1123,10 @@ def _budget_time_expr(period):
         return "datetime('now', 'start of day')"
     if period == "weekly":
         return "datetime('now', '-7 days')"
+    if period == "trailing_1":
+        return "datetime('now', '-1 days')"
+    if period == "trailing_7":
+        return "datetime('now', '-7 days')"
     return "datetime('now', '-30 days')"
 
 
@@ -1183,6 +1211,71 @@ def _sync_budget_alert_states(conn, statuses):
     else:
         conn.commit()
     return triggered_ids
+
+
+
+def _fetch_budget_alert_history(limit=20):
+    try:
+        conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        rows = c.execute(
+            "SELECT a.id, a.budget_id, b.name as budget_name, b.period, b.provider_filter,             COALESCE(b.scope_kind, 'global') as scope_kind, b.scope_value,             a.triggered_at, a.resolved_at, a.current_spend, a.threshold_usd             FROM budget_alerts a             INNER JOIN budgets b ON b.id = a.budget_id             ORDER BY a.triggered_at DESC LIMIT ?",
+            (max(1, min(int(limit or 20), 200)),)
+        ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+
+
+def _fetch_budget_forecasts(budgets):
+    forecasts = []
+    for budget in budgets or []:
+        if not budget.get("enabled", True):
+            continue
+        period = budget.get("period") or "monthly"
+        trailing_days = 1 if period == "daily" else 7
+        current_spend = budget.get("current_spend", 0.0) or 0.0
+        threshold = budget.get("threshold_usd", 0.0) or 0.0
+        average_daily_spend = 0.0
+        try:
+            conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+            conn.row_factory = sqlite3.Row
+            c = conn.cursor()
+            average_daily_spend = _budget_current_spend(
+                c,
+                f"trailing_{trailing_days}",
+                budget.get("provider_filter"),
+                budget.get("scope_kind"),
+                budget.get("scope_value"),
+            ) / max(trailing_days, 1)
+            conn.close()
+        except Exception:
+            average_daily_spend = 0.0
+        period_days = 1 if period == "daily" else 7 if period == "weekly" else 30
+        projected_period_spend = average_daily_spend * period_days
+        remaining_budget = threshold - current_spend
+        days_until_threshold = None
+        if average_daily_spend > 0 and remaining_budget > 0:
+            days_until_threshold = remaining_budget / average_daily_spend
+        forecasts.append({
+            "budget_id": budget.get("id"),
+            "budget_name": budget.get("name"),
+            "period": period,
+            "provider_filter": budget.get("provider_filter"),
+            "scope_kind": budget.get("scope_kind"),
+            "scope_value": budget.get("scope_value"),
+            "current_spend": current_spend,
+            "threshold_usd": threshold,
+            "trailing_days": trailing_days,
+            "average_daily_spend": average_daily_spend,
+            "projected_period_spend": projected_period_spend,
+            "remaining_budget": remaining_budget,
+            "days_until_threshold": days_until_threshold,
+            "is_over": bool(budget.get("is_over")),
+        })
+    return forecasts
 
 
 def _fetch_project_breakdown():
@@ -1605,9 +1698,17 @@ def _fetch_optimizer_data():
         return {}
 
 
-def _build_budget_section(budgets, all_budgets):
+def _format_budget_alert_time(ts):
+    if not ts:
+        return ""
+    try:
+        return datetime.strptime(ts, "%Y-%m-%d %H:%M:%S").strftime("%b %d, %I:%M %p")
+    except Exception:
+        return ts
+
+
+def _build_budget_section(budgets, all_budgets, alert_history):
     """Build the budget status section with progress bars."""
-    # Budget status cards
     if not budgets:
         status_html = '<div class="budget-empty">No budgets configured — set one up to control your spending.</div>'
     else:
@@ -1617,11 +1718,9 @@ def _build_budget_section(budgets, all_budgets):
             period = b["period"]
             current = b["current_spend"]
             threshold = b["threshold_usd"]
-            pct = min(b["percentage"], 100.0)  # cap bar at 100%
+            pct = min(b["percentage"], 100.0)
             pct_raw = b["percentage"]
             is_over = b["is_over"]
-
-            # Bar color
             if is_over:
                 bar_class = "budget-bar-fill budget-bar-over"
             elif pct_raw >= 95:
@@ -1638,10 +1737,19 @@ def _build_budget_section(budgets, all_budgets):
             if pf:
                 meta_bits.append(f'<span style="color:#8b949e">{_escape_html(pf)}</span>')
             meta_html = "".join(f" &middot; {bit}" for bit in meta_bits if bit)
+            over_badge = '<span class="over-badge">&#9888; OVER BUDGET</span>' if is_over else ""
 
-            over_badge = ""
-            if is_over:
-                over_badge = '<span class="over-badge">&#9888; OVER BUDGET</span>'
+            alert_state = ""
+            if b.get("alert_active"):
+                alert_state = (
+                    f'<div class="budget-alert-state active">Active alert since '
+                    f'{_escape_html(_format_budget_alert_time(b.get("last_alert_triggered_at")))}</div>'
+                )
+            elif b.get("last_alert_triggered_at"):
+                alert_state = (
+                    f'<div class="budget-alert-state resolved">Last alert triggered '
+                    f'{_escape_html(_format_budget_alert_time(b.get("last_alert_triggered_at")))}</div>'
+                )
 
             items.append(
                 f'<div class="budget-item">'
@@ -1661,12 +1769,11 @@ def _build_budget_section(budgets, all_budgets):
                 f'<div class="budget-bar-bg">'
                 f'<div class="{bar_class}" style="width:{pct:.1f}%"></div>'
                 f'</div>'
+                f'{alert_state}'
                 f'</div>'
             )
         status_html = "\n".join(items)
 
-    # Management panel
-    # Build existing budget rows
     manage_rows = ""
     for b in all_budgets:
         bid = b["id"]
@@ -1677,8 +1784,7 @@ def _build_budget_section(budgets, all_budgets):
         scope_value = (b.get("scope_value") or "").strip()
         provider_filter = (b.get("provider_filter") or "").strip()
         enabled_checked = "checked" if b.get("enabled", 1) else ""
-        meta_parts = [_budget_scope_label(scope_kind, scope_value)]
-        meta_parts.append(provider_filter or "all providers")
+        meta_parts = [_budget_scope_label(scope_kind, scope_value), provider_filter or "all providers"]
         manage_rows += (
             f'<div class="budget-manage-row" id="bmrow-{bid}" '
             f'data-name="{bname}" data-period="{_escape_html(period)}" '
@@ -1698,6 +1804,32 @@ def _build_budget_section(budgets, all_budgets):
         )
     if not manage_rows:
         manage_rows = '<div style="color:#6e7681;font-size:13px">No budgets yet.</div>'
+
+    history_rows = ""
+    for item in alert_history or []:
+        status_class = "active" if not item.get("resolved_at") else "resolved"
+        status_label = "Active" if not item.get("resolved_at") else "Resolved"
+        meta_parts = [item.get("period") or "monthly", _budget_scope_label(item.get("scope_kind"), item.get("scope_value"))]
+        if item.get("provider_filter"):
+            meta_parts.append(item.get("provider_filter"))
+        resolved_copy = "Still active"
+        if item.get("resolved_at"):
+            resolved_copy = f'Resolved {_format_budget_alert_time(item.get("resolved_at"))}'
+        history_rows += (
+            f'<div class="budget-history-item">'
+            f'<div class="budget-history-main">'
+            f'<div class="budget-history-title">{_escape_html(item.get("budget_name") or "Budget")}</div>'
+            f'<div class="budget-history-meta">'
+            f'{_escape_html(" · ".join(meta_parts))}<br>'
+            f'Triggered {_escape_html(_format_budget_alert_time(item.get("triggered_at")))} · {_escape_html(resolved_copy)}<br>'
+            f'{fmt_cost(item.get("current_spend", 0.0))} / {fmt_cost(item.get("threshold_usd", 0.0))}'
+            f'</div>'
+            f'</div>'
+            f'<div class="budget-history-status {status_class}">{status_label}</div>'
+            f'</div>'
+        )
+    if not history_rows:
+        history_rows = '<div class="budget-history-empty">No budget alerts have fired yet.</div>'
 
     return f"""<div class="budget-section">
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
@@ -1747,6 +1879,10 @@ def _build_budget_section(budgets, all_budgets):
     <div class="budget-list-manage" id="budgetListManage">
       {manage_rows}
     </div>
+  </div>
+  <div class="budget-history">
+    <div style="font-size:13px;font-weight:600;color:#f0f6fc">Recent Alert History</div>
+    <div class="budget-history-list">{history_rows}</div>
   </div>
 </div>"""
 
@@ -1986,7 +2122,7 @@ def _build_project_section(projects):
 </div>"""
 
 
-def _build_forecast_section(forecast, budgets):
+def _build_forecast_section(forecast, budgets, budget_forecasts):
     """Build the spending forecast section."""
     if not forecast or forecast.get("daily_avg", 0) == 0:
         return f"""<div class="forecast-section">
@@ -2002,7 +2138,6 @@ def _build_forecast_section(forecast, budgets):
     days_remaining = forecast["days_remaining"]
     busiest_day_cost = forecast["busiest_day_cost"]
 
-    # Trend indicator
     if last_month_total > 0:
         if projected_month > last_month_total:
             pct_diff = ((projected_month - last_month_total) / last_month_total) * 100
@@ -2015,7 +2150,6 @@ def _build_forecast_section(forecast, budgets):
     else:
         trend_html = '<span class="forecast-trend neutral">No last month data for comparison</span>'
 
-    # Budget projection
     budget_html = ""
     if budgets:
         for b in budgets:
@@ -2027,26 +2161,42 @@ def _build_forecast_section(forecast, budgets):
                     days_until_hit = remaining_budget / daily_avg
                     if days_until_hit <= days_remaining:
                         hit_date = datetime.now() + timedelta(days=days_until_hit)
-                        budget_html += (
-                            f'<div class="forecast-sub" style="color:#f59e0b;margin-top:8px">'
-                            f'&#9888; You\'ll hit your {fmt_cost(threshold)}/month budget by {hit_date.strftime("%b %d")}'
-                            f'</div>'
-                        )
+                        budget_html += f"<div class=\"forecast-sub\" style=\"color:#f59e0b;margin-top:8px\">&#9888; You'll hit your {fmt_cost(threshold)}/month budget by {hit_date.strftime('%b %d')}</div>"
                     else:
-                        budget_html += (
-                            f'<div class="forecast-sub" style="color:#22c55e;margin-top:8px">'
-                            f'&#10003; On track to stay under {fmt_cost(threshold)}/month budget'
-                            f'</div>'
-                        )
+                        budget_html += f'<div class="forecast-sub" style="color:#22c55e;margin-top:8px">&#10003; On track to stay under {fmt_cost(threshold)}/month budget</div>'
             elif b.get("period") == "monthly" and b.get("is_over"):
                 threshold = b.get("threshold_usd", 0)
-                budget_html += (
-                    f'<div class="forecast-sub" style="color:#f85149;margin-top:8px">'
-                    f'&#9888; Already over your {fmt_cost(threshold)}/month budget!'
-                    f'</div>'
-                )
+                budget_html += f'<div class="forecast-sub" style="color:#f85149;margin-top:8px">&#9888; Already over your {fmt_cost(threshold)}/month budget!</div>'
 
-    # Busiest day projection
+    budget_forecast_html = ""
+    for item in budget_forecasts or []:
+        note_class = "ok"
+        note = f'On current burn, projected {fmt_cost(item.get("projected_period_spend", 0.0))} this {item.get("period")}. '
+        if item.get("is_over"):
+            note_class = "over"
+            note = f'Already over budget by {fmt_cost(abs(item.get("remaining_budget", 0.0)))}.'
+        elif item.get("days_until_threshold") is not None and item.get("days_until_threshold") <= item.get("trailing_days", 7):
+            note_class = "warn"
+            note = f'At this pace, threshold hit in {item.get("days_until_threshold"):.1f} days.'
+        budget_forecast_html += (
+            f'<div class="forecast-budget-item">'
+            f'<div class="forecast-budget-head">'
+            f'<div class="forecast-budget-name">{_escape_html(item.get("budget_name") or "Budget")}</div>'
+            f'<div class="budget-period-badge">{_escape_html(item.get("period") or "monthly")}</div>'
+            f'</div>'
+            f'<div class="forecast-sub">{_escape_html(_budget_scope_label(item.get("scope_kind"), item.get("scope_value")))}'
+            f'{(" · " + _escape_html(item.get("provider_filter"))) if item.get("provider_filter") else ""}</div>'
+            f'<div class="forecast-budget-metrics">'
+            f'<div class="forecast-budget-metric"><strong>{fmt_cost(item.get("average_daily_spend", 0.0))}</strong>daily burn</div>'
+            f'<div class="forecast-budget-metric"><strong>{fmt_cost(item.get("projected_period_spend", 0.0))}</strong>projected period spend</div>'
+            f'<div class="forecast-budget-metric"><strong>{fmt_cost(item.get("remaining_budget", 0.0))}</strong>budget remaining</div>'
+            f'</div>'
+            f'<div class="forecast-budget-note {note_class}">{_escape_html(note)}</div>'
+            f'</div>'
+        )
+    if budget_forecast_html:
+        budget_forecast_html = f'<div class="forecast-card"><div class="forecast-label">Scoped Budget Burn</div><div class="forecast-budget-list">{budget_forecast_html}</div></div>'
+
     busiest_month_cost = busiest_day_cost * days_in_month
 
     return f"""<div class="forecast-section">
@@ -2069,6 +2219,7 @@ def _build_forecast_section(forecast, budgets):
       <div class="forecast-value" style="color:#f87171">{fmt_cost(busiest_month_cost)}</div>
       <div class="forecast-sub">If every day cost {fmt_cost(busiest_day_cost)} (your peak)</div>
     </div>
+    {budget_forecast_html}
   </div>
 </div>"""
 
@@ -3381,11 +3532,13 @@ def build_page(time_range, page=1):
     # Paid feature sections
     budgets_status = _fetch_budgets_with_status()
     all_budgets = _fetch_all_budgets()
-    budget_html = _build_budget_section(budgets_status, all_budgets)
+    budget_alert_history = _fetch_budget_alert_history()
+    budget_html = _build_budget_section(budgets_status, all_budgets, budget_alert_history)
 
     # Spending forecast
     forecast = _fetch_forecast_data()
-    forecast_html = _build_forecast_section(forecast, budgets_status)
+    budget_forecasts = _fetch_budget_forecasts(budgets_status)
+    forecast_html = _build_forecast_section(forecast, budgets_status, budget_forecasts)
 
     # Error monitoring
     error_data = _fetch_error_data(time_range)
@@ -3478,6 +3631,15 @@ def _api_get_budgets():
     """Return all budgets with current status as JSON."""
     budgets = _fetch_budgets_with_status()
     return {"ok": True, "budgets": budgets}
+
+
+def _api_get_budget_alert_history(limit=20):
+    return {"ok": True, "alerts": _fetch_budget_alert_history(limit=limit)}
+
+
+def _api_get_budget_forecasts():
+    budgets = _fetch_budgets_with_status()
+    return {"ok": True, "forecasts": _fetch_budget_forecasts(budgets)}
 
 
 def _parse_budget_form(form_data):
@@ -3656,6 +3818,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # API endpoint: GET /api/budgets
         if path == "/api/budgets":
             _json_response(self, 200, _api_get_budgets())
+            return
+
+        if path == "/api/budget-alerts":
+            params = parse_qs(parsed.query)
+            try:
+                limit = int(params.get("limit", ["20"])[0])
+            except (ValueError, TypeError):
+                limit = 20
+            _json_response(self, 200, _api_get_budget_alert_history(limit))
+            return
+
+        if path == "/api/budget-forecasts":
+            _json_response(self, 200, _api_get_budget_forecasts())
             return
 
         # CSV export endpoint

@@ -583,6 +583,39 @@ pub struct BudgetStatus {
     pub last_alert_triggered_at: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BudgetAlertHistoryItem {
+    pub id: i64,
+    pub budget_id: i64,
+    pub budget_name: String,
+    pub period: String,
+    pub provider_filter: Option<String>,
+    pub scope_kind: String,
+    pub scope_value: Option<String>,
+    pub triggered_at: String,
+    pub resolved_at: Option<String>,
+    pub current_spend: f64,
+    pub threshold_usd: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BudgetForecast {
+    pub budget_id: i64,
+    pub budget_name: String,
+    pub period: String,
+    pub provider_filter: Option<String>,
+    pub scope_kind: String,
+    pub scope_value: Option<String>,
+    pub current_spend: f64,
+    pub threshold_usd: f64,
+    pub trailing_days: i64,
+    pub average_daily_spend: f64,
+    pub projected_period_spend: f64,
+    pub remaining_budget: f64,
+    pub days_until_threshold: Option<f64>,
+    pub is_over: bool,
+}
+
 // ─── Budget functions ─────────────────────────────────────────────────────────
 
 fn normalize_budget_scope(
@@ -849,6 +882,139 @@ pub fn sync_budget_alerts(conn: &Connection) -> Result<Vec<BudgetStatus>> {
     }
 
     Ok(newly_triggered)
+}
+
+
+pub fn get_budget_alert_history(conn: &Connection, limit: i64) -> Result<Vec<BudgetAlertHistoryItem>> {
+    let bounded_limit = limit.clamp(1, 200);
+    let mut stmt = conn.prepare(
+        "SELECT a.id, a.budget_id, b.name, b.period, b.provider_filter,
+                COALESCE(b.scope_kind, 'global'), b.scope_value,
+                a.triggered_at, a.resolved_at, a.current_spend, a.threshold_usd
+         FROM budget_alerts a
+         INNER JOIN budgets b ON b.id = a.budget_id
+         ORDER BY a.triggered_at DESC
+         LIMIT ?1",
+    )?;
+
+    let rows = stmt.query_map(params![bounded_limit], |row| {
+        Ok(BudgetAlertHistoryItem {
+            id: row.get(0)?,
+            budget_id: row.get(1)?,
+            budget_name: row.get(2)?,
+            period: row.get(3)?,
+            provider_filter: row.get(4)?,
+            scope_kind: row.get(5)?,
+            scope_value: row.get(6)?,
+            triggered_at: row.get(7)?,
+            resolved_at: row.get(8)?,
+            current_spend: row.get(9)?,
+            threshold_usd: row.get(10)?,
+        })
+    })?;
+    rows.collect()
+}
+
+fn forecast_trailing_days(period: &str) -> i64 {
+    match period {
+        "daily" => 1,
+        "weekly" => 7,
+        _ => 7,
+    }
+}
+
+fn budget_trailing_average_daily_spend(conn: &Connection, budget: &Budget, trailing_days: i64) -> Result<f64> {
+    let time_expr = format!("datetime('now', '-{} days')", trailing_days.max(1));
+
+    let total_spend: f64 = match (
+        budget.provider_filter.as_deref(),
+        budget.scope_kind.as_str(),
+        budget.scope_value.as_deref(),
+    ) {
+        (Some(provider), "source_tag", Some(scope_value)) => conn.query_row(
+            &format!(
+                "SELECT COALESCE(SUM(cost_usd), 0.0) FROM requests \
+                 WHERE timestamp >= {} AND COALESCE(provider_type,'api') = 'api' \
+                 AND provider = ?1 AND COALESCE(source_tag, '') = ?2",
+                time_expr
+            ),
+            params![provider, scope_value],
+            |row| row.get(0),
+        ),
+        (Some(provider), _, _) => conn.query_row(
+            &format!(
+                "SELECT COALESCE(SUM(cost_usd), 0.0) FROM requests \
+                 WHERE timestamp >= {} AND COALESCE(provider_type,'api') = 'api' \
+                 AND provider = ?1",
+                time_expr
+            ),
+            params![provider],
+            |row| row.get(0),
+        ),
+        (None, "source_tag", Some(scope_value)) => conn.query_row(
+            &format!(
+                "SELECT COALESCE(SUM(cost_usd), 0.0) FROM requests \
+                 WHERE timestamp >= {} AND COALESCE(provider_type,'api') = 'api' \
+                 AND COALESCE(source_tag, '') = ?1",
+                time_expr
+            ),
+            params![scope_value],
+            |row| row.get(0),
+        ),
+        (None, _, _) => conn.query_row(
+            &format!(
+                "SELECT COALESCE(SUM(cost_usd), 0.0) FROM requests \
+                 WHERE timestamp >= {} AND COALESCE(provider_type,'api') = 'api'",
+                time_expr
+            ),
+            [],
+            |row| row.get(0),
+        ),
+    }?;
+
+    Ok(total_spend / trailing_days.max(1) as f64)
+}
+
+pub fn get_budget_forecasts(conn: &Connection) -> Result<Vec<BudgetForecast>> {
+    let budgets = get_budgets(conn)?;
+    let mut forecasts = Vec::new();
+
+    for budget in budgets.into_iter().filter(|budget| budget.enabled) {
+        let status = build_budget_status(conn, &budget)?;
+        let trailing_days = forecast_trailing_days(&budget.period);
+        let average_daily_spend = budget_trailing_average_daily_spend(conn, &budget, trailing_days)?;
+        let period_days = match budget.period.as_str() {
+            "daily" => 1.0,
+            "weekly" => 7.0,
+            _ => 30.0,
+        };
+        let projected_period_spend = average_daily_spend * period_days;
+        let remaining_budget = budget.threshold_usd - status.current_spend;
+        let days_until_threshold = if status.is_over || average_daily_spend <= 0.0 {
+            None
+        } else {
+            Some(remaining_budget / average_daily_spend)
+        };
+
+        forecasts.push(BudgetForecast {
+            budget_id: budget.id,
+            budget_name: budget.name,
+            period: budget.period,
+            provider_filter: budget.provider_filter,
+            scope_kind: budget.scope_kind,
+            scope_value: budget.scope_value,
+            current_spend: status.current_spend,
+            threshold_usd: budget.threshold_usd,
+            trailing_days,
+            average_daily_spend,
+            projected_period_spend,
+            remaining_budget,
+            days_until_threshold,
+            is_over: status.is_over,
+        });
+    }
+
+    Ok(forecasts)
 }
 
 pub fn count_pricing(conn: &Connection) -> Result<u32> {
