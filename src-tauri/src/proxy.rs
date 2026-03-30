@@ -509,6 +509,39 @@ async fn proxy_handler(
             .unwrap());
     }
 
+    // ── /api/reliability endpoint ─────────────────────────────────────
+    if path == "/api/reliability" && parts.method == Method::GET {
+        let range = parts.uri.query()
+            .and_then(|q| {
+                url::form_urlencoded::parse(q.as_bytes())
+                    .find(|(k, _)| k == "range")
+                    .map(|(_, v)| v.to_string())
+            })
+            .unwrap_or_else(|| "7d".to_string());
+        let range_str = match range.as_str() {
+            "today" | "7d" | "30d" | "all" => range.as_str(),
+            _ => "7d",
+        };
+
+        let result = if let Ok(conn) = state.db.lock() {
+            match db::get_reliability_snapshot(&conn, range_str) {
+                Ok(snapshot) => serde_json::json!({
+                    "status": "ok",
+                    "reliability": snapshot,
+                }),
+                Err(e) => serde_json::json!({"status": "error", "message": e.to_string()}),
+            }
+        } else {
+            serde_json::json!({"status": "error", "message": "database lock failed"})
+        };
+
+        return Ok(Response::builder()
+            .status(200)
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&result).unwrap()))
+            .unwrap());
+    }
+
     // ── /api/budgets endpoint ─────────────────────────────────────────
     if path == "/api/budgets" && parts.method == Method::GET {
         let result = if let Ok(conn) = state.db.lock() {

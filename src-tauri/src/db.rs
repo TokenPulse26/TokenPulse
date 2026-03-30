@@ -54,6 +54,49 @@ pub struct ModelStats {
     pub total_tokens: i64,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ReliabilitySummary {
+    pub total_requests: i64,
+    pub successful_requests: i64,
+    pub failed_requests: i64,
+    pub success_rate_pct: f64,
+    pub avg_latency_ms: f64,
+    pub slow_requests: i64,
+    pub slow_request_pct: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ProviderReliabilityStat {
+    pub provider: String,
+    pub model: String,
+    pub total_requests: i64,
+    pub failed_requests: i64,
+    pub success_rate_pct: f64,
+    pub avg_latency_ms: f64,
+    pub max_latency_ms: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ReliabilityAnomaly {
+    pub kind: String,
+    pub provider: String,
+    pub model: String,
+    pub severity: String,
+    pub summary: String,
+    pub recent_requests: i64,
+    pub baseline_requests: i64,
+    pub recent_value: f64,
+    pub baseline_value: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ReliabilitySnapshot {
+    pub range: String,
+    pub summary: ReliabilitySummary,
+    pub providers: Vec<ProviderReliabilityStat>,
+    pub anomalies: Vec<ReliabilityAnomaly>,
+}
+
 pub fn init_db(path: &str) -> Result<Connection> {
     let conn = Connection::open(path)?;
 
@@ -688,4 +731,244 @@ pub fn get_model_breakdown(conn: &Connection, days: u32) -> Result<Vec<ModelStat
     .collect::<Result<Vec<_>>>()?;
 
     Ok(records)
+}
+
+
+pub fn get_reliability_snapshot(conn: &Connection, time_range: &str) -> Result<ReliabilitySnapshot> {
+    let where_clause = time_range_filter(time_range);
+    let summary_query = format!(
+        "SELECT
+            COUNT(*) as total_requests,
+            SUM(CASE WHEN COALESCE(error_message, '') = '' THEN 1 ELSE 0 END) as successful_requests,
+            SUM(CASE WHEN COALESCE(error_message, '') != '' THEN 1 ELSE 0 END) as failed_requests,
+            AVG(COALESCE(latency_ms, 0)) as avg_latency_ms,
+            SUM(CASE WHEN COALESCE(latency_ms, 0) >= 5000 THEN 1 ELSE 0 END) as slow_requests
+         FROM requests {}",
+        where_clause
+    );
+
+    let summary = conn.query_row(&summary_query, [], |row| {
+        let total_requests: i64 = row.get(0)?;
+        let successful_requests: i64 = row.get::<_, Option<i64>>(1)?.unwrap_or(0);
+        let failed_requests: i64 = row.get::<_, Option<i64>>(2)?.unwrap_or(0);
+        let avg_latency_ms: f64 = row.get::<_, Option<f64>>(3)?.unwrap_or(0.0);
+        let slow_requests: i64 = row.get::<_, Option<i64>>(4)?.unwrap_or(0);
+        let success_rate_pct = if total_requests > 0 {
+            (successful_requests as f64 / total_requests as f64) * 100.0
+        } else {
+            100.0
+        };
+        let slow_request_pct = if total_requests > 0 {
+            (slow_requests as f64 / total_requests as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        Ok(ReliabilitySummary {
+            total_requests,
+            successful_requests,
+            failed_requests,
+            success_rate_pct,
+            avg_latency_ms,
+            slow_requests,
+            slow_request_pct,
+        })
+    })?;
+
+    let provider_query = format!(
+        "SELECT
+            provider,
+            model,
+            COUNT(*) as total_requests,
+            SUM(CASE WHEN COALESCE(error_message, '') != '' THEN 1 ELSE 0 END) as failed_requests,
+            AVG(COALESCE(latency_ms, 0)) as avg_latency_ms,
+            MAX(COALESCE(latency_ms, 0)) as max_latency_ms
+         FROM requests {}
+         GROUP BY provider, model
+         HAVING COUNT(*) > 0
+         ORDER BY total_requests DESC, avg_latency_ms DESC
+         LIMIT 12",
+        where_clause
+    );
+
+    let mut stmt = conn.prepare(&provider_query)?;
+    let providers = stmt
+        .query_map([], |row| {
+            let total_requests: i64 = row.get(2)?;
+            let failed_requests: i64 = row.get::<_, Option<i64>>(3)?.unwrap_or(0);
+            let success_rate_pct = if total_requests > 0 {
+                ((total_requests - failed_requests) as f64 / total_requests as f64) * 100.0
+            } else {
+                100.0
+            };
+
+            Ok(ProviderReliabilityStat {
+                provider: row.get(0)?,
+                model: row.get(1)?,
+                total_requests,
+                failed_requests,
+                success_rate_pct,
+                avg_latency_ms: row.get::<_, Option<f64>>(4)?.unwrap_or(0.0),
+                max_latency_ms: row.get::<_, Option<i64>>(5)?.unwrap_or(0),
+            })
+        })?
+        .collect::<Result<Vec<_>>>()?;
+
+    let anomaly_query = "
+        WITH recent AS (
+            SELECT
+                provider,
+                model,
+                COUNT(*) as recent_requests,
+                AVG(COALESCE(latency_ms, 0)) as recent_avg_latency,
+                1.0 * SUM(CASE WHEN COALESCE(error_message, '') != '' THEN 1 ELSE 0 END) / COUNT(*) as recent_error_rate
+            FROM requests
+            WHERE timestamp >= datetime('now', '-24 hours')
+            GROUP BY provider, model
+            HAVING COUNT(*) >= 5
+        ),
+        baseline AS (
+            SELECT
+                provider,
+                model,
+                COUNT(*) as baseline_requests,
+                AVG(COALESCE(latency_ms, 0)) as baseline_avg_latency,
+                1.0 * SUM(CASE WHEN COALESCE(error_message, '') != '' THEN 1 ELSE 0 END) / COUNT(*) as baseline_error_rate
+            FROM requests
+            WHERE timestamp >= datetime('now', '-8 days')
+              AND timestamp < datetime('now', '-24 hours')
+            GROUP BY provider, model
+            HAVING COUNT(*) >= 10
+        )
+        SELECT
+            recent.provider,
+            recent.model,
+            recent.recent_requests,
+            baseline.baseline_requests,
+            recent.recent_avg_latency,
+            baseline.baseline_avg_latency,
+            recent.recent_error_rate,
+            baseline.baseline_error_rate
+        FROM recent
+        JOIN baseline
+          ON recent.provider = baseline.provider AND recent.model = baseline.model
+    ";
+
+    let mut anomaly_stmt = conn.prepare(anomaly_query)?;
+    let anomaly_rows = anomaly_stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, Option<f64>>(4)?.unwrap_or(0.0),
+            row.get::<_, Option<f64>>(5)?.unwrap_or(0.0),
+            row.get::<_, Option<f64>>(6)?.unwrap_or(0.0),
+            row.get::<_, Option<f64>>(7)?.unwrap_or(0.0),
+        ))
+    })?;
+
+    let mut anomalies = Vec::new();
+    for row in anomaly_rows {
+        let (provider, model, recent_requests, baseline_requests, recent_latency, baseline_latency, recent_error_rate, baseline_error_rate) = row?;
+
+        if baseline_latency > 0.0
+            && recent_latency > baseline_latency * 1.5
+            && (recent_latency - baseline_latency) >= 250.0
+        {
+            let severity = if recent_latency > baseline_latency * 2.0 { "high" } else { "medium" };
+            anomalies.push(ReliabilityAnomaly {
+                kind: "latency_spike".to_string(),
+                provider: provider.clone(),
+                model: model.clone(),
+                severity: severity.to_string(),
+                summary: format!(
+                    "Latency jumped from {:.0}ms to {:.0}ms in the last 24h",
+                    baseline_latency, recent_latency
+                ),
+                recent_requests,
+                baseline_requests,
+                recent_value: recent_latency,
+                baseline_value: baseline_latency,
+            });
+        }
+
+        if recent_error_rate >= 0.10 && recent_error_rate > baseline_error_rate + 0.05 {
+            let severity = if recent_error_rate >= 0.25 { "high" } else { "medium" };
+            anomalies.push(ReliabilityAnomaly {
+                kind: "error_spike".to_string(),
+                provider: provider.clone(),
+                model: model.clone(),
+                severity: severity.to_string(),
+                summary: format!(
+                    "Error rate rose from {:.1}% to {:.1}% in the last 24h",
+                    baseline_error_rate * 100.0,
+                    recent_error_rate * 100.0
+                ),
+                recent_requests,
+                baseline_requests,
+                recent_value: recent_error_rate * 100.0,
+                baseline_value: baseline_error_rate * 100.0,
+            });
+        }
+    }
+
+    anomalies.sort_by(|a, b| {
+        b.recent_value
+            .partial_cmp(&a.recent_value)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    anomalies.truncate(8);
+
+    Ok(ReliabilitySnapshot {
+        range: time_range.to_string(),
+        summary,
+        providers,
+        anomalies,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reliability_snapshot_detects_latency_and_error_spikes() {
+        let db_path = std::env::temp_dir().join(format!(
+            "tokenpulse-reliability-test-{}.db",
+            std::process::id()
+        ));
+        let conn = init_db(db_path.to_str().unwrap()).unwrap();
+
+        for day_offset in 2..8 {
+            conn.execute(
+                "INSERT INTO requests (timestamp, provider, model, input_tokens, output_tokens, cached_tokens, reasoning_tokens, cost_usd, latency_ms, tokens_per_second, time_to_first_token_ms, is_streaming, is_complete, source_tag, error_message, provider_type) VALUES (datetime('now', ?1), 'openai', 'gpt-4o', 100, 50, 0, 0, 0.25, 900, 0.0, 0, 0, 1, 'tests', NULL, 'api')",
+                params![format!("-{} days", day_offset)],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO requests (timestamp, provider, model, input_tokens, output_tokens, cached_tokens, reasoning_tokens, cost_usd, latency_ms, tokens_per_second, time_to_first_token_ms, is_streaming, is_complete, source_tag, error_message, provider_type) VALUES (datetime('now', ?1), 'openai', 'gpt-4o', 100, 50, 0, 0, 0.25, 950, 0.0, 0, 0, 1, 'tests', NULL, 'api')",
+                params![format!("-{} days", day_offset)],
+            ).unwrap();
+        }
+
+        for hour_offset in 0..6 {
+            conn.execute(
+                "INSERT INTO requests (timestamp, provider, model, input_tokens, output_tokens, cached_tokens, reasoning_tokens, cost_usd, latency_ms, tokens_per_second, time_to_first_token_ms, is_streaming, is_complete, source_tag, error_message, provider_type) VALUES (datetime('now', ?1), 'openai', 'gpt-4o', 100, 50, 0, 0, 0.25, 2600, 0.0, 0, 0, ?2, 'tests', ?3, 'api')",
+                params![
+                    format!("-{} hours", hour_offset),
+                    if hour_offset < 2 { 0 } else { 1 },
+                    if hour_offset < 2 { Some("upstream 500") } else { Option::<&str>::None },
+                ],
+            ).unwrap();
+        }
+
+        let snapshot = get_reliability_snapshot(&conn, "all").unwrap();
+        assert_eq!(snapshot.summary.total_requests, 18);
+        assert_eq!(snapshot.summary.failed_requests, 2);
+        assert!(snapshot.anomalies.iter().any(|a| a.kind == "latency_spike"));
+        assert!(snapshot.anomalies.iter().any(|a| a.kind == "error_spike"));
+
+        drop(conn);
+        let _ = std::fs::remove_file(db_path);
+    }
 }

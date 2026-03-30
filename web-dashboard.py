@@ -385,6 +385,24 @@ td{padding:11px 16px;font-size:12px;border-top:1px solid rgba(42,45,58,.5);white
 .project-name{font-size:14px;font-weight:700;color:#f0f6fc;margin-bottom:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .project-stats{display:flex;flex-direction:column;gap:3px}
 .project-stat{display:flex;justify-content:space-between;align-items:center;font-size:12px}
+.reliability-section{background:#1a1d27;border:1px solid #2a2d3a;border-radius:14px;padding:22px 24px;margin-bottom:20px}
+.reliability-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:14px}
+.reliability-card{background:#161922;border:1px solid #2a2d3a;border-radius:12px;padding:16px 18px}
+.reliability-label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.8px;color:#8b949e;margin-bottom:8px}
+.reliability-value{font-size:24px;font-weight:800;line-height:1;color:#f0f6fc}
+.reliability-sub{font-size:11px;color:#6e7681;margin-top:6px}
+.reliability-grid{display:grid;grid-template-columns:1.1fr .9fr;gap:14px}
+.reliability-list,.anomaly-list{display:flex;flex-direction:column;gap:8px}
+.reliability-item,.anomaly-item{background:#161922;border:1px solid #2a2d3a;border-radius:10px;padding:12px 14px}
+.reliability-item-header,.anomaly-header{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px}
+.reliability-item-name,.anomaly-title{font-size:13px;font-weight:600;color:#f0f6fc}
+.reliability-item-meta,.anomaly-meta{display:flex;flex-wrap:wrap;gap:10px;font-size:11px;color:#8b949e}
+.reliability-item-stats{display:flex;gap:12px;flex-wrap:wrap;font-size:12px;color:#c9d1d9}
+.severity-badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px}
+.severity-badge.medium{background:rgba(234,179,8,.12);color:#eab308}
+.severity-badge.high{background:rgba(248,81,73,.15);color:#f85149}
+.reliability-empty{color:#6e7681;font-size:13px;padding:12px 0}
+@media(max-width:900px){.reliability-grid{grid-template-columns:1fr}}
 .project-stat-label{color:#8b949e}
 .project-stat-value{color:#c9d1d9;font-weight:600}
 .project-cost{font-size:18px;font-weight:800;margin-bottom:8px}
@@ -1135,6 +1153,124 @@ def _fetch_forecast_data():
         return {}
 
 
+def _fetch_reliability_data(time_range):
+    """Fetch latency/reliability rollups plus anomaly candidates."""
+    try:
+        conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+
+        where = _time_filter_sql(time_range, "WHERE")
+
+        c.execute(
+            f"SELECT COUNT(*) as total_requests, "
+            f"SUM(CASE WHEN COALESCE(error_message, '') = '' THEN 1 ELSE 0 END) as successful_requests, "
+            f"SUM(CASE WHEN COALESCE(error_message, '') != '' THEN 1 ELSE 0 END) as failed_requests, "
+            f"AVG(COALESCE(latency_ms, 0)) as avg_latency_ms, "
+            f"SUM(CASE WHEN COALESCE(latency_ms, 0) >= 5000 THEN 1 ELSE 0 END) as slow_requests "
+            f"FROM requests{where}"
+        )
+        row = c.fetchone()
+        total_requests = row["total_requests"] or 0
+        successful_requests = row["successful_requests"] or 0
+        failed_requests = row["failed_requests"] or 0
+        avg_latency_ms = float(row["avg_latency_ms"] or 0.0)
+        slow_requests = row["slow_requests"] or 0
+
+        success_rate_pct = round((100.0 * successful_requests / total_requests), 1) if total_requests else 100.0
+        slow_request_pct = round((100.0 * slow_requests / total_requests), 1) if total_requests else 0.0
+
+        c.execute(
+            f"SELECT provider, model, COUNT(*) as total_requests, "
+            f"SUM(CASE WHEN COALESCE(error_message, '') != '' THEN 1 ELSE 0 END) as failed_requests, "
+            f"AVG(COALESCE(latency_ms, 0)) as avg_latency_ms, "
+            f"MAX(COALESCE(latency_ms, 0)) as max_latency_ms "
+            f"FROM requests{where} GROUP BY provider, model "
+            f"ORDER BY total_requests DESC, avg_latency_ms DESC LIMIT 8"
+        )
+        providers = []
+        for r in c.fetchall():
+            total = r["total_requests"] or 0
+            failed = r["failed_requests"] or 0
+            providers.append({
+                "provider": r["provider"],
+                "model": r["model"],
+                "total_requests": total,
+                "failed_requests": failed,
+                "success_rate_pct": round((100.0 * (total - failed) / total), 1) if total else 100.0,
+                "avg_latency_ms": float(r["avg_latency_ms"] or 0.0),
+                "max_latency_ms": r["max_latency_ms"] or 0,
+            })
+
+        c.execute(
+            "WITH recent AS ("
+            "  SELECT provider, model, COUNT(*) as recent_requests, "
+            "         AVG(COALESCE(latency_ms,0)) as recent_avg_latency, "
+            "         1.0 * SUM(CASE WHEN COALESCE(error_message, '') != '' THEN 1 ELSE 0 END) / COUNT(*) as recent_error_rate "
+            "  FROM requests WHERE timestamp >= datetime('now', '-24 hours') "
+            "  GROUP BY provider, model HAVING COUNT(*) >= 5"
+            "), baseline AS ("
+            "  SELECT provider, model, COUNT(*) as baseline_requests, "
+            "         AVG(COALESCE(latency_ms,0)) as baseline_avg_latency, "
+            "         1.0 * SUM(CASE WHEN COALESCE(error_message, '') != '' THEN 1 ELSE 0 END) / COUNT(*) as baseline_error_rate "
+            "  FROM requests WHERE timestamp >= datetime('now', '-8 days') "
+            "    AND timestamp < datetime('now', '-24 hours') "
+            "  GROUP BY provider, model HAVING COUNT(*) >= 10"
+            ") "
+            "SELECT recent.provider, recent.model, recent.recent_requests, baseline.baseline_requests, "
+            "recent.recent_avg_latency, baseline.baseline_avg_latency, recent.recent_error_rate, baseline.baseline_error_rate "
+            "FROM recent JOIN baseline ON recent.provider = baseline.provider AND recent.model = baseline.model"
+        )
+        anomalies = []
+        for r in c.fetchall():
+            recent_latency = float(r["recent_avg_latency"] or 0.0)
+            baseline_latency = float(r["baseline_avg_latency"] or 0.0)
+            recent_error_rate = float(r["recent_error_rate"] or 0.0)
+            baseline_error_rate = float(r["baseline_error_rate"] or 0.0)
+            base = {
+                "provider": r["provider"],
+                "model": r["model"],
+                "recent_requests": r["recent_requests"] or 0,
+                "baseline_requests": r["baseline_requests"] or 0,
+            }
+            if baseline_latency > 0 and recent_latency > baseline_latency * 1.5 and (recent_latency - baseline_latency) >= 250:
+                anomalies.append({
+                    **base,
+                    "kind": "latency_spike",
+                    "severity": "high" if recent_latency > baseline_latency * 2.0 else "medium",
+                    "summary": f"Latency jumped from {baseline_latency:.0f}ms to {recent_latency:.0f}ms in the last 24h",
+                    "recent_value": recent_latency,
+                    "baseline_value": baseline_latency,
+                })
+            if recent_error_rate >= 0.10 and recent_error_rate > baseline_error_rate + 0.05:
+                anomalies.append({
+                    **base,
+                    "kind": "error_spike",
+                    "severity": "high" if recent_error_rate >= 0.25 else "medium",
+                    "summary": f"Error rate rose from {baseline_error_rate * 100:.1f}% to {recent_error_rate * 100:.1f}% in the last 24h",
+                    "recent_value": recent_error_rate * 100,
+                    "baseline_value": baseline_error_rate * 100,
+                })
+
+        anomalies.sort(key=lambda item: item.get("recent_value", 0), reverse=True)
+        conn.close()
+        return {
+            "summary": {
+                "total_requests": total_requests,
+                "successful_requests": successful_requests,
+                "failed_requests": failed_requests,
+                "success_rate_pct": success_rate_pct,
+                "avg_latency_ms": avg_latency_ms,
+                "slow_requests": slow_requests,
+                "slow_request_pct": slow_request_pct,
+            },
+            "providers": providers,
+            "anomalies": anomalies[:8],
+        }
+    except Exception:
+        return {}
+
+
 def _fetch_error_data(time_range):
     """Fetch error monitoring data."""
     try:
@@ -1781,6 +1917,93 @@ def _build_forecast_section(forecast, budgets):
 </div>"""
 
 
+def _build_reliability_section(reliability_data):
+    """Build latency/reliability overview section."""
+    if not reliability_data:
+        return ""
+
+    summary = reliability_data.get("summary") or {}
+    providers = reliability_data.get("providers") or []
+    anomalies = reliability_data.get("anomalies") or []
+    total_requests = summary.get("total_requests", 0)
+    if total_requests == 0:
+        return f"""<div class="reliability-section">
+  <div class="section-title">Reliability &amp; Latency</div>
+  <div class="reliability-empty">No requests in this time range yet.</div>
+</div>"""
+
+    summary_html = f"""<div class="reliability-summary">
+  <div class="reliability-card">
+    <div class="reliability-label">Success Rate</div>
+    <div class="reliability-value">{summary.get('success_rate_pct', 100.0):.1f}%</div>
+    <div class="reliability-sub">{summary.get('successful_requests', 0):,} successful of {total_requests:,}</div>
+  </div>
+  <div class="reliability-card">
+    <div class="reliability-label">Avg Latency</div>
+    <div class="reliability-value">{fmt_latency(summary.get('avg_latency_ms', 0))}</div>
+    <div class="reliability-sub">Across all tracked requests</div>
+  </div>
+  <div class="reliability-card">
+    <div class="reliability-label">Slow Requests</div>
+    <div class="reliability-value">{summary.get('slow_requests', 0):,}</div>
+    <div class="reliability-sub">{summary.get('slow_request_pct', 0.0):.1f}% above 5s</div>
+  </div>
+</div>"""
+
+    provider_items = []
+    for item in providers:
+        provider_items.append(
+            f'<div class="reliability-item">'
+            f'<div class="reliability-item-header">'
+            f'<div class="reliability-item-name" title="{_escape_html(item.get("model") or "unknown")}">{_escape_html(item.get("model") or "unknown")}</div>'
+            f'{provider_badge_html(item.get("provider") or "unknown")}'
+            f'</div>'
+            f'<div class="reliability-item-stats">'
+            f'<span>{item.get("total_requests", 0):,} reqs</span>'
+            f'<span>{item.get("success_rate_pct", 100.0):.1f}% success</span>'
+            f'<span>{fmt_latency(item.get("avg_latency_ms", 0))} avg</span>'
+            f'<span>{fmt_latency(item.get("max_latency_ms", 0))} max</span>'
+            f'</div>'
+            f'</div>'
+        )
+    if not provider_items:
+        provider_items = ['<div class="reliability-empty">No provider rollups yet.</div>']
+
+    anomaly_items = []
+    for item in anomalies:
+        severity = item.get("severity") or "medium"
+        anomaly_items.append(
+            f'<div class="anomaly-item">'
+            f'<div class="anomaly-header">'
+            f'<div class="anomaly-title">{_escape_html(item.get("model") or "unknown")}</div>'
+            f'<span class="severity-badge {severity}">{severity}</span>'
+            f'</div>'
+            f'<div class="anomaly-meta">'
+            f'{provider_badge_html(item.get("provider") or "unknown")}'
+            f'<span>{item.get("recent_requests", 0)} recent / {item.get("baseline_requests", 0)} baseline</span>'
+            f'</div>'
+            f'<div class="reliability-sub" style="margin-top:8px">{_escape_html(item.get("summary") or "")}</div>'
+            f'</div>'
+        )
+    if not anomaly_items:
+        anomaly_items = ['<div class="reliability-empty">No current latency or error spikes detected.</div>']
+
+    return f"""<div class="reliability-section">
+  <div class="section-title">Reliability &amp; Latency</div>
+  {summary_html}
+  <div class="reliability-grid">
+    <div>
+      <div style="font-size:12px;font-weight:600;color:#f0f6fc;margin-bottom:8px">Top Providers / Models</div>
+      <div class="reliability-list">{''.join(provider_items)}</div>
+    </div>
+    <div>
+      <div style="font-size:12px;font-weight:600;color:#f0f6fc;margin-bottom:8px">Anomalies (24h vs baseline)</div>
+      <div class="anomaly-list">{''.join(anomaly_items)}</div>
+    </div>
+  </div>
+</div>"""
+
+
 def _build_error_section(error_data, time_range):
     """Build the error monitor section."""
     if not error_data:
@@ -2296,7 +2519,7 @@ def _build_heatmap(data):
 </div>"""
 
 
-def _build_insights(data, forecast=None, error_data=None):
+def _build_insights(data, forecast=None, error_data=None, reliability_data=None):
     """Build auto-generated insights panel."""
     ir = data.get("insights_raw", {})
     time_range = data.get("time_range", "today")
@@ -2371,6 +2594,14 @@ def _build_insights(data, forecast=None, error_data=None):
             ('<span class="insight-emoji">&#9889;</span>',
              "Avg Latency",
              fmt_latency(ir["avg_latency_ms"]) + " average response time")
+        )
+
+    if reliability_data and (reliability_data.get("anomalies") or []):
+        first_anomaly = reliability_data["anomalies"][0]
+        cards.append(
+            ('<span class="insight-emoji">&#128680;</span>',
+             "Reliability Spike",
+             _escape_html(first_anomaly.get("summary") or "Recent reliability anomaly detected"))
         )
 
     if ir.get("distinct_models", 0) > 0:
@@ -2922,6 +3153,9 @@ def build_page(time_range, page=1):
     error_data = _fetch_error_data(time_range)
     error_html = _build_error_section(error_data, time_range)
 
+    reliability_data = _fetch_reliability_data(time_range)
+    reliability_html = _build_reliability_section(reliability_data)
+
     opt_data = _fetch_optimizer_data()
     optimizer_html = _build_optimizer_section(opt_data)
 
@@ -2929,7 +3163,7 @@ def build_page(time_range, page=1):
     project_html = _build_project_section(projects)
 
     # Insights (now with forecast and error data)
-    insights_html = _build_insights(data, forecast=forecast, error_data=error_data)
+    insights_html = _build_insights(data, forecast=forecast, error_data=error_data, reliability_data=reliability_data)
 
     body = f"""{activity_section}
 
@@ -2942,6 +3176,8 @@ def build_page(time_range, page=1):
   {optimizer_html}
 
   {project_html}
+
+  {reliability_html}
 
   <!-- Charts -->
   <div class="charts-row">
