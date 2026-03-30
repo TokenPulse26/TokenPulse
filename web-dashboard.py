@@ -90,39 +90,56 @@ PAGE_TEMPLATE = Template(r"""<!DOCTYPE html>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
+:root{
+  --bg:#0b1018;--panel:#171e2c;--panel-soft:#121925;--border:#2a3347;--border-strong:#3a4761;
+  --text:#d6dfeb;--text-muted:#94a0b4;--text-soft:#6e7a8f;--title:#f3f7fd;
+  --green:#22c55e;--blue:#58a6ff;--amber:#f59e0b;--red:#f85149;--purple:#a78bfa;
+}
 *,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
-body{background:#0f1117;color:#c9d1d9;font-family:'Inter',system-ui,-apple-system,sans-serif;line-height:1.5;min-height:100vh}
+body{background:radial-gradient(circle at top left, rgba(88,166,255,.14), transparent 26%),radial-gradient(circle at top right, rgba(34,197,94,.10), transparent 20%),linear-gradient(180deg,#0a0f18 0%,#0d1320 42%,#0a0e16 100%);color:var(--text);font-family:'Inter',system-ui,-apple-system,sans-serif;line-height:1.5;min-height:100vh}
 a{color:inherit;text-decoration:none}
 
 /* Sticky nav */
 .sticky-nav{
   position:fixed;top:0;left:0;right:0;z-index:100;
-  background:rgba(15,17,23,0.92);backdrop-filter:blur(10px);
-  border-bottom:1px solid #2a2d3a;
+  background:rgba(10,15,24,.88);backdrop-filter:blur(12px);
+  border-bottom:1px solid var(--border);
   display:flex;align-items:center;justify-content:space-between;
   padding:10px 28px;
   transform:translateY(-100%);transition:transform .25s ease;
 }
 .sticky-nav.visible{transform:translateY(0)}
-.sticky-nav .wordmark{font-size:16px;font-weight:800;color:#f0f6fc;letter-spacing:-0.5px}
+.sticky-nav .wordmark{font-size:16px;font-weight:800;color:var(--title);letter-spacing:-0.5px}
 .sticky-nav .range-bar{display:flex;gap:5px}
 @media(max-width:600px){.sticky-nav{display:none}}
 
 /* Layout */
-.shell{max-width:1320px;margin:0 auto;padding:24px 28px 40px}
+.shell{max-width:1380px;margin:0 auto;padding:24px 28px 40px}
+.dashboard-top{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(320px,.95fr);gap:18px;align-items:start;margin-bottom:20px}
+.dashboard-main,.dashboard-side{display:flex;flex-direction:column;gap:16px}
+.secondary-grid{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(290px,.9fr);gap:16px;margin-bottom:20px}
+.section-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:16px}
+.section-head.compact{margin-bottom:12px}
+.section-kicker{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--blue);margin-bottom:6px}
+.section-title{font-size:18px;font-weight:760;color:var(--title);letter-spacing:-.02em;margin-bottom:0}
+.section-copy{font-size:12px;color:var(--text-muted);max-width:680px;margin-top:4px}
+.section-meta{font-size:11px;color:var(--text-soft);white-space:nowrap}
 
 /* Header */
-.header{position:relative;overflow:hidden;border-radius:14px;background:#1a1d27;border:1px solid #2a2d3a;margin-bottom:20px;padding:22px 24px 0}
+.header{position:relative;overflow:hidden;border-radius:20px;background:radial-gradient(circle at top right, rgba(34,197,94,.16), transparent 28%),linear-gradient(135deg,rgba(15,23,42,.96),rgba(23,29,43,.94) 45%,rgba(18,24,38,.98));border:1px solid var(--border-strong);margin-bottom:20px;padding:24px 26px 0;box-shadow:0 18px 60px rgba(0,0,0,.24)}
+.header::after{content:"";position:absolute;right:-80px;bottom:-120px;width:280px;height:280px;border-radius:50%;background:radial-gradient(circle, rgba(88,166,255,.16), transparent 62%);pointer-events:none}
 .header-top{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:16px;margin-bottom:12px}
-.header-left{display:flex;align-items:center;gap:14px}
-.wordmark{font-size:24px;font-weight:800;color:#f0f6fc;letter-spacing:-0.5px}
+.header-left{display:flex;align-items:flex-start;gap:14px}
+.header-copy{display:flex;flex-direction:column;gap:6px}
+.wordmark{font-size:28px;font-weight:800;color:var(--title);letter-spacing:-0.6px}
+.header-subtitle{font-size:13px;color:var(--text-muted);max-width:720px}
 .live-badge{display:inline-flex;align-items:center;gap:6px;background:rgba(34,197,94,0.1);color:#22c55e;padding:4px 12px;border-radius:20px;font-size:11px;font-weight:600}
 .pulse-dot{width:7px;height:7px;border-radius:50%;background:#22c55e;animation:pulse 2s ease-in-out infinite}
 .pulse-dot.fast{animation:pulse .6s ease-in-out infinite}
 @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.85)}}
 
 /* Token flow strip */
-.token-flow{height:80px;position:relative;overflow:hidden;margin:0 -24px}
+.token-flow{height:80px;position:relative;overflow:hidden;margin:0 -26px}
 .flow-dot{position:absolute;border-radius:50%;pointer-events:none;opacity:0;animation:flow-anim linear infinite}
 @keyframes flow-anim{
   0%{left:-20px;opacity:0}
@@ -133,69 +150,72 @@ a{color:inherit;text-decoration:none}
 
 /* Range buttons */
 .range-bar{display:flex;gap:6px;flex-wrap:wrap}
-.range-btn{padding:6px 18px;border-radius:8px;font-size:13px;font-weight:500;background:#1a1d27;border:1px solid #2a2d3a;color:#8b949e;cursor:pointer;transition:all .15s ease}
-.range-btn:hover{border-color:#3d4250;color:#e6edf3}
-.range-btn.active{background:#22c55e;border-color:#22c55e;color:#0f1117;font-weight:600}
-.export-btn{padding:6px 14px;border-radius:8px;font-size:11px;font-weight:500;background:transparent;border:1px solid #3d4250;color:#8b949e;cursor:pointer;transition:all .15s ease;text-decoration:none;display:inline-flex;align-items:center;gap:5px}
-.export-btn:hover{border-color:#58a6ff;color:#c9d1d9}
+.range-btn{padding:7px 16px;border-radius:999px;font-size:13px;font-weight:500;background:rgba(255,255,255,.02);border:1px solid var(--border);color:var(--text-muted);cursor:pointer;transition:all .15s ease}
+.range-btn:hover{border-color:var(--border-strong);color:#e6edf3;background:rgba(255,255,255,.04)}
+.range-btn.active{background:var(--green);border-color:var(--green);color:#0f1117;font-weight:700;box-shadow:0 10px 24px rgba(34,197,94,.18)}
+.export-btn{padding:7px 14px;border-radius:999px;font-size:11px;font-weight:600;background:transparent;border:1px solid var(--border-strong);color:var(--text-muted);cursor:pointer;transition:all .15s ease;text-decoration:none;display:inline-flex;align-items:center;gap:5px}
+.export-btn:hover{border-color:var(--blue);color:var(--text)}
 
 /* Activity feed */
-.activity-section{background:#1a1d27;border:1px solid #2a2d3a;border-radius:14px;padding:18px 24px;margin-bottom:20px}
-.activity-label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.8px;color:#8b949e;margin-bottom:10px}
-.activity-timeline{position:relative;height:28px;background:#161922;border-radius:8px;overflow:hidden;margin-bottom:8px}
+.activity-section,.stats .stat-card,.budget-section,.forecast-section,.optimizer-section,.project-section,.reliability-section,.chart-panel,.error-section,.heatmap-section,.insights-section,.table-wrap{background:linear-gradient(180deg, rgba(23,30,44,.98), rgba(19,25,37,.98));border:1px solid var(--border);border-radius:18px}
+.activity-section,.budget-section,.forecast-section,.optimizer-section,.project-section,.reliability-section,.chart-panel,.error-section,.heatmap-section,.insights-section{padding:22px 24px}
+.activity-section{padding:18px 22px}
+.activity-label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.8px;color:var(--text-muted);margin-bottom:10px}
+.activity-timeline{position:relative;height:32px;background:#101623;border-radius:10px;overflow:hidden;margin-bottom:8px;border:1px solid rgba(255,255,255,.04)}
 .activity-dot{position:absolute;top:50%;transform:translateY(-50%);width:10px;height:10px;border-radius:50%;opacity:.85;transition:box-shadow .3s}
 .activity-dot.new-dot{animation:dot-pulse .8s ease-out}
 @keyframes dot-pulse{0%{box-shadow:0 0 0 0 rgba(255,255,255,.6);transform:translateY(-50%) scale(1.4)}100%{box-shadow:0 0 0 8px rgba(255,255,255,0);transform:translateY(-50%) scale(1)}}
-.activity-count{font-size:12px;color:#8b949e}
-.activity-waiting{display:flex;align-items:center;justify-content:center;height:28px;gap:8px;color:#6e7681;font-size:13px}
+.activity-count{font-size:12px;color:var(--text-muted)}
+.activity-waiting{display:flex;align-items:center;justify-content:center;height:32px;gap:8px;color:var(--text-soft);font-size:13px}
 .breathing{animation:breathe 3s ease-in-out infinite}
 @keyframes breathe{0%,100%{opacity:.3}50%{opacity:1}}
 
 /* Stat cards */
-.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:20px}
-.stat-card{background:#1a1d27;border:1px solid #2a2d3a;border-radius:14px;padding:20px 22px;transition:border-color .2s}
-.stat-card:hover{border-color:#3d4250}
-.stat-label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.8px;color:#8b949e;margin-bottom:8px}
-.stat-value{font-size:28px;font-weight:800;color:#f0f6fc;line-height:1}
-.stat-sub{font-size:11px;color:#6e7681;margin-top:6px}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
+.stat-card{padding:20px 22px;transition:border-color .2s,transform .2s}
+.stat-card:hover{border-color:var(--border-strong);transform:translateY(-1px)}
+.stat-label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.8px;color:var(--text-muted);margin-bottom:8px}
+.stat-value{font-size:30px;font-weight:800;color:var(--title);line-height:1}
+.stat-sub{font-size:11px;color:var(--text-soft);margin-top:6px}
 .stat-trend{font-size:11px;margin-top:5px;font-weight:600}
-.stat-trend.up{color:#22c55e}
-.stat-trend.down{color:#f85149}
-.stat-trend.flat{color:#8b949e}
+.stat-trend.up{color:var(--green)}
+.stat-trend.down{color:var(--red)}
+.stat-trend.flat{color:var(--text-muted)}
 .stat-sparkline{margin-top:10px;display:block}
-.clr-green{color:#22c55e}
-.clr-blue{color:#58a6ff}
-.clr-purple{color:#a78bfa}
+.clr-green{color:var(--green)}
+.clr-blue{color:var(--blue)}
+.clr-purple{color:var(--purple)}
 
 /* Charts row */
 .charts-row{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px}
-.chart-panel{background:#1a1d27;border:1px solid #2a2d3a;border-radius:14px;padding:22px 24px;min-height:320px;display:flex;flex-direction:column}
-.chart-title{font-size:14px;font-weight:700;color:#f0f6fc;margin-bottom:18px}
+.chart-panel{min-height:320px;display:flex;flex-direction:column}
+.chart-title{font-size:15px;font-weight:700;color:var(--title);margin-bottom:8px}
+.chart-copy{font-size:12px;color:var(--text-muted);margin-bottom:18px}
 
 /* SVG spend chart */
 .spend-svg-wrap{flex:1;position:relative;min-height:240px}
 .spend-svg-wrap svg{width:100%;height:100%;display:block}
 .svg-tooltip{
-  position:absolute;pointer-events:none;background:rgba(15,17,23,.95);
-  border:1px solid #3d4250;border-radius:8px;padding:10px 14px;
-  font-size:12px;color:#c9d1d9;white-space:nowrap;z-index:50;
+  position:absolute;pointer-events:none;background:rgba(10,15,24,.96);
+  border:1px solid var(--border-strong);border-radius:10px;padding:10px 14px;
+  font-size:12px;color:var(--text);white-space:nowrap;z-index:50;
   opacity:0;transition:opacity .15s;box-shadow:0 4px 12px rgba(0,0,0,.4);
 }
 .svg-tooltip.visible{opacity:1}
-.chart-empty{flex:1;display:flex;align-items:center;justify-content:center;color:#6e7681;font-size:13px}
+.chart-empty{flex:1;display:flex;align-items:center;justify-content:center;color:var(--text-soft);font-size:13px}
 
 /* Model breakdown */
 .model-list{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:10px}
-.model-item{background:#161922;border:1px solid #2a2d3a;border-radius:10px;padding:14px 16px;transition:border-color .2s}
-.model-item:hover{border-color:#3d4250}
+.model-item{background:#101724;border:1px solid var(--border);border-radius:12px;padding:14px 16px;transition:border-color .2s}
+.model-item:hover{border-color:var(--border-strong)}
 .model-row{display:flex;align-items:center;justify-content:space-between;gap:10px}
-.model-name{font-size:13px;font-weight:600;color:#f0f6fc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:200px}
+.model-name{font-size:13px;font-weight:600;color:var(--title);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:200px}
 .model-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.model-meta span{font-size:11px;color:#8b949e}
+.model-meta span{font-size:11px;color:var(--text-muted)}
 .model-cost{font-size:15px;font-weight:700;white-space:nowrap}
-.usage-bar-bg{height:3px;background:#2a2d3a;border-radius:2px;margin-top:10px}
+.usage-bar-bg{height:3px;background:#2a3347;border-radius:2px;margin-top:10px}
 .usage-bar-fill{height:3px;border-radius:2px;transition:width .3s ease}
-.prov-badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:600;white-space:nowrap}
+.prov-badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:10px;font-weight:600;white-space:nowrap}
 
 /* Heatmap */
 .heatmap-section{background:#1a1d27;border:1px solid #2a2d3a;border-radius:14px;padding:22px 24px;margin-bottom:0}
@@ -470,6 +490,56 @@ td{padding:11px 16px;font-size:12px;border-top:1px solid rgba(42,45,58,.5);white
 .project-stat-value{color:#c9d1d9;font-weight:600}
 .project-cost{font-size:18px;font-weight:800;margin-bottom:8px}
 .project-empty{color:#6e7681;font-size:13px;padding:12px 0}
+
+/* ── UX refinement overrides ───────────────────────── */
+.primary-grid,.secondary-grid{display:grid;gap:16px;margin-bottom:20px}
+.primary-grid{grid-template-columns:minmax(0,1.45fr) minmax(340px,.95fr)}
+.secondary-grid{grid-template-columns:minmax(0,1.1fr) minmax(0,.9fr)}
+.section-header{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:14px}
+.section-heading{display:flex;flex-direction:column;gap:4px}
+.section-kicker{font-size:11px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;color:#58a6ff}
+.section-subtitle{font-size:13px;color:#8b949e;line-height:1.5;max-width:70ch}
+.attention-section{position:relative;background:linear-gradient(180deg,rgba(88,166,255,.12),rgba(26,29,39,.96) 28%);border-color:rgba(88,166,255,.22);box-shadow:0 18px 50px rgba(0,0,0,.22)}
+.attention-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:16px}
+.attention-stat{background:rgba(15,17,23,.45);border:1px solid rgba(88,166,255,.12);border-radius:12px;padding:12px 14px}
+.attention-stat-label{font-size:11px;font-weight:700;letter-spacing:.7px;text-transform:uppercase;color:#8b949e;margin-bottom:6px}
+.attention-stat-value{font-size:24px;font-weight:800;color:#f0f6fc;line-height:1}
+.attention-stat-sub{margin-top:6px;font-size:12px;color:#8b949e}
+.attention-grid{grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
+.attention-card{background:rgba(15,17,23,.55);border-width:1px 1px 1px 4px;box-shadow:inset 0 1px 0 rgba(255,255,255,.02)}
+.attention-empty{background:#161922;border:1px dashed #2f3545;border-radius:12px;padding:18px}
+.budget-section,.forecast-section,.optimizer-section,.project-section,.reliability-section,.error-section,.chart-panel,.insights-section,.heatmap-section,.activity-section,.stat-card{box-shadow:0 10px 26px rgba(0,0,0,.18)}
+.budget-section{background:linear-gradient(180deg,rgba(255,255,255,.02),rgba(255,255,255,0));}
+.budget-overview{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:16px}
+.budget-overview-card{background:#161922;border:1px solid #2a2d3a;border-radius:12px;padding:14px 16px}
+.budget-overview-label{font-size:11px;font-weight:700;letter-spacing:.7px;text-transform:uppercase;color:#8b949e;margin-bottom:8px}
+.budget-overview-value{font-size:22px;font-weight:800;color:#f0f6fc;line-height:1}
+.budget-overview-sub{margin-top:6px;font-size:12px;color:#8b949e}
+.budget-list{display:flex;flex-direction:column;gap:12px}
+.budget-item{margin-bottom:0;background:#161922;border:1px solid #2a2d3a;border-radius:12px;padding:16px}
+.budget-header{align-items:flex-start;gap:12px;margin-bottom:10px}
+.budget-title{display:flex;flex-direction:column;gap:6px;min-width:0}
+.budget-name-row,.budget-summary-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.budget-summary-row{justify-content:space-between}
+.budget-meta{gap:8px;flex-wrap:wrap}
+.budget-amount{font-size:18px}
+.budget-percent{font-size:12px;color:#8b949e;font-weight:700}
+.budget-bar-bg{height:10px;border-radius:999px;margin-bottom:10px}
+.budget-bar-fill{height:10px;border-radius:999px}
+.budget-supporting{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;font-size:12px;color:#8b949e}
+.budget-status-copy{color:#c9d1d9}
+.budget-manage-link{display:inline-flex;align-items:center;gap:8px;padding:9px 12px;margin-top:0;background:#161922;border:1px solid #2a2d3a;border-radius:10px;color:#c9d1d9;font-weight:600}
+.budget-manage-link:hover{text-decoration:none;border-color:#58a6ff;color:#f0f6fc}
+.budget-manage-panel{background:#11151d;border:1px solid #2a2d3a;border-radius:12px;padding:18px;margin-top:16px}
+.budget-form{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px;margin-bottom:18px}
+.budget-form-group{min-width:0}
+.budget-form-group.span-2{grid-column:span 2}
+.budget-form-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.budget-manage-row{padding:12px 14px;border-radius:10px}
+.budget-history{margin-top:18px}
+.forecast-grid{margin-top:0}
+@media(max-width:1080px){.primary-grid,.secondary-grid{grid-template-columns:1fr}.attention-summary,.budget-overview{grid-template-columns:repeat(2,minmax(0,1fr))}.budget-form{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:700px){.attention-summary,.budget-overview,.budget-form{grid-template-columns:1fr}.budget-summary-row,.budget-supporting,.section-header{align-items:flex-start;flex-direction:column}.budget-form-group.span-2{grid-column:auto}}
 </style>
 </head>
 <body>
@@ -1825,7 +1895,7 @@ def _build_budget_section(budgets, all_budgets, alert_history):
             meta_bits = [_budget_scope_badge(b.get("scope_kind"), b.get("scope_value"))]
             if pf:
                 meta_bits.append(f'<span style="color:#8b949e">{_escape_html(pf)}</span>')
-            meta_html = "".join(f" &middot; {bit}" for bit in meta_bits if bit)
+            meta_html = "".join(meta_bits)
             over_badge = '<span class="over-badge">&#9888; OVER BUDGET</span>' if is_over else ""
 
             alert_state = ""
@@ -1840,25 +1910,31 @@ def _build_budget_section(budgets, all_budgets, alert_history):
                     f'{_escape_html(_format_budget_alert_time(b.get("last_alert_triggered_at")))}</div>'
                 )
 
+            status_copy = 'Already over threshold' if is_over else ('Close to the limit' if pct_raw >= 80 else 'Within budget')
+            alert_display = alert_state or f'<div class="budget-alert-state">{fmt_cost(max(threshold-current, 0.0))} remaining before the limit</div>'
             items.append(
                 f'<div class="budget-item">'
                 f'<div class="budget-header">'
-                f'<div style="display:flex;align-items:center;gap:8px">'
+                f'<div class="budget-title">'
+                f'<div class="budget-name-row">'
                 f'<span class="budget-name">{name}</span>'
                 f'<span class="budget-period-badge">{period}</span>'
-                f'{meta_html}'
                 f'</div>'
-                f'<div style="display:flex;align-items:center;gap:8px">'
+                f'<div class="budget-meta">{meta_html.lstrip(" &middot;")}</div>'
+                f'</div>'
+                f'<div class="budget-summary-row">'
                 f'{over_badge}'
-                f'<span class="budget-amount" style="color:{"#ef4444" if is_over else "#f0f6fc"}">'
-                f'{fmt_cost(current)} / {fmt_cost(threshold)}</span>'
-                f'<span style="font-size:12px;color:#8b949e">{pct_raw:.0f}%</span>'
+                f'<span class="budget-amount" style="color:{"#ef4444" if is_over else "#f0f6fc"}">{fmt_cost(current)} / {fmt_cost(threshold)}</span>'
+                f'<span class="budget-percent">{pct_raw:.0f}% used</span>'
                 f'</div>'
                 f'</div>'
                 f'<div class="budget-bar-bg">'
                 f'<div class="{bar_class}" style="width:{pct:.1f}%"></div>'
                 f'</div>'
-                f'{alert_state}'
+                f'<div class="budget-supporting">'
+                f'<div class="budget-status-copy">{status_copy}</div>'
+                f'{alert_display}'
+                f'</div>'
                 f'</div>'
             )
         status_html = "\n".join(items)
@@ -1920,17 +1996,46 @@ def _build_budget_section(budgets, all_budgets, alert_history):
     if not history_rows:
         history_rows = '<div class="budget-history-empty">No budget alerts have fired yet.</div>'
 
+    budget_count = len(budgets or [])
+    over_count = sum(1 for b in budgets or [] if b.get("is_over"))
+    active_alerts = sum(1 for b in budgets or [] if b.get("alert_active"))
+    tracked_spend = sum((b.get("current_spend") or 0.0) for b in budgets or [])
+    overview_html = f"""<div class="budget-overview">
+    <div class="budget-overview-card">
+      <div class="budget-overview-label">Tracked budgets</div>
+      <div class="budget-overview-value">{budget_count}</div>
+      <div class="budget-overview-sub">{active_alerts} active alert{'s' if active_alerts != 1 else ''}</div>
+    </div>
+    <div class="budget-overview-card">
+      <div class="budget-overview-label">Over budget</div>
+      <div class="budget-overview-value">{over_count}</div>
+      <div class="budget-overview-sub">Budgets already beyond their threshold</div>
+    </div>
+    <div class="budget-overview-card">
+      <div class="budget-overview-label">Spend in tracked budgets</div>
+      <div class="budget-overview-value">{fmt_cost(tracked_spend)}</div>
+      <div class="budget-overview-sub">Current period spend across visible budgets</div>
+    </div>
+  </div>"""
+
+    status_html = f'<div class="budget-list">{status_html}</div>' if budgets else status_html
+
     return f"""<div class="budget-section">
-  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
-    <div class="section-title" style="margin-bottom:0">Budget Alerts</div>
+  <div class="section-header">
+    <div class="section-heading">
+      <div class="section-kicker">Spend control</div>
+      <div class="section-title" style="margin-bottom:0">Budgets</div>
+      <div class="section-subtitle">See live budget pressure at a glance, then expand the manager only when you need to change rules.</div>
+    </div>
+    <a class="budget-manage-link" onclick="toggleBudgetPanel()">&#9881; Manage budgets</a>
   </div>
+  {overview_html}
   {status_html}
-  <a class="budget-manage-link" onclick="toggleBudgetPanel()">&#9881; Manage Budgets</a>
   <div class="budget-manage-panel" id="budgetManagePanel">
-    <div style="font-size:13px;font-weight:600;color:#f0f6fc;margin-bottom:10px" id="budgetFormTitle">Add Budget</div>
+    <div style="font-size:13px;font-weight:700;color:#f0f6fc;margin-bottom:10px" id="budgetFormTitle">Add Budget</div>
     <input type="hidden" id="bEditId" value="">
     <div class="budget-form" id="budgetForm">
-      <div class="budget-form-group">
+      <div class="budget-form-group span-2">
         <label class="budget-form-label">Name</label>
         <input type="text" id="bName" placeholder="e.g. Monthly API Budget">
       </div>
@@ -1949,7 +2054,7 @@ def _build_budget_section(budgets, all_budgets, alert_history):
           <option value="source_tag">Project / Source Tag</option>
         </select>
       </div>
-      <div class="budget-form-group">
+      <div class="budget-form-group span-2">
         <label class="budget-form-label">Scope Value</label>
         <input type="text" id="bScopeValue" placeholder="all projects" disabled>
       </div>
@@ -1957,20 +2062,22 @@ def _build_budget_section(budgets, all_budgets, alert_history):
         <label class="budget-form-label">Threshold ($)</label>
         <input type="number" id="bThreshold" placeholder="10.00" min="0.01" step="0.01">
       </div>
-      <div class="budget-form-group">
+      <div class="budget-form-group span-2">
         <label class="budget-form-label">Provider (optional)</label>
         <input type="text" id="bProvider" placeholder="all providers">
       </div>
-      <button class="btn-add-budget" id="bSubmitBtn" onclick="submitBudgetForm()">+ Add</button>
-      <button class="btn-secondary-budget" id="bCancelBtn" onclick="cancelBudgetEdit()" style="display:none">Cancel</button>
     </div>
-    <div style="font-size:13px;font-weight:600;color:#f0f6fc;margin-bottom:8px">Existing Budgets</div>
+    <div class="budget-form-actions">
+      <button class="btn-add-budget" id="bSubmitBtn" onclick="submitBudgetForm()">+ Add budget</button>
+      <button class="btn-secondary-budget" id="bCancelBtn" onclick="cancelBudgetEdit()" style="display:none">Cancel edit</button>
+    </div>
+    <div style="font-size:13px;font-weight:700;color:#f0f6fc;margin:18px 0 8px">Existing budgets</div>
     <div class="budget-list-manage" id="budgetListManage">
       {manage_rows}
     </div>
   </div>
   <div class="budget-history">
-    <div style="font-size:13px;font-weight:600;color:#f0f6fc">Recent Alert History</div>
+    <div style="font-size:13px;font-weight:700;color:#f0f6fc">Recent alert history</div>
     <div class="budget-history-list">{history_rows}</div>
   </div>
 </div>"""
@@ -2384,15 +2491,32 @@ def _build_attention_section(budgets, budget_forecasts, reliability_data, error_
             "foot": f'Current blended error rate: {error_rate:.1f}%',
         })
 
-    if not cards:
-        return """<div class=\"attention-section\">
-  <div class=\"section-title\">Attention Center</div>
-  <div class=\"attention-empty\">No urgent budget or reliability issues right now. Your alerts and fallback posture look healthy.</div>
-</div>"""
-
     severity_rank = {"high": 0, "medium": 1, "low": 2}
     cards.sort(key=lambda item: severity_rank.get(item.get("severity"), 3))
-    cards = cards[:6]
+    visible_cards = cards[:6]
+    high_count = sum(1 for item in cards if item.get("severity") == "high")
+    medium_count = sum(1 for item in cards if item.get("severity") == "medium")
+    covered_spend = sum((item.get("recent_cost", 0.0) or 0.0) for item in (reliability_data or {}).get("anomalies", [])) + (wasted_cost or 0.0)
+    summary_html = (
+        f'<div class="attention-summary">'
+        f'<div class="attention-stat"><div class="attention-stat-label">Needs action</div><div class="attention-stat-value">{len(cards)}</div><div class="attention-stat-sub">{high_count} high priority · {medium_count} medium</div></div>'
+        f'<div class="attention-stat"><div class="attention-stat-label">Error rate</div><div class="attention-stat-value">{error_rate:.1f}%</div><div class="attention-stat-sub">{total_errors:,} failed requests in this range</div></div>'
+        f'<div class="attention-stat"><div class="attention-stat-label">Spend at risk</div><div class="attention-stat-value">{fmt_cost(covered_spend)}</div><div class="attention-stat-sub">Reliability anomalies and failed request waste</div></div>'
+        f'</div>'
+    )
+
+    if not visible_cards:
+        return f"""<div class=\"attention-section\">
+  <div class=\"section-header\">
+    <div class=\"section-heading\">
+      <div class=\"section-kicker\">Priority view</div>
+      <div class=\"section-title\" style=\"margin-bottom:0\">Attention Center</div>
+      <div class=\"section-subtitle\">Start here first. This rolls up budget pressure, error waste, and reliability risk into the few things that actually need a decision.</div>
+    </div>
+  </div>
+  {summary_html}
+  <div class=\"attention-empty\">No urgent budget or reliability issues right now. Your alerts and fallback posture look healthy.</div>
+</div>"""
 
     cards_html = ''.join(
         f'<div class=\"attention-card {item.get("severity", "medium")}\">'
@@ -2403,11 +2527,18 @@ def _build_attention_section(budgets, budget_forecasts, reliability_data, error_
         f'<div class=\"attention-body\">{_escape_html(item.get("body") or "")}</div>'
         f'<div class=\"attention-foot\">{_escape_html(item.get("foot") or "")}</div>'
         f'</div>'
-        for item in cards
+        for item in visible_cards
     )
 
     return f"""<div class=\"attention-section\">
-  <div class=\"section-title\">Attention Center</div>
+  <div class=\"section-header\">
+    <div class=\"section-heading\">
+      <div class=\"section-kicker\">Priority view</div>
+      <div class=\"section-title\" style=\"margin-bottom:0\">Attention Center</div>
+      <div class=\"section-subtitle\">Start here first. This rolls up budget pressure, error waste, and reliability risk into the few things that actually need a decision.</div>
+    </div>
+  </div>
+  {summary_html}
   <div class=\"attention-grid\">{cards_html}</div>
 </div>"""
 
@@ -3790,17 +3921,19 @@ def build_page(time_range, page=1):
 
 {stats_html}
 
-  {budget_html}
-
   {attention_html}
 
-  {forecast_html}
+  <div class="primary-grid">
+    {budget_html}
+    {forecast_html}
+  </div>
 
-  {optimizer_html}
+  <div class="secondary-grid">
+    {optimizer_html}
+    {reliability_html}
+  </div>
 
   {project_html}
-
-  {reliability_html}
 
   <!-- Charts -->
   <div class="charts-row">
