@@ -17,15 +17,30 @@ static BUNDLED_PRICING: Lazy<Vec<PricingEntry>> = Lazy::new(|| {
     serde_json::from_str(PRICING_JSON).unwrap_or_default()
 });
 
-pub fn calculate_cost(model: &str, input_tokens: u32, output_tokens: u32) -> f64 {
+pub fn calculate_cost(model: &str, provider: Option<&str>, input_tokens: u32, output_tokens: u32) -> f64 {
     let pricing = &*BUNDLED_PRICING;
+    let model_lower = model.to_lowercase();
+    let provider_lower = provider.map(str::to_lowercase);
+
+    let matches_provider = |entry: &PricingEntry| match provider_lower.as_deref() {
+        Some(provider) => entry.provider.eq_ignore_ascii_case(provider),
+        None => true,
+    };
 
     let entry = pricing.iter().find(|p| {
-        model.to_lowercase() == p.model.to_lowercase()
+        matches_provider(p) && model_lower == p.model.to_lowercase()
     }).or_else(|| {
         pricing.iter().find(|p| {
-            model.to_lowercase().contains(&p.model.to_lowercase())
-                || p.model.to_lowercase().contains(&model.to_lowercase())
+            matches_provider(p)
+                && (model_lower.contains(&p.model.to_lowercase())
+                    || p.model.to_lowercase().contains(&model_lower))
+        })
+    }).or_else(|| {
+        pricing.iter().find(|p| model_lower == p.model.to_lowercase())
+    }).or_else(|| {
+        pricing.iter().find(|p| {
+            model_lower.contains(&p.model.to_lowercase())
+                || p.model.to_lowercase().contains(&model_lower)
         })
     });
 
@@ -43,18 +58,19 @@ pub fn calculate_cost(model: &str, input_tokens: u32, output_tokens: u32) -> f64
 pub fn calculate_cost_with_db(
     conn: &rusqlite::Connection,
     model: &str,
+    provider: Option<&str>,
     input_tokens: u32,
     output_tokens: u32,
 ) -> f64 {
     if let Ok(Some((input_per_million, output_per_million))) =
-        crate::db::get_price_for_model(conn, model)
+        crate::db::get_price_for_model(conn, model, provider)
     {
         let input_cost = (input_tokens as f64 / 1_000_000.0) * input_per_million;
         let output_cost = (output_tokens as f64 / 1_000_000.0) * output_per_million;
         return input_cost + output_cost;
     }
     // Fall back to bundled pricing
-    calculate_cost(model, input_tokens, output_tokens)
+    calculate_cost(model, provider, input_tokens, output_tokens)
 }
 
 /// Parse the LiteLLM model_prices_and_context_window.json format.

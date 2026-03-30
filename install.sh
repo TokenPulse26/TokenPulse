@@ -16,6 +16,19 @@ if [ "$OS" != "darwin" ]; then
     exit 1
 fi
 
+case "$ARCH" in
+    arm64|aarch64)
+        ;;
+    x86_64)
+        echo "Error: TokenPulse currently supports Apple Silicon Macs only. This Mac reports architecture: $ARCH"
+        exit 1
+        ;;
+    *)
+        echo "Error: Unsupported architecture: $ARCH. TokenPulse currently supports Apple Silicon Macs only."
+        exit 1
+        ;;
+esac
+
 # Create install directory
 INSTALL_DIR="$HOME/.tokenpulse"
 mkdir -p "$INSTALL_DIR"

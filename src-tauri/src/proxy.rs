@@ -8,13 +8,13 @@ use axum::{
 use bytes::Bytes;
 use chrono::Utc;
 use futures::StreamExt;
-use http::{HeaderMap, Method, StatusCode};
+use http::{HeaderMap, Method, StatusCode, header};
 use once_cell::sync::Lazy;
 use reqwest::Client;
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::db::{self, insert_request, RequestRecord};
 use crate::pricing::calculate_cost_with_db;
@@ -228,6 +228,61 @@ fn build_forward_path(provider: &ProviderInfo, original_path: &str) -> String {
     stripped.to_string()
 }
 
+fn is_allowed_browser_origin(origin: &str) -> bool {
+    if origin == "null" {
+        return false;
+    }
+
+    match url::Url::parse(origin) {
+        Ok(url) => {
+            let host = match url.host_str() {
+                Some(host) => host,
+                None => return false,
+            };
+            matches!(host, "localhost" | "127.0.0.1" | "[::1]" | "::1")
+                && url.port_or_known_default() == Some(4200)
+                && matches!(url.scheme(), "http" | "https")
+        }
+        Err(_) => false,
+    }
+}
+
+fn build_cors_layer() -> CorsLayer {
+    let allow_origin = AllowOrigin::predicate(|origin, _| {
+        origin.to_str().map(is_allowed_browser_origin).unwrap_or(false)
+    });
+
+    CorsLayer::new()
+        .allow_origin(allow_origin)
+        .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
+        .allow_headers([header::ACCEPT, header::AUTHORIZATION, header::CONTENT_TYPE, header::HeaderName::from_static("x-api-key"), header::HeaderName::from_static("x-tokenpulse-project"), header::HeaderName::from_static("x-tokenpulse-tag")])
+}
+
+fn reject_disallowed_api_origin(headers: &HeaderMap, path: &str) -> Option<Response<Body>> {
+    if !path.starts_with("/api/") {
+        return None;
+    }
+
+    let origin = headers.get(header::ORIGIN)?.to_str().ok()?;
+    if is_allowed_browser_origin(origin) {
+        return None;
+    }
+
+    Some(
+        Response::builder()
+            .status(StatusCode::FORBIDDEN)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "status": "error",
+                    "message": "TokenPulse local API only accepts browser requests from the local dashboard origin.",
+                })
+                .to_string(),
+            ))
+            .unwrap(),
+    )
+}
+
 fn detect_source_tag(headers: &HeaderMap) -> String {
     // Explicit project header takes priority
     for header_name in &["x-tokenpulse-project", "x-tokenpulse-tag"] {
@@ -284,6 +339,10 @@ async fn proxy_handler(
     let (parts, body) = req.into_parts();
     let path = parts.uri.path().to_string();
     let query = parts.uri.query().map(|q| format!("?{}", q)).unwrap_or_default();
+
+    if let Some(response) = reject_disallowed_api_origin(&parts.headers, &path) {
+        return Ok(response);
+    }
 
     // ── Health check endpoint ─────────────────────────────────────────
     if (path == "/" || path == "/health") && parts.method == Method::GET {
@@ -683,8 +742,34 @@ async fn proxy_handler(
                         let _ = tx.send(Ok(chunk)).await;
                     }
                     Err(e) => {
-                        let _ = tx.send(Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))).await;
-                        break;
+                        let error_text = e.to_string();
+                        eprintln!("[TokenPulse] streaming error from {} {}: {}", provider_name, model_clone, error_text);
+                        let _ = tx.send(Err(std::io::Error::new(std::io::ErrorKind::Other, error_text.clone()))).await;
+
+                        let latency_ms = start_time.elapsed().as_millis() as i64;
+                        let partial_record = RequestRecord {
+                            id: None,
+                            timestamp: start_timestamp.clone(),
+                            provider: provider_name.clone(),
+                            model: model_clone.clone(),
+                            input_tokens: anthropic_input,
+                            output_tokens: anthropic_output,
+                            cached_tokens: anthropic_cached,
+                            reasoning_tokens: 0,
+                            cost_usd: 0.0,
+                            latency_ms,
+                            tokens_per_second: 0.0,
+                            time_to_first_token_ms: ttft_ms,
+                            is_streaming: true,
+                            is_complete: false,
+                            source_tag: source_tag.clone(),
+                            error_message: Some(format!("stream interrupted: {}", error_text)),
+                            provider_type: provider_type.clone(),
+                        };
+                        if let Ok(conn) = db.lock() {
+                            let _ = insert_request(&conn, &partial_record);
+                        }
+                        return;
                     }
                 }
             }
@@ -701,7 +786,7 @@ async fn proxy_handler(
 
             let latency_ms = start_time.elapsed().as_millis() as i64;
             let cost = if let Ok(conn) = db.lock() {
-                calculate_cost_with_db(&conn, &model_clone, input_tokens as u32, output_tokens as u32)
+                calculate_cost_with_db(&conn, &model_clone, Some(&provider_name), input_tokens as u32, output_tokens as u32)
             } else {
                 0.0
             };
@@ -757,7 +842,7 @@ async fn proxy_handler(
             let (input_tokens, output_tokens, cached_tokens, reasoning_tokens) =
                 extract_usage(&json, &provider.name);
             let cost = if let Ok(conn) = state.db.lock() {
-                calculate_cost_with_db(&conn, &model, input_tokens as u32, output_tokens as u32)
+                calculate_cost_with_db(&conn, &model, Some(&provider.name), input_tokens as u32, output_tokens as u32)
             } else {
                 0.0
             };
@@ -821,20 +906,17 @@ pub async fn start_proxy_server(
 
     let state = AppState { db, http_client, proxy_paused };
 
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+    let cors = build_cors_layer();
 
     let app = Router::new()
         .fallback(any(proxy_handler))
         .layer(cors)
         .with_state(state);
 
-    match tokio::net::TcpListener::bind("0.0.0.0:4100").await {
+    match tokio::net::TcpListener::bind("127.0.0.1:4100").await {
         Ok(listener) => {
             proxy_running.store(true, Ordering::SeqCst);
-            eprintln!("TokenPulse proxy listening on port 4100");
+            eprintln!("TokenPulse proxy listening on http://127.0.0.1:4100");
             axum::serve(listener, app).await.ok();
             proxy_running.store(false, Ordering::SeqCst);
         }

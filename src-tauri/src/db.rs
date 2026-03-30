@@ -82,13 +82,14 @@ pub fn init_db(path: &str) -> Result<Connection> {
         );
 
         CREATE TABLE IF NOT EXISTS pricing (
-            model TEXT PRIMARY KEY,
+            model TEXT NOT NULL,
             provider TEXT NOT NULL,
             input_cost_per_million_tokens REAL NOT NULL DEFAULT 0.0,
             output_cost_per_million_tokens REAL NOT NULL DEFAULT 0.0,
             context_window_tokens INTEGER NOT NULL DEFAULT 0,
             is_custom INTEGER NOT NULL DEFAULT 0,
-            last_updated TEXT NOT NULL DEFAULT (datetime('now'))
+            last_updated TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (model, provider)
         );
 
         CREATE TABLE IF NOT EXISTS settings (
@@ -125,7 +126,59 @@ pub fn init_db(path: &str) -> Result<Connection> {
     let _ = conn.execute("ALTER TABLE requests ADD COLUMN error_message TEXT", []);
     let _ = conn.execute("ALTER TABLE requests ADD COLUMN provider_type TEXT NOT NULL DEFAULT 'api'", []);
 
+    migrate_pricing_table(&conn)?;
+
     Ok(conn)
+}
+
+fn migrate_pricing_table(conn: &Connection) -> Result<()> {
+    let primary_key_columns: Vec<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(pricing)")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(5)?,
+            ))
+        })?;
+        rows.filter_map(|row| row.ok())
+            .filter(|(_, pk_order)| *pk_order > 0)
+            .map(|(name, _)| name)
+            .collect()
+    };
+
+    let already_migrated = primary_key_columns.len() == 2
+        && primary_key_columns.iter().any(|c| c == "model")
+        && primary_key_columns.iter().any(|c| c == "provider");
+
+    if already_migrated {
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "BEGIN;
+         CREATE TABLE IF NOT EXISTS pricing_new (
+             model TEXT NOT NULL,
+             provider TEXT NOT NULL,
+             input_cost_per_million_tokens REAL NOT NULL DEFAULT 0.0,
+             output_cost_per_million_tokens REAL NOT NULL DEFAULT 0.0,
+             context_window_tokens INTEGER NOT NULL DEFAULT 0,
+             is_custom INTEGER NOT NULL DEFAULT 0,
+             last_updated TEXT NOT NULL DEFAULT (datetime('now')),
+             PRIMARY KEY (model, provider)
+         );
+         INSERT OR IGNORE INTO pricing_new (
+             model, provider, input_cost_per_million_tokens, output_cost_per_million_tokens,
+             context_window_tokens, is_custom, last_updated
+         )
+         SELECT model, provider, input_cost_per_million_tokens, output_cost_per_million_tokens,
+                context_window_tokens, is_custom, last_updated
+         FROM pricing;
+         DROP TABLE pricing;
+         ALTER TABLE pricing_new RENAME TO pricing;
+         COMMIT;"
+    )?;
+
+    Ok(())
 }
 
 pub fn insert_request(conn: &Connection, req: &RequestRecord) -> Result<i64> {
@@ -228,8 +281,7 @@ pub fn upsert_pricing(
     conn.execute(
         "INSERT INTO pricing (model, provider, input_cost_per_million_tokens, output_cost_per_million_tokens, context_window_tokens, is_custom, last_updated)
          VALUES (?1, ?2, ?3, ?4, ?5, 0, datetime('now'))
-         ON CONFLICT(model) DO UPDATE SET
-             provider=excluded.provider,
+         ON CONFLICT(model, provider) DO UPDATE SET
              input_cost_per_million_tokens=excluded.input_cost_per_million_tokens,
              output_cost_per_million_tokens=excluded.output_cost_per_million_tokens,
              context_window_tokens=excluded.context_window_tokens,
@@ -249,13 +301,32 @@ pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn get_price_for_model(conn: &Connection, model: &str) -> Result<Option<(f64, f64)>> {
+pub fn get_price_for_model(
+    conn: &Connection,
+    model: &str,
+    provider: Option<&str>,
+) -> Result<Option<(f64, f64)>> {
     let model_lower = model.to_lowercase();
-    let result = conn.query_row(
-        "SELECT input_cost_per_million_tokens, output_cost_per_million_tokens FROM pricing WHERE lower(model) = ?1",
-        params![model_lower],
-        |row| Ok((row.get::<_, f64>(0)?, row.get::<_, f64>(1)?)),
-    );
+    let provider_lower = provider.map(str::to_lowercase);
+    let result = if let Some(provider_lower) = provider_lower.as_deref() {
+        conn.query_row(
+            "SELECT input_cost_per_million_tokens, output_cost_per_million_tokens
+             FROM pricing
+             WHERE lower(model) = ?1 AND lower(provider) = ?2",
+            params![model_lower, provider_lower],
+            |row| Ok((row.get::<_, f64>(0)?, row.get::<_, f64>(1)?)),
+        )
+    } else {
+        conn.query_row(
+            "SELECT input_cost_per_million_tokens, output_cost_per_million_tokens
+             FROM pricing
+             WHERE lower(model) = ?1
+             ORDER BY CASE WHEN is_custom = 1 THEN 0 ELSE 1 END, provider ASC
+             LIMIT 1",
+            params![model_lower],
+            |row| Ok((row.get::<_, f64>(0)?, row.get::<_, f64>(1)?)),
+        )
+    };
     match result {
         Ok(v) => Ok(Some(v)),
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),

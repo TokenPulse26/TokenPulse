@@ -157,6 +157,14 @@ fn update_pricing_now(state: State<DbState>) -> Result<(), String> {
     Ok(())
 }
 
+fn csv_escape(value: &str) -> String {
+    if value.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_string()
+    }
+}
+
 #[tauri::command]
 fn export_csv(app: tauri::AppHandle, state: State<DbState>) -> Result<String, String> {
     use tauri_plugin_dialog::DialogExt;
@@ -168,17 +176,21 @@ fn export_csv(app: tauri::AppHandle, state: State<DbState>) -> Result<String, St
         for r in &requests {
             s.push_str(&format!(
                 "{},{},{},{},{},{:.6},{},{},{},{},{},{:.1},{},{},{}\n",
-                r.timestamp, r.provider, r.model,
-                r.input_tokens, r.output_tokens,
-                r.cost_usd, r.latency_ms,
+                csv_escape(&r.timestamp),
+                csv_escape(&r.provider),
+                csv_escape(&r.model),
+                r.input_tokens,
+                r.output_tokens,
+                r.cost_usd,
+                r.latency_ms,
                 r.is_streaming,
-                r.error_message.as_deref().unwrap_or(""),
+                csv_escape(r.error_message.as_deref().unwrap_or("")),
                 r.cached_tokens,
                 r.reasoning_tokens,
                 r.tokens_per_second,
                 r.time_to_first_token_ms,
-                r.source_tag,
-                r.provider_type,
+                csv_escape(&r.source_tag),
+                csv_escape(&r.provider_type),
             ));
         }
         s
