@@ -1,10 +1,13 @@
 mod db;
-mod proxy;
 mod pricing;
+mod proxy;
 
-use db::{Budget, BudgetAlertHistoryItem, BudgetForecast, BudgetStatus, CostSummary, DailyProviderStat, DailyStats, DashboardSummary, ModelStats, RequestRecord};
-use std::sync::{Arc, Mutex};
+use db::{
+    Budget, BudgetAlertHistoryItem, BudgetForecast, BudgetStatus, CostSummary, DailyProviderStat,
+    DailyStats, DashboardSummary, ModelStats, ReliabilitySnapshot, RequestRecord,
+};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager, State};
 
 pub struct DbState(pub Arc<Mutex<rusqlite::Connection>>);
@@ -12,28 +15,19 @@ pub struct ProxyRunningState(pub Arc<AtomicBool>);
 pub struct ProxyPausedState(pub Arc<AtomicBool>);
 
 #[tauri::command]
-fn get_recent_requests(
-    state: State<DbState>,
-    limit: u32,
-) -> Result<Vec<RequestRecord>, String> {
+fn get_recent_requests(state: State<DbState>, limit: u32) -> Result<Vec<RequestRecord>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::get_recent_requests(&conn, limit).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn get_daily_stats(
-    state: State<DbState>,
-    days: u32,
-) -> Result<Vec<DailyStats>, String> {
+fn get_daily_stats(state: State<DbState>, days: u32) -> Result<Vec<DailyStats>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::get_daily_stats(&conn, days).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn get_model_breakdown(
-    state: State<DbState>,
-    days: u32,
-) -> Result<Vec<ModelStats>, String> {
+fn get_model_breakdown(state: State<DbState>, days: u32) -> Result<Vec<ModelStats>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::get_model_breakdown(&conn, days).map_err(|e| e.to_string())
 }
@@ -116,12 +110,18 @@ fn get_requests_range(
 }
 
 #[tauri::command]
-fn get_cost_summary(
-    state: State<DbState>,
-    time_range: String,
-) -> Result<CostSummary, String> {
+fn get_cost_summary(state: State<DbState>, time_range: String) -> Result<CostSummary, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::get_cost_summary(&conn, &time_range).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_reliability_snapshot_cmd(
+    state: State<DbState>,
+    time_range: String,
+) -> Result<ReliabilitySnapshot, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::get_reliability_snapshot(&conn, &time_range).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -147,7 +147,10 @@ fn get_pricing_status(state: State<DbState>) -> Result<PricingStatus, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let total_models = db::count_pricing(&conn).map_err(|e| e.to_string())?;
     let last_updated = db::get_setting(&conn, "pricing_last_updated").map_err(|e| e.to_string())?;
-    Ok(PricingStatus { total_models, last_updated })
+    Ok(PricingStatus {
+        total_models,
+        last_updated,
+    })
 }
 
 #[tauri::command]
@@ -224,9 +227,7 @@ async fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), Strin
 }
 
 #[tauri::command]
-fn toggle_proxy_pause(
-    paused_state: State<ProxyPausedState>,
-) -> bool {
+fn toggle_proxy_pause(paused_state: State<ProxyPausedState>) -> bool {
     let was_paused = paused_state.0.load(Ordering::SeqCst);
     paused_state.0.store(!was_paused, Ordering::SeqCst);
     !was_paused
@@ -266,7 +267,13 @@ async fn check_for_update_inner(app: &tauri::AppHandle) {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            let _ = app.emit("update-available", UpdateInfo { version: latest.to_string(), notes });
+            let _ = app.emit(
+                "update-available",
+                UpdateInfo {
+                    version: latest.to_string(),
+                    notes,
+                },
+            );
         }
     }
 }
@@ -283,8 +290,12 @@ fn is_newer_version(latest: &str, current: &str) -> bool {
     for i in 0..l.len().max(c.len()) {
         let lv = l.get(i).copied().unwrap_or(0);
         let cv = c.get(i).copied().unwrap_or(0);
-        if lv > cv { return true; }
-        if lv < cv { return false; }
+        if lv > cv {
+            return true;
+        }
+        if lv < cv {
+            return false;
+        }
     }
     false
 }
@@ -415,7 +426,6 @@ fn check_budgets(state: State<DbState>) -> Result<Vec<BudgetStatus>, String> {
     db::check_budgets(&conn).map_err(|e| e.to_string())
 }
 
-
 #[tauri::command]
 fn get_budget_alert_history(
     state: State<DbState>,
@@ -506,6 +516,7 @@ pub fn run() {
             get_requests_range,
             test_proxy,
             get_cost_summary,
+            get_reliability_snapshot_cmd,
             update_pricing_now,
             get_pricing_status,
             export_csv,
@@ -538,14 +549,17 @@ fn setup_tray(
     let pause_item = MenuItem::with_id(app, "toggle_proxy", "Pause Proxy", true, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, "quit", "Quit TokenPulse", true, None::<&str>)?;
 
-    let menu = Menu::with_items(app, &[
-        &today_item,
-        &PredefinedMenuItem::separator(app)?,
-        &open_item,
-        &pause_item,
-        &PredefinedMenuItem::separator(app)?,
-        &quit_item,
-    ])?;
+    let menu = Menu::with_items(
+        app,
+        &[
+            &today_item,
+            &PredefinedMenuItem::separator(app)?,
+            &open_item,
+            &pause_item,
+            &PredefinedMenuItem::separator(app)?,
+            &quit_item,
+        ],
+    )?;
 
     let today_item_clone = today_item.clone();
     let pause_item_clone = pause_item.clone();
@@ -567,7 +581,11 @@ fn setup_tray(
                 "toggle_proxy" => {
                     let was_paused = proxy_paused_for_menu.load(Ordering::SeqCst);
                     proxy_paused_for_menu.store(!was_paused, Ordering::SeqCst);
-                    let new_label = if was_paused { "Pause Proxy" } else { "Resume Proxy" };
+                    let new_label = if was_paused {
+                        "Pause Proxy"
+                    } else {
+                        "Resume Proxy"
+                    };
                     let _ = pause_item_clone.set_text(new_label);
                 }
                 "quit" => {
@@ -599,9 +617,7 @@ fn setup_tray(
                             .title("⚠ Budget Alert")
                             .body(format!(
                                 "{} — ${:.2} / ${:.2}",
-                                status.name,
-                                status.current_spend,
-                                status.threshold_usd,
+                                status.name, status.current_spend, status.threshold_usd,
                             ))
                             .show();
                     }

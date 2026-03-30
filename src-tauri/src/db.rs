@@ -1,4 +1,4 @@
-use rusqlite::{Connection, Result, params};
+use rusqlite::{params, Connection, Result};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -87,6 +87,10 @@ pub struct ReliabilityAnomaly {
     pub baseline_requests: i64,
     pub recent_value: f64,
     pub baseline_value: f64,
+    pub recent_cost: f64,
+    pub delta_pct: f64,
+    pub recommendation: String,
+    pub fallback_model: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -97,13 +101,57 @@ pub struct ReliabilitySnapshot {
     pub anomalies: Vec<ReliabilityAnomaly>,
 }
 
+fn fallback_model_for(model: &str) -> Option<&'static str> {
+    match model.trim().to_lowercase().as_str() {
+        "claude-opus-4-6" => Some("claude-sonnet-4-6"),
+        "claude-sonnet-4-6" => Some("claude-haiku-3-5"),
+        "gpt-4o" => Some("gpt-4o-mini"),
+        "gpt-4.1" => Some("gpt-4.1-mini"),
+        "gpt-4.1-mini" => Some("gpt-4.1-nano"),
+        _ => None,
+    }
+}
+
+fn reliability_recommendation(kind: &str, model: &str) -> (String, Option<String>) {
+    if let Some(fallback) = fallback_model_for(model) {
+        return match kind {
+            "latency_spike" => (
+                format!(
+                    "Route time-sensitive work to {} until latency settles. Keep {} for higher-value prompts only.",
+                    fallback, model
+                ),
+                Some(fallback.to_string()),
+            ),
+            _ => (
+                format!(
+                    "Retry traffic on {} or your next-cheapest stable model while {} is erroring. This reduces wasted retries and protects interactive flows.",
+                    fallback, model
+                ),
+                Some(fallback.to_string()),
+            ),
+        };
+    }
+
+    match kind {
+        "latency_spike" => (
+            "Avoid long-running interactive prompts on this model for now. Keep a second provider ready as a manual fallback.".to_string(),
+            None,
+        ),
+        _ => (
+            "This model is failing more than normal. Add a provider-level fallback or temporarily pin critical work to a more stable model.".to_string(),
+            None,
+        ),
+    }
+}
+
 pub fn init_db(path: &str) -> Result<Connection> {
     let conn = Connection::open(path)?;
 
     // Enable WAL mode for better concurrent read/write performance
     conn.execute_batch("PRAGMA journal_mode=WAL;")?;
 
-    conn.execute_batch("
+    conn.execute_batch(
+        "
         CREATE TABLE IF NOT EXISTS requests (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp TEXT NOT NULL,
@@ -167,12 +215,19 @@ pub fn init_db(path: &str) -> Result<Connection> {
             threshold_usd REAL NOT NULL,
             FOREIGN KEY (budget_id) REFERENCES budgets(id)
         );
-    ")?;
+    ",
+    )?;
 
     // Migrations: add columns if they don't exist
     let _ = conn.execute("ALTER TABLE requests ADD COLUMN error_message TEXT", []);
-    let _ = conn.execute("ALTER TABLE requests ADD COLUMN provider_type TEXT NOT NULL DEFAULT 'api'", []);
-    let _ = conn.execute("ALTER TABLE budgets ADD COLUMN scope_kind TEXT NOT NULL DEFAULT 'global'", []);
+    let _ = conn.execute(
+        "ALTER TABLE requests ADD COLUMN provider_type TEXT NOT NULL DEFAULT 'api'",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE budgets ADD COLUMN scope_kind TEXT NOT NULL DEFAULT 'global'",
+        [],
+    );
     let _ = conn.execute("ALTER TABLE budgets ADD COLUMN scope_value TEXT", []);
     let _ = conn.execute("ALTER TABLE budget_alerts ADD COLUMN resolved_at TEXT", []);
 
@@ -185,10 +240,7 @@ fn migrate_pricing_table(conn: &Connection) -> Result<()> {
     let primary_key_columns: Vec<String> = {
         let mut stmt = conn.prepare("PRAGMA table_info(pricing)")?;
         let rows = stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(5)?,
-            ))
+            Ok((row.get::<_, String>(1)?, row.get::<_, i64>(5)?))
         })?;
         rows.filter_map(|row| row.ok())
             .filter(|(_, pk_order)| *pk_order > 0)
@@ -225,7 +277,7 @@ fn migrate_pricing_table(conn: &Connection) -> Result<()> {
          FROM pricing;
          DROP TABLE pricing;
          ALTER TABLE pricing_new RENAME TO pricing;
-         COMMIT;"
+         COMMIT;",
     )?;
 
     Ok(())
@@ -275,7 +327,9 @@ fn map_request_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RequestRecord> {
         is_complete: row.get::<_, i64>(13)? != 0,
         source_tag: row.get(14)?,
         error_message: row.get(15)?,
-        provider_type: row.get::<_, Option<String>>(16)?.unwrap_or_else(|| "api".to_string()),
+        provider_type: row
+            .get::<_, Option<String>>(16)?
+            .unwrap_or_else(|| "api".to_string()),
     })
 }
 
@@ -285,7 +339,8 @@ pub fn get_recent_requests(conn: &Connection, limit: u32) -> Result<Vec<RequestR
          FROM requests ORDER BY timestamp DESC LIMIT ?1"
     )?;
 
-    let records = stmt.query_map(params![limit], map_request_row)?
+    let records = stmt
+        .query_map(params![limit], map_request_row)?
         .collect::<Result<Vec<_>>>()?;
 
     Ok(records)
@@ -302,20 +357,21 @@ pub fn get_daily_stats(conn: &Connection, days: u32) -> Result<Vec<DailyStats>> 
          FROM requests
          WHERE timestamp >= datetime('now', ?1)
          GROUP BY date(timestamp)
-         ORDER BY date ASC"
+         ORDER BY date ASC",
     )?;
 
     let days_param = format!("-{} days", days);
-    let records = stmt.query_map(params![days_param], |row| {
-        Ok(DailyStats {
-            date: row.get(0)?,
-            total_cost: row.get(1)?,
-            total_requests: row.get(2)?,
-            total_input_tokens: row.get(3)?,
-            total_output_tokens: row.get(4)?,
-        })
-    })?
-    .collect::<Result<Vec<_>>>()?;
+    let records = stmt
+        .query_map(params![days_param], |row| {
+            Ok(DailyStats {
+                date: row.get(0)?,
+                total_cost: row.get(1)?,
+                total_requests: row.get(2)?,
+                total_input_tokens: row.get(3)?,
+                total_output_tokens: row.get(4)?,
+            })
+        })?
+        .collect::<Result<Vec<_>>>()?;
 
     Ok(records)
 }
@@ -402,7 +458,8 @@ pub fn get_all_requests(conn: &Connection) -> Result<Vec<RequestRecord>> {
         "SELECT id, timestamp, provider, model, input_tokens, output_tokens, cached_tokens, reasoning_tokens, cost_usd, latency_ms, tokens_per_second, time_to_first_token_ms, is_streaming, is_complete, source_tag, error_message, COALESCE(provider_type, 'api')
          FROM requests ORDER BY timestamp DESC"
     )?;
-    let records = stmt.query_map([], map_request_row)?
+    let records = stmt
+        .query_map([], map_request_row)?
         .collect::<Result<Vec<_>>>()?;
     Ok(records)
 }
@@ -449,16 +506,17 @@ pub fn get_daily_stats_for_range(conn: &Connection, time_range: &str) -> Result<
         where_clause
     );
     let mut stmt = conn.prepare(&query)?;
-    let records = stmt.query_map([], |row| {
-        Ok(DailyStats {
-            date: row.get(0)?,
-            total_cost: row.get(1)?,
-            total_requests: row.get(2)?,
-            total_input_tokens: row.get(3)?,
-            total_output_tokens: row.get(4)?,
-        })
-    })?
-    .collect::<Result<Vec<_>>>()?;
+    let records = stmt
+        .query_map([], |row| {
+            Ok(DailyStats {
+                date: row.get(0)?,
+                total_cost: row.get(1)?,
+                total_requests: row.get(2)?,
+                total_input_tokens: row.get(3)?,
+                total_output_tokens: row.get(4)?,
+            })
+        })?
+        .collect::<Result<Vec<_>>>()?;
     Ok(records)
 }
 
@@ -473,18 +531,22 @@ pub fn get_daily_provider_stats_for_range(
         where_clause
     );
     let mut stmt = conn.prepare(&query)?;
-    let records = stmt.query_map([], |row| {
-        Ok(DailyProviderStat {
-            date: row.get(0)?,
-            provider: row.get(1)?,
-            cost: row.get(2)?,
-        })
-    })?
-    .collect::<Result<Vec<_>>>()?;
+    let records = stmt
+        .query_map([], |row| {
+            Ok(DailyProviderStat {
+                date: row.get(0)?,
+                provider: row.get(1)?,
+                cost: row.get(2)?,
+            })
+        })?
+        .collect::<Result<Vec<_>>>()?;
     Ok(records)
 }
 
-pub fn get_model_breakdown_for_range(conn: &Connection, time_range: &str) -> Result<Vec<ModelStats>> {
+pub fn get_model_breakdown_for_range(
+    conn: &Connection,
+    time_range: &str,
+) -> Result<Vec<ModelStats>> {
     let where_clause = time_range_filter(time_range);
     let query = format!(
         "SELECT model, provider, SUM(cost_usd), COUNT(*), SUM(input_tokens + output_tokens)
@@ -492,20 +554,25 @@ pub fn get_model_breakdown_for_range(conn: &Connection, time_range: &str) -> Res
         where_clause
     );
     let mut stmt = conn.prepare(&query)?;
-    let records = stmt.query_map([], |row| {
-        Ok(ModelStats {
-            model: row.get(0)?,
-            provider: row.get(1)?,
-            total_cost: row.get(2)?,
-            total_requests: row.get(3)?,
-            total_tokens: row.get(4)?,
-        })
-    })?
-    .collect::<Result<Vec<_>>>()?;
+    let records = stmt
+        .query_map([], |row| {
+            Ok(ModelStats {
+                model: row.get(0)?,
+                provider: row.get(1)?,
+                total_cost: row.get(2)?,
+                total_requests: row.get(3)?,
+                total_tokens: row.get(4)?,
+            })
+        })?
+        .collect::<Result<Vec<_>>>()?;
     Ok(records)
 }
 
-pub fn get_requests_for_range(conn: &Connection, limit: u32, time_range: &str) -> Result<Vec<RequestRecord>> {
+pub fn get_requests_for_range(
+    conn: &Connection,
+    limit: u32,
+    time_range: &str,
+) -> Result<Vec<RequestRecord>> {
     let where_clause = time_range_filter(time_range);
     let query = format!(
         "SELECT id, timestamp, provider, model, input_tokens, output_tokens, cached_tokens, reasoning_tokens, cost_usd, latency_ms, tokens_per_second, time_to_first_token_ms, is_streaming, is_complete, source_tag, error_message, COALESCE(provider_type, 'api')
@@ -513,7 +580,8 @@ pub fn get_requests_for_range(conn: &Connection, limit: u32, time_range: &str) -
         where_clause, limit
     );
     let mut stmt = conn.prepare(&query)?;
-    let records = stmt.query_map([], map_request_row)?
+    let records = stmt
+        .query_map([], map_request_row)?
         .collect::<Result<Vec<_>>>()?;
     Ok(records)
 }
@@ -769,7 +837,16 @@ pub fn update_budget(
          SET name = ?1, period = ?2, threshold_usd = ?3, provider_filter = ?4,
              scope_kind = ?5, scope_value = ?6, enabled = ?7
          WHERE id = ?8",
-        params![name, period, threshold, provider_filter, scope_kind, scope_value, enabled as i64, id],
+        params![
+            name,
+            period,
+            threshold,
+            provider_filter,
+            scope_kind,
+            scope_value,
+            enabled as i64,
+            id
+        ],
     )?;
     resolve_budget_alerts(conn, id)?;
     Ok(())
@@ -787,7 +864,10 @@ pub fn set_budget_enabled(conn: &Connection, id: i64, enabled: bool) -> Result<(
 }
 
 pub fn delete_budget(conn: &Connection, id: i64) -> Result<()> {
-    conn.execute("DELETE FROM budget_alerts WHERE budget_id = ?1", params![id])?;
+    conn.execute(
+        "DELETE FROM budget_alerts WHERE budget_id = ?1",
+        params![id],
+    )?;
     conn.execute("DELETE FROM budgets WHERE id = ?1", params![id])?;
     Ok(())
 }
@@ -852,7 +932,12 @@ pub fn resolve_budget_alerts(conn: &Connection, budget_id: i64) -> Result<usize>
     )
 }
 
-pub fn record_alert(conn: &Connection, budget_id: i64, current_spend: f64, threshold: f64) -> Result<()> {
+pub fn record_alert(
+    conn: &Connection,
+    budget_id: i64,
+    current_spend: f64,
+    threshold: f64,
+) -> Result<()> {
     conn.execute(
         "INSERT INTO budget_alerts (budget_id, triggered_at, current_spend, threshold_usd, resolved_at)
          VALUES (?1, datetime('now'), ?2, ?3, NULL)",
@@ -876,7 +961,12 @@ pub fn sync_budget_alerts(conn: &Connection) -> Result<Vec<BudgetStatus>> {
             record_alert(conn, budget.id, status.current_spend, status.threshold_usd)?;
             let mut triggered = status.clone();
             triggered.alert_active = true;
-            triggered.last_alert_triggered_at = Some(chrono::Utc::now().naive_utc().format("%Y-%m-%d %H:%M:%S").to_string());
+            triggered.last_alert_triggered_at = Some(
+                chrono::Utc::now()
+                    .naive_utc()
+                    .format("%Y-%m-%d %H:%M:%S")
+                    .to_string(),
+            );
             newly_triggered.push(triggered);
         }
     }
@@ -884,8 +974,10 @@ pub fn sync_budget_alerts(conn: &Connection) -> Result<Vec<BudgetStatus>> {
     Ok(newly_triggered)
 }
 
-
-pub fn get_budget_alert_history(conn: &Connection, limit: i64) -> Result<Vec<BudgetAlertHistoryItem>> {
+pub fn get_budget_alert_history(
+    conn: &Connection,
+    limit: i64,
+) -> Result<Vec<BudgetAlertHistoryItem>> {
     let bounded_limit = limit.clamp(1, 200);
     let mut stmt = conn.prepare(
         "SELECT a.id, a.budget_id, b.name, b.period, b.provider_filter,
@@ -923,7 +1015,11 @@ fn forecast_trailing_days(period: &str) -> i64 {
     }
 }
 
-fn budget_trailing_average_daily_spend(conn: &Connection, budget: &Budget, trailing_days: i64) -> Result<f64> {
+fn budget_trailing_average_daily_spend(
+    conn: &Connection,
+    budget: &Budget,
+    trailing_days: i64,
+) -> Result<f64> {
     let time_expr = format!("datetime('now', '-{} days')", trailing_days.max(1));
 
     let total_spend: f64 = match (
@@ -982,7 +1078,8 @@ pub fn get_budget_forecasts(conn: &Connection) -> Result<Vec<BudgetForecast>> {
     for budget in budgets.into_iter().filter(|budget| budget.enabled) {
         let status = build_budget_status(conn, &budget)?;
         let trailing_days = forecast_trailing_days(&budget.period);
-        let average_daily_spend = budget_trailing_average_daily_spend(conn, &budget, trailing_days)?;
+        let average_daily_spend =
+            budget_trailing_average_daily_spend(conn, &budget, trailing_days)?;
         let period_days = match budget.period.as_str() {
             "daily" => 1.0,
             "weekly" => 7.0,
@@ -1029,7 +1126,10 @@ pub fn cleanup_old_requests(conn: &Connection, retention: &str) -> Result<usize>
         _ => return Ok(0), // "forever" or unknown — skip
     };
     let n = conn.execute(
-        &format!("DELETE FROM requests WHERE timestamp < datetime('now', '{}')", interval),
+        &format!(
+            "DELETE FROM requests WHERE timestamp < datetime('now', '{}')",
+            interval
+        ),
         [],
     )?;
     Ok(n)
@@ -1046,26 +1146,29 @@ pub fn get_model_breakdown(conn: &Connection, days: u32) -> Result<Vec<ModelStat
          FROM requests
          WHERE timestamp >= datetime('now', ?1)
          GROUP BY model, provider
-         ORDER BY total_cost DESC"
+         ORDER BY total_cost DESC",
     )?;
 
     let days_param = format!("-{} days", days);
-    let records = stmt.query_map(params![days_param], |row| {
-        Ok(ModelStats {
-            model: row.get(0)?,
-            provider: row.get(1)?,
-            total_cost: row.get(2)?,
-            total_requests: row.get(3)?,
-            total_tokens: row.get(4)?,
-        })
-    })?
-    .collect::<Result<Vec<_>>>()?;
+    let records = stmt
+        .query_map(params![days_param], |row| {
+            Ok(ModelStats {
+                model: row.get(0)?,
+                provider: row.get(1)?,
+                total_cost: row.get(2)?,
+                total_requests: row.get(3)?,
+                total_tokens: row.get(4)?,
+            })
+        })?
+        .collect::<Result<Vec<_>>>()?;
 
     Ok(records)
 }
 
-
-pub fn get_reliability_snapshot(conn: &Connection, time_range: &str) -> Result<ReliabilitySnapshot> {
+pub fn get_reliability_snapshot(
+    conn: &Connection,
+    time_range: &str,
+) -> Result<ReliabilitySnapshot> {
     let where_clause = time_range_filter(time_range);
     let summary_query = format!(
         "SELECT
@@ -1152,7 +1255,8 @@ pub fn get_reliability_snapshot(conn: &Connection, time_range: &str) -> Result<R
                 model,
                 COUNT(*) as recent_requests,
                 AVG(COALESCE(latency_ms, 0)) as recent_avg_latency,
-                1.0 * SUM(CASE WHEN COALESCE(error_message, '') != '' THEN 1 ELSE 0 END) / COUNT(*) as recent_error_rate
+                1.0 * SUM(CASE WHEN COALESCE(error_message, '') != '' THEN 1 ELSE 0 END) / COUNT(*) as recent_error_rate,
+                COALESCE(SUM(cost_usd), 0.0) as recent_cost
             FROM requests
             WHERE timestamp >= datetime('now', '-24 hours')
             GROUP BY provider, model
@@ -1179,7 +1283,8 @@ pub fn get_reliability_snapshot(conn: &Connection, time_range: &str) -> Result<R
             recent.recent_avg_latency,
             baseline.baseline_avg_latency,
             recent.recent_error_rate,
-            baseline.baseline_error_rate
+            baseline.baseline_error_rate,
+            recent.recent_cost
         FROM recent
         JOIN baseline
           ON recent.provider = baseline.provider AND recent.model = baseline.model
@@ -1196,18 +1301,35 @@ pub fn get_reliability_snapshot(conn: &Connection, time_range: &str) -> Result<R
             row.get::<_, Option<f64>>(5)?.unwrap_or(0.0),
             row.get::<_, Option<f64>>(6)?.unwrap_or(0.0),
             row.get::<_, Option<f64>>(7)?.unwrap_or(0.0),
+            row.get::<_, Option<f64>>(8)?.unwrap_or(0.0),
         ))
     })?;
 
     let mut anomalies = Vec::new();
     for row in anomaly_rows {
-        let (provider, model, recent_requests, baseline_requests, recent_latency, baseline_latency, recent_error_rate, baseline_error_rate) = row?;
+        let (
+            provider,
+            model,
+            recent_requests,
+            baseline_requests,
+            recent_latency,
+            baseline_latency,
+            recent_error_rate,
+            baseline_error_rate,
+            recent_cost,
+        ) = row?;
 
         if baseline_latency > 0.0
             && recent_latency > baseline_latency * 1.5
             && (recent_latency - baseline_latency) >= 250.0
         {
-            let severity = if recent_latency > baseline_latency * 2.0 { "high" } else { "medium" };
+            let severity = if recent_latency > baseline_latency * 2.0 {
+                "high"
+            } else {
+                "medium"
+            };
+            let (recommendation, fallback_model) =
+                reliability_recommendation("latency_spike", &model);
             anomalies.push(ReliabilityAnomaly {
                 kind: "latency_spike".to_string(),
                 provider: provider.clone(),
@@ -1221,11 +1343,21 @@ pub fn get_reliability_snapshot(conn: &Connection, time_range: &str) -> Result<R
                 baseline_requests,
                 recent_value: recent_latency,
                 baseline_value: baseline_latency,
+                recent_cost,
+                delta_pct: ((recent_latency - baseline_latency) / baseline_latency) * 100.0,
+                recommendation,
+                fallback_model,
             });
         }
 
         if recent_error_rate >= 0.10 && recent_error_rate > baseline_error_rate + 0.05 {
-            let severity = if recent_error_rate >= 0.25 { "high" } else { "medium" };
+            let severity = if recent_error_rate >= 0.25 {
+                "high"
+            } else {
+                "medium"
+            };
+            let (recommendation, fallback_model) =
+                reliability_recommendation("error_spike", &model);
             anomalies.push(ReliabilityAnomaly {
                 kind: "error_spike".to_string(),
                 provider: provider.clone(),
@@ -1240,14 +1372,34 @@ pub fn get_reliability_snapshot(conn: &Connection, time_range: &str) -> Result<R
                 baseline_requests,
                 recent_value: recent_error_rate * 100.0,
                 baseline_value: baseline_error_rate * 100.0,
+                recent_cost,
+                delta_pct: (recent_error_rate - baseline_error_rate) * 100.0,
+                recommendation,
+                fallback_model,
             });
         }
     }
 
     anomalies.sort_by(|a, b| {
-        b.recent_value
-            .partial_cmp(&a.recent_value)
-            .unwrap_or(std::cmp::Ordering::Equal)
+        (
+            match b.severity.as_str() {
+                "high" => 2,
+                _ => 1,
+            },
+            b.recent_cost as i64,
+        )
+            .cmp(&(
+                match a.severity.as_str() {
+                    "high" => 2,
+                    _ => 1,
+                },
+                a.recent_cost as i64,
+            ))
+            .then_with(|| {
+                b.recent_value
+                    .partial_cmp(&a.recent_value)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
     });
     anomalies.truncate(8);
 
@@ -1298,6 +1450,14 @@ mod tests {
         assert_eq!(snapshot.summary.failed_requests, 2);
         assert!(snapshot.anomalies.iter().any(|a| a.kind == "latency_spike"));
         assert!(snapshot.anomalies.iter().any(|a| a.kind == "error_spike"));
+        let latency = snapshot
+            .anomalies
+            .iter()
+            .find(|a| a.kind == "latency_spike")
+            .unwrap();
+        assert_eq!(latency.fallback_model.as_deref(), Some("gpt-4o-mini"));
+        assert!(latency.recommendation.contains("gpt-4o-mini"));
+        assert!(latency.recent_cost > 0.0);
 
         drop(conn);
         let _ = std::fs::remove_file(db_path);
@@ -1329,7 +1489,8 @@ mod tests {
             Some("openai"),
             Some("source_tag"),
             Some("project-a"),
-        ).unwrap();
+        )
+        .unwrap();
 
         let triggered = sync_budget_alerts(&conn).unwrap();
         assert_eq!(triggered.len(), 1);
@@ -1351,7 +1512,8 @@ mod tests {
             Some("source_tag"),
             Some("project-a"),
             true,
-        ).unwrap();
+        )
+        .unwrap();
 
         let statuses = check_budgets(&conn).unwrap();
         assert_eq!(statuses[0].name, "Project A relaxed");
@@ -1368,7 +1530,8 @@ mod tests {
             Some("global"),
             None,
             true,
-        ).unwrap();
+        )
+        .unwrap();
 
         let statuses = check_budgets(&conn).unwrap();
         assert_eq!(statuses[0].provider_filter.as_deref(), Some("anthropic"));
@@ -1425,7 +1588,8 @@ mod tests {
             Some("openai"),
             None,
             None,
-        ).unwrap();
+        )
+        .unwrap();
         create_budget(
             &conn,
             "Project A",
@@ -1434,7 +1598,8 @@ mod tests {
             None,
             Some("source_tag"),
             Some("project-a"),
-        ).unwrap();
+        )
+        .unwrap();
         create_budget(
             &conn,
             "Project A OpenAI",
@@ -1443,17 +1608,24 @@ mod tests {
             Some("openai"),
             Some("project"),
             Some("project-a"),
-        ).unwrap();
+        )
+        .unwrap();
 
         let statuses = check_budgets(&conn).unwrap();
         assert_eq!(statuses.len(), 3);
 
-        let openai_budget = statuses.iter().find(|status| status.name == "All OpenAI").unwrap();
+        let openai_budget = statuses
+            .iter()
+            .find(|status| status.name == "All OpenAI")
+            .unwrap();
         assert!((openai_budget.current_spend - 2.25).abs() < 0.0001);
         assert_eq!(openai_budget.scope_kind, "global");
         assert_eq!(openai_budget.scope_value, None);
 
-        let project_budget = statuses.iter().find(|status| status.name == "Project A").unwrap();
+        let project_budget = statuses
+            .iter()
+            .find(|status| status.name == "Project A")
+            .unwrap();
         assert!((project_budget.current_spend - 3.50).abs() < 0.0001);
         assert_eq!(project_budget.scope_kind, "source_tag");
         assert_eq!(project_budget.scope_value.as_deref(), Some("project-a"));
