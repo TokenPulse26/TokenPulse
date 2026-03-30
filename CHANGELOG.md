@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [Unreleased]
+
+### Changed
+- Cleaned up public-facing documentation to match the current local-first proxy + web dashboard product shape
+- Corrected repository references, database path references, and contributor-vs-user documentation framing
+- Noted that some packaging/release metadata still trails the latest feature work
+
+---
+
 ## [0.2.0] - 2026-03-27 (Beta)
 
 ### Added

@@ -37,7 +37,7 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://raw.githubusercontent.com/tokenpulse/tokenpulse/main/update.json"
+        "https://raw.githubusercontent.com/TokenPulse26/TokenPulse/main/update.json"
       ],
       "dialog": false,
       "pubkey": ""

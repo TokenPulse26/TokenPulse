@@ -256,7 +256,7 @@ pub struct UpdateInfo {
 }
 
 async fn check_for_update_inner(app: &tauri::AppHandle) {
-    let update_url = "https://raw.githubusercontent.com/tokenpulse/tokenpulse/main/update.json";
+    let update_url = "https://raw.githubusercontent.com/TokenPulse26/TokenPulse/main/update.json";
     let client = match reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()

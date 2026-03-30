@@ -1,16 +1,18 @@
 # TokenPulse
 
-**Track every AI token you spend — across every model, in one place.**
+**Track every AI token you spend — across providers, models, and projects — on your own machine.**
 
-TokenPulse is a lightweight local proxy that sits between your AI tools and the APIs they talk to. It captures every request, tracks token usage and costs in real time, and serves a live web dashboard — all without sending a single byte of your data anywhere.
+TokenPulse is a local-first AI usage tracker built around two parts:
+- a **Rust proxy** on port `4100` that sits between your tools and AI providers
+- a **Python web dashboard** on port `4200` that shows usage, costs, errors, budgets, and trends
 
-![Dashboard](docs/dashboard-screenshot.png)
+It records request metadata locally in SQLite so you can see what you're spending without hopping between provider dashboards.
 
 ---
 
 ## How It Works
 
-```
+```text
 Your Tools → TokenPulse Proxy (:4100) → AI Providers
                     ↓
               SQLite Database
@@ -18,159 +20,169 @@ Your Tools → TokenPulse Proxy (:4100) → AI Providers
             Web Dashboard (:4200)
 ```
 
-Point your AI tools at `localhost:4100` instead of the real API. TokenPulse forwards requests transparently, captures response metadata — token counts, model name, latency, cost — and records everything to a local SQLite database. Your API keys pass through without being stored or logged.
+Point your tools at `http://localhost:4100` instead of the provider directly. TokenPulse forwards requests, extracts usage metadata when providers expose it, calculates cost where pricing is available, and stores the results locally.
 
-The **web dashboard** on port 4200 gives you full visibility from any browser on your network.
+Your API keys pass through to the upstream provider. TokenPulse is designed to track usage locally, not to relay data to a hosted TokenPulse service.
 
 ---
 
-## Features
+## What TokenPulse Tracks
 
-### Tracking & Analytics
-- **Multi-provider support** — OpenAI, Anthropic, Google Gemini, Mistral, Groq, and any OpenAI-compatible endpoint
-- **Local model support** — Ollama, LM Studio, and self-hosted models
-- **Real-time cost calculation** — auto-updated pricing from the LiteLLM community database (2,500+ models)
-- **Per-model breakdowns** — see exactly what each model costs you
-- **Project/source auto-tagging** — automatic User-Agent detection + custom header support
-- **Streaming support** — full SSE pass-through with real-time token extraction
+### Providers and endpoints
+- OpenAI-compatible APIs
+- Anthropic
+- Google Gemini
+- Mistral
+- Groq
+- Ollama
+- LM Studio
+- CLIProxy / subscription-style OpenAI-compatible traffic
 
-### Dashboard
-- **Live activity feed** — animated, auto-updating timeline of all requests
-- **Spending forecasts** — projected costs based on your usage patterns
-- **Budget alerts** — set overall or project/source-tag limits with macOS push notifications when thresholds are hit
-- **Error monitoring** — per-model error rates, error timeline, and troubleshooting info
-- **Cost optimization recommendations** — actionable suggestions to reduce spend
-- **Activity heatmap** — GitHub-style 30-day × 24-hour usage visualization
-- **Auto-generated insights** — trends, anomalies, and patterns surfaced automatically
-- **SVG area charts** — interactive charts with hover tooltips
-- **Expandable request details** — full token breakdown per request (cached, reasoning, etc.)
-- **Time range filters** — Today, 7 Days, 30 Days, All Time
-- **CSV data export** — download everything for your own analysis
+### Usage data
+- input and output tokens
+- cached and reasoning token fields when available
+- estimated request cost
+- latency and time-to-first-token metrics
+- model and provider
+- streaming vs non-streaming requests
+- source / project tagging
+- request errors
 
-### Deployment
-- **Web dashboard** — accessible from any device on your network
-- **Desktop tray app** (optional, macOS) — system tray icon with spend display, budget notifications, and "Open Dashboard" button
-- **Headless mode** — run on any server with launchd (macOS) or systemd (Linux) auto-start
-- **Data retention** — automatic cleanup of old data based on your preferences
+### Dashboard views
+- live activity feed
+- usage and cost summaries by provider and model
+- project/source breakdowns
+- 30-day activity heatmap
+- budget status and budget alert history
+- spending forecasts
+- reliability and error monitoring
+- cost optimization suggestions
+- CSV export
+
+---
+
+## Current Product Shape
+
+TokenPulse currently ships as:
+- a **headless-friendly local proxy**
+- a **browser-based dashboard**
+- an **optional macOS tray app** that opens the dashboard and surfaces notifications
+
+The browser dashboard is the primary interface. The Tauri app is not a separate desktop dashboard anymore.
 
 ---
 
 ## Quick Start
 
-**1. Start the proxy**
+**Start the proxy**
 
 ```bash
 ./tokenpulse
 ```
 
-**2. Start the dashboard**
+**Start the dashboard**
 
 ```bash
 python3 web-dashboard.py
 ```
 
-**3. Configure your tools**
+**Point your tools at TokenPulse**
 
 ```bash
-# OpenAI-compatible tools
 export OPENAI_BASE_URL=http://localhost:4100
-
-# Anthropic tools
 export ANTHROPIC_BASE_URL=http://localhost:4100/anthropic
 ```
 
-**4. Open the dashboard**
+Then open <http://localhost:4200>.
 
-Go to [http://localhost:4200](http://localhost:4200) in any browser.
-
-→ **[Full setup guide →](GETTING_STARTED.md)**
+For full setup steps, service configuration, and tool-specific examples, see [GETTING_STARTED.md](GETTING_STARTED.md).
 
 ---
 
-## Supported Providers
+## Supported Routes
 
 ### Cloud APIs
-- **OpenAI** — GPT-4o, GPT-4o mini, o1, o3, and all OpenAI models
-- **Anthropic** — Claude Opus, Sonnet, Haiku, and all Claude models
-- **Google Gemini** — Gemini Pro, Flash, and all Gemini models
-- **Mistral** — Mistral Large, Medium, Small, and all Mistral models
-- **Groq** — Llama, Mixtral, and all Groq-hosted models
+- **OpenAI-compatible:** `http://localhost:4100`
+- **Anthropic:** `http://localhost:4100/anthropic`
+- **Google Gemini:** `http://localhost:4100/google`
+- **Mistral:** `http://localhost:4100/mistral`
+- **Groq:** `http://localhost:4100/groq`
+- **CLIProxy:** `http://localhost:4100/cliproxy`
 
-### Local Models
-- **Ollama** — any model running locally (`localhost:4100/ollama`)
-- **LM Studio** — any model loaded in LM Studio (`localhost:4100/lmstudio`)
+### Local models
+- **Ollama:** `http://localhost:4100/ollama`
+- **LM Studio:** `http://localhost:4100/lmstudio`
 
-### Any OpenAI-Compatible Endpoint
-If it speaks the OpenAI API format, TokenPulse can proxy and track it.
+If a tool supports a custom OpenAI-compatible base URL, TokenPulse can usually sit in front of it.
 
 ---
 
 ## Tech Stack
 
-- **Proxy server:** Axum (async Rust HTTP)
-- **Web dashboard:** Python (single-file, zero dependencies beyond stdlib)
-- **Database:** SQLite via rusqlite (bundled, zero setup)
-- **Desktop tray app:** Tauri 2.x (Rust) — optional, macOS only
-- **Pricing data:** LiteLLM community pricing database with bundled fallback for 50+ common models
+- **Proxy:** Rust + Axum
+- **Dashboard:** Python standard library HTTP server
+- **Database:** SQLite
+- **Tray app:** Tauri 2.x (optional, macOS-focused)
+- **Pricing:** LiteLLM pricing data with a bundled fallback set for common models
 
 ---
 
 ## Privacy
 
-**Runs entirely on your machine. No data sent to any server.**
+**Runs locally. Your request history stays on your machine.**
 
-The only network requests TokenPulse makes are:
-1. Forwarding your AI API calls to the provider (same as without TokenPulse)
-2. Fetching updated model pricing from the LiteLLM GitHub repository (read-only, public)
-3. Checking for app updates (version number only)
+TokenPulse may make network requests for:
+1. forwarding your AI requests to the upstream provider
+2. refreshing public model pricing data
+3. checking the app update manifest
 
-Your data lives locally at: `~/Library/Application Support/com.tokenpulse.app/tokenpulse.db`
+The default local database path used by the current app/dashboard build is:
+
+```text
+~/Library/Application Support/com.tokenpulse.desktop/tokenpulse.db
+```
 
 ---
 
 ## Building from Source
 
-Requirements: [Rust](https://rustup.rs) (stable), Python 3.8+
+Requirements:
+- Rust (stable)
+- Python 3.8+
 
 ```bash
-git clone https://github.com/tokenpulse/tokenpulse
-cd tokenpulse
+git clone git@github.com:TokenPulse26/TokenPulse.git
+cd TokenPulse
 
-# Build the proxy
+# Build the proxy / tray app codebase
+cd src-tauri
 cargo build --release
+cd ..
 
-# Run
-./target/release/tokenpulse    # Proxy on :4100
-python3 web-dashboard.py       # Dashboard on :4200
+# Run the dashboard
+python3 web-dashboard.py
 ```
 
-To build the optional desktop tray app (requires Node.js 18+):
+Depending on how you launch the Rust binary, the proxy will listen on port `4100`.
 
-```bash
-npm install
-npm run tauri build
-```
+To build the optional Tauri app, install Node.js first, then run the usual Tauri build flow from `src-tauri` / project root as configured in the repo.
+
+---
+
+## Repo Notes
+
+- [BRIEFING.md](BRIEFING.md) is a contributor-facing project brief, not end-user documentation.
+- `REPAIR_PLAN.md` and `REPAIR_REPORT.md` are internal maintenance notes kept in the repo for project history.
 
 ---
 
 ## Contributing
 
-Contributions are welcome! If you'd like to help improve TokenPulse:
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/my-feature`)
-3. Commit your changes (`git commit -m 'Add my feature'`)
-4. Push to the branch (`git push origin feature/my-feature`)
-5. Open a Pull Request
-
-Please open an issue first to discuss any significant changes.
+Contributions are welcome. If you're planning a significant change, open an issue first so the implementation direction is clear before work starts.
 
 ---
 
-## License
-
-[MIT](LICENSE)
-
----
-
-**[Website](https://tokenpulse.to)** · **[Getting Started Guide](GETTING_STARTED.md)** · **[Changelog](CHANGELOG.md)** · **[Issues](https://github.com/tokenpulse/tokenpulse/issues)**
+**Website:** <https://tokenpulse.to>  
+**Getting Started:** [GETTING_STARTED.md](GETTING_STARTED.md)  
+**Changelog:** [CHANGELOG.md](CHANGELOG.md)  
+**Repository:** <https://github.com/TokenPulse26/TokenPulse>
