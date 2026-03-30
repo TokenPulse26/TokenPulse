@@ -348,10 +348,20 @@ fn create_budget(
     period: String,
     threshold_usd: f64,
     provider_filter: Option<String>,
+    scope_kind: Option<String>,
+    scope_value: Option<String>,
 ) -> Result<i64, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::create_budget(&conn, &name, &period, threshold_usd, provider_filter.as_deref())
-        .map_err(|e| e.to_string())
+    db::create_budget(
+        &conn,
+        &name,
+        &period,
+        threshold_usd,
+        provider_filter.as_deref(),
+        scope_kind.as_deref(),
+        scope_value.as_deref(),
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

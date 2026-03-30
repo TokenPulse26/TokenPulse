@@ -144,6 +144,7 @@ pub fn init_db(path: &str) -> Result<Connection> {
         CREATE INDEX IF NOT EXISTS idx_requests_timestamp ON requests(timestamp);
         CREATE INDEX IF NOT EXISTS idx_requests_provider ON requests(provider);
         CREATE INDEX IF NOT EXISTS idx_requests_model ON requests(model);
+        CREATE INDEX IF NOT EXISTS idx_requests_source_tag ON requests(source_tag);
 
         CREATE TABLE IF NOT EXISTS budgets (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -151,6 +152,8 @@ pub fn init_db(path: &str) -> Result<Connection> {
             period TEXT NOT NULL CHECK(period IN ('daily','weekly','monthly')),
             threshold_usd REAL NOT NULL,
             provider_filter TEXT,
+            scope_kind TEXT NOT NULL DEFAULT 'global' CHECK(scope_kind IN ('global','source_tag')),
+            scope_value TEXT,
             enabled INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
@@ -168,6 +171,8 @@ pub fn init_db(path: &str) -> Result<Connection> {
     // Migrations: add columns if they don't exist
     let _ = conn.execute("ALTER TABLE requests ADD COLUMN error_message TEXT", []);
     let _ = conn.execute("ALTER TABLE requests ADD COLUMN provider_type TEXT NOT NULL DEFAULT 'api'", []);
+    let _ = conn.execute("ALTER TABLE budgets ADD COLUMN scope_kind TEXT NOT NULL DEFAULT 'global'", []);
+    let _ = conn.execute("ALTER TABLE budgets ADD COLUMN scope_value TEXT", []);
 
     migrate_pricing_table(&conn)?;
 
@@ -553,6 +558,8 @@ pub struct Budget {
     pub period: String,
     pub threshold_usd: f64,
     pub provider_filter: Option<String>,
+    pub scope_kind: String,
+    pub scope_value: Option<String>,
     pub enabled: bool,
     pub created_at: String,
 }
@@ -564,6 +571,8 @@ pub struct BudgetStatus {
     pub period: String,
     pub threshold_usd: f64,
     pub provider_filter: Option<String>,
+    pub scope_kind: String,
+    pub scope_value: Option<String>,
     pub enabled: bool,
     pub current_spend: f64,
     pub percentage: f64,
@@ -572,24 +581,120 @@ pub struct BudgetStatus {
 
 // ─── Budget functions ─────────────────────────────────────────────────────────
 
+fn normalize_budget_scope(
+    scope_kind: Option<&str>,
+    scope_value: Option<&str>,
+) -> Result<(String, Option<String>)> {
+    let kind = match scope_kind
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("global")
+    {
+        "global" => "global",
+        "source_tag" | "project" => "source_tag",
+        other => {
+            return Err(rusqlite::Error::InvalidParameterName(format!(
+                "invalid budget scope kind: {}",
+                other
+            )))
+        }
+    };
+
+    let value = scope_value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    if kind == "global" {
+        Ok((kind.to_string(), None))
+    } else if let Some(value) = value {
+        Ok((kind.to_string(), Some(value)))
+    } else {
+        Err(rusqlite::Error::InvalidParameterName(
+            "budget scope value is required".to_string(),
+        ))
+    }
+}
+
+fn budget_time_expr(period: &str) -> &str {
+    match period {
+        "daily" => "datetime('now', 'start of day')",
+        "weekly" => "datetime('now', '-7 days')",
+        _ => "datetime('now', '-30 days')",
+    }
+}
+
+fn budget_current_spend(conn: &Connection, budget: &Budget) -> Result<f64> {
+    let time_expr = budget_time_expr(&budget.period);
+
+    match (
+        budget.provider_filter.as_deref(),
+        budget.scope_kind.as_str(),
+        budget.scope_value.as_deref(),
+    ) {
+        (Some(provider), "source_tag", Some(scope_value)) => conn.query_row(
+            &format!(
+                "SELECT COALESCE(SUM(cost_usd), 0.0) FROM requests \
+                 WHERE timestamp >= {} AND COALESCE(provider_type,'api') = 'api' \
+                 AND provider = ?1 AND COALESCE(source_tag, '') = ?2",
+                time_expr
+            ),
+            params![provider, scope_value],
+            |row| row.get(0),
+        ),
+        (Some(provider), _, _) => conn.query_row(
+            &format!(
+                "SELECT COALESCE(SUM(cost_usd), 0.0) FROM requests \
+                 WHERE timestamp >= {} AND COALESCE(provider_type,'api') = 'api' \
+                 AND provider = ?1",
+                time_expr
+            ),
+            params![provider],
+            |row| row.get(0),
+        ),
+        (None, "source_tag", Some(scope_value)) => conn.query_row(
+            &format!(
+                "SELECT COALESCE(SUM(cost_usd), 0.0) FROM requests \
+                 WHERE timestamp >= {} AND COALESCE(provider_type,'api') = 'api' \
+                 AND COALESCE(source_tag, '') = ?1",
+                time_expr
+            ),
+            params![scope_value],
+            |row| row.get(0),
+        ),
+        (None, _, _) => conn.query_row(
+            &format!(
+                "SELECT COALESCE(SUM(cost_usd), 0.0) FROM requests \
+                 WHERE timestamp >= {} AND COALESCE(provider_type,'api') = 'api'",
+                time_expr
+            ),
+            [],
+            |row| row.get(0),
+        ),
+    }
+}
+
 pub fn create_budget(
     conn: &Connection,
     name: &str,
     period: &str,
     threshold: f64,
     provider_filter: Option<&str>,
+    scope_kind: Option<&str>,
+    scope_value: Option<&str>,
 ) -> Result<i64> {
+    let (scope_kind, scope_value) = normalize_budget_scope(scope_kind, scope_value)?;
     conn.execute(
-        "INSERT INTO budgets (name, period, threshold_usd, provider_filter, enabled, created_at)
-         VALUES (?1, ?2, ?3, ?4, 1, datetime('now'))",
-        params![name, period, threshold, provider_filter],
+        "INSERT INTO budgets (name, period, threshold_usd, provider_filter, scope_kind, scope_value, enabled, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, datetime('now'))",
+        params![name, period, threshold, provider_filter, scope_kind, scope_value],
     )?;
     Ok(conn.last_insert_rowid())
 }
 
 pub fn get_budgets(conn: &Connection) -> Result<Vec<Budget>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, period, threshold_usd, provider_filter, enabled, created_at
+        "SELECT id, name, period, threshold_usd, provider_filter, COALESCE(scope_kind, 'global'), scope_value, enabled, created_at
          FROM budgets ORDER BY created_at ASC",
     )?;
     let records = stmt
@@ -600,8 +705,10 @@ pub fn get_budgets(conn: &Connection) -> Result<Vec<Budget>> {
                 period: row.get(2)?,
                 threshold_usd: row.get(3)?,
                 provider_filter: row.get(4)?,
-                enabled: row.get::<_, i64>(5)? != 0,
-                created_at: row.get(6)?,
+                scope_kind: row.get(5)?,
+                scope_value: row.get(6)?,
+                enabled: row.get::<_, i64>(7)? != 0,
+                created_at: row.get(8)?,
             })
         })?
         .collect::<Result<Vec<_>>>()?;
@@ -627,33 +734,7 @@ pub fn check_budgets(conn: &Connection) -> Result<Vec<BudgetStatus>> {
     let mut statuses = Vec::new();
 
     for budget in budgets.iter().filter(|b| b.enabled) {
-        let time_expr = match budget.period.as_str() {
-            "daily" => "datetime('now', 'start of day')",
-            "weekly" => "datetime('now', '-7 days')",
-            _ => "datetime('now', '-30 days')", // monthly
-        };
-
-        let current_spend: f64 = match &budget.provider_filter {
-            Some(pf) => conn.query_row(
-                &format!(
-                    "SELECT COALESCE(SUM(cost_usd), 0.0) FROM requests \
-                     WHERE timestamp >= {} AND COALESCE(provider_type,'api') = 'api' \
-                     AND provider = ?1",
-                    time_expr
-                ),
-                params![pf],
-                |row| row.get(0),
-            )?,
-            None => conn.query_row(
-                &format!(
-                    "SELECT COALESCE(SUM(cost_usd), 0.0) FROM requests \
-                     WHERE timestamp >= {} AND COALESCE(provider_type,'api') = 'api'",
-                    time_expr
-                ),
-                [],
-                |row| row.get(0),
-            )?,
-        };
+        let current_spend = budget_current_spend(conn, budget)?;
 
         let percentage = if budget.threshold_usd > 0.0 {
             (current_spend / budget.threshold_usd) * 100.0
@@ -667,6 +748,8 @@ pub fn check_budgets(conn: &Connection) -> Result<Vec<BudgetStatus>> {
             period: budget.period.clone(),
             threshold_usd: budget.threshold_usd,
             provider_filter: budget.provider_filter.clone(),
+            scope_kind: budget.scope_kind.clone(),
+            scope_value: budget.scope_value.clone(),
             enabled: budget.enabled,
             current_spend,
             percentage,
@@ -967,6 +1050,90 @@ mod tests {
         assert_eq!(snapshot.summary.failed_requests, 2);
         assert!(snapshot.anomalies.iter().any(|a| a.kind == "latency_spike"));
         assert!(snapshot.anomalies.iter().any(|a| a.kind == "error_spike"));
+
+        drop(conn);
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn scoped_budgets_filter_by_source_tag_and_provider() {
+        let db_path = std::env::temp_dir().join(format!(
+            "tokenpulse-budget-test-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let conn = init_db(db_path.to_str().unwrap()).unwrap();
+
+        conn.execute(
+            "INSERT INTO requests (timestamp, provider, model, input_tokens, output_tokens, cached_tokens, reasoning_tokens, cost_usd, latency_ms, tokens_per_second, time_to_first_token_ms, is_streaming, is_complete, source_tag, error_message, provider_type)
+             VALUES (datetime('now', '-1 hour'), 'openai', 'gpt-4o', 100, 50, 0, 0, 1.50, 800, 0.0, 0, 0, 1, 'project-a', NULL, 'api')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO requests (timestamp, provider, model, input_tokens, output_tokens, cached_tokens, reasoning_tokens, cost_usd, latency_ms, tokens_per_second, time_to_first_token_ms, is_streaming, is_complete, source_tag, error_message, provider_type)
+             VALUES (datetime('now', '-1 hour'), 'openai', 'gpt-4o-mini', 100, 50, 0, 0, 0.75, 900, 0.0, 0, 0, 1, 'project-b', NULL, 'api')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO requests (timestamp, provider, model, input_tokens, output_tokens, cached_tokens, reasoning_tokens, cost_usd, latency_ms, tokens_per_second, time_to_first_token_ms, is_streaming, is_complete, source_tag, error_message, provider_type)
+             VALUES (datetime('now', '-1 hour'), 'anthropic', 'claude-sonnet', 100, 50, 0, 0, 2.00, 950, 0.0, 0, 0, 1, 'project-a', NULL, 'api')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO requests (timestamp, provider, model, input_tokens, output_tokens, cached_tokens, reasoning_tokens, cost_usd, latency_ms, tokens_per_second, time_to_first_token_ms, is_streaming, is_complete, source_tag, error_message, provider_type)
+             VALUES (datetime('now', '-1 hour'), 'openai', 'gpt-4o', 100, 50, 0, 0, 99.0, 700, 0.0, 0, 0, 1, 'project-a', NULL, 'local')",
+            [],
+        ).unwrap();
+
+        create_budget(
+            &conn,
+            "All OpenAI",
+            "monthly",
+            10.0,
+            Some("openai"),
+            None,
+            None,
+        ).unwrap();
+        create_budget(
+            &conn,
+            "Project A",
+            "monthly",
+            10.0,
+            None,
+            Some("source_tag"),
+            Some("project-a"),
+        ).unwrap();
+        create_budget(
+            &conn,
+            "Project A OpenAI",
+            "monthly",
+            10.0,
+            Some("openai"),
+            Some("project"),
+            Some("project-a"),
+        ).unwrap();
+
+        let statuses = check_budgets(&conn).unwrap();
+        assert_eq!(statuses.len(), 3);
+
+        let openai_budget = statuses.iter().find(|status| status.name == "All OpenAI").unwrap();
+        assert!((openai_budget.current_spend - 2.25).abs() < 0.0001);
+        assert_eq!(openai_budget.scope_kind, "global");
+        assert_eq!(openai_budget.scope_value, None);
+
+        let project_budget = statuses.iter().find(|status| status.name == "Project A").unwrap();
+        assert!((project_budget.current_spend - 3.50).abs() < 0.0001);
+        assert_eq!(project_budget.scope_kind, "source_tag");
+        assert_eq!(project_budget.scope_value.as_deref(), Some("project-a"));
+
+        let project_provider_budget = statuses
+            .iter()
+            .find(|status| status.name == "Project A OpenAI")
+            .unwrap();
+        assert!((project_provider_budget.current_spend - 1.50).abs() < 0.0001);
 
         drop(conn);
         let _ = std::fs::remove_file(db_path);

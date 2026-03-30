@@ -984,38 +984,16 @@ def _fetch_budgets_with_status():
             conn.close()
             return []
 
-        c.execute(
-            "SELECT id, name, period, threshold_usd, provider_filter, enabled "
-            "FROM budgets WHERE enabled=1 ORDER BY created_at ASC"
-        )
-        budgets = [dict(r) for r in c.fetchall()]
+        budgets = _select_budget_rows(c, enabled_only=True)
 
         results = []
         for b in budgets:
             period = b["period"]
-            if period == "daily":
-                time_expr = "datetime('now', 'start of day')"
-            elif period == "weekly":
-                time_expr = "datetime('now', '-7 days')"
-            else:
-                time_expr = "datetime('now', '-30 days')"
-
             pf = b["provider_filter"]
+            scope_kind = _normalize_budget_scope_kind(b.get("scope_kind")) or "global"
+            scope_value = (b.get("scope_value") or "").strip() or None
             try:
-                if pf:
-                    c.execute(
-                        f"SELECT COALESCE(SUM(cost_usd),0) FROM requests "
-                        f"WHERE timestamp >= {time_expr} "
-                        f"AND COALESCE(provider_type,'api')='api' AND provider=?",
-                        (pf,)
-                    )
-                else:
-                    c.execute(
-                        f"SELECT COALESCE(SUM(cost_usd),0) FROM requests "
-                        f"WHERE timestamp >= {time_expr} "
-                        f"AND COALESCE(provider_type,'api')='api'"
-                    )
-                current_spend = c.fetchone()[0] or 0.0
+                current_spend = _budget_current_spend(c, period, pf, scope_kind, scope_value)
             except Exception:
                 current_spend = 0.0
 
@@ -1027,6 +1005,8 @@ def _fetch_budgets_with_status():
                 "period": period,
                 "threshold_usd": b["threshold_usd"],
                 "provider_filter": pf,
+                "scope_kind": scope_kind,
+                "scope_value": scope_value,
                 "current_spend": current_spend,
                 "percentage": pct,
                 "is_over": current_spend >= b["threshold_usd"],
@@ -1045,17 +1025,92 @@ def _fetch_all_budgets():
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
         try:
-            c.execute(
-                "SELECT id, name, period, threshold_usd, provider_filter, enabled "
-                "FROM budgets ORDER BY created_at ASC"
-            )
-            rows = [dict(r) for r in c.fetchall()]
+            rows = _select_budget_rows(c, enabled_only=False)
         except Exception:
             rows = []
         conn.close()
         return rows
     except Exception:
         return []
+
+
+def _normalize_budget_scope_kind(scope_kind):
+    scope = (scope_kind or "").strip().lower()
+    if not scope or scope == "global":
+        return "global"
+    if scope in ("source_tag", "project"):
+        return "source_tag"
+    return None
+
+
+def _get_budget_table_columns(cursor):
+    cursor.execute("PRAGMA table_info(budgets)")
+    return {row[1] for row in cursor.fetchall()}
+
+
+def _select_budget_rows(cursor, enabled_only):
+    columns = _get_budget_table_columns(cursor)
+    enabled_where = " WHERE enabled=1" if enabled_only else ""
+    if "scope_kind" in columns and "scope_value" in columns:
+        cursor.execute(
+            "SELECT id, name, period, threshold_usd, provider_filter, "
+            "COALESCE(scope_kind, 'global') as scope_kind, scope_value, enabled "
+            f"FROM budgets{enabled_where} ORDER BY created_at ASC"
+        )
+    else:
+        cursor.execute(
+            "SELECT id, name, period, threshold_usd, provider_filter, "
+            "'global' as scope_kind, NULL as scope_value, enabled "
+            f"FROM budgets{enabled_where} ORDER BY created_at ASC"
+        )
+    return [dict(r) for r in cursor.fetchall()]
+
+
+def _ensure_budget_scope_columns(conn):
+    c = conn.cursor()
+    columns = _get_budget_table_columns(c)
+    if "scope_kind" not in columns:
+        c.execute("ALTER TABLE budgets ADD COLUMN scope_kind TEXT NOT NULL DEFAULT 'global'")
+    if "scope_value" not in columns:
+        c.execute("ALTER TABLE budgets ADD COLUMN scope_value TEXT")
+
+
+def _budget_time_expr(period):
+    if period == "daily":
+        return "datetime('now', 'start of day')"
+    if period == "weekly":
+        return "datetime('now', '-7 days')"
+    return "datetime('now', '-30 days')"
+
+
+def _budget_current_spend(cursor, period, provider_filter, scope_kind, scope_value):
+    where_parts = [
+        f"timestamp >= {_budget_time_expr(period)}",
+        "COALESCE(provider_type,'api')='api'",
+    ]
+    params = []
+    if provider_filter:
+        where_parts.append("provider=?")
+        params.append(provider_filter)
+    if scope_kind == "source_tag" and scope_value:
+        where_parts.append("COALESCE(source_tag,'')=?")
+        params.append(scope_value)
+    cursor.execute(
+        f"SELECT COALESCE(SUM(cost_usd),0) FROM requests WHERE {' AND '.join(where_parts)}",
+        tuple(params)
+    )
+    return cursor.fetchone()[0] or 0.0
+
+
+def _budget_scope_label(scope_kind, scope_value):
+    if _normalize_budget_scope_kind(scope_kind) == "source_tag" and scope_value:
+        return f"project: {scope_value}"
+    return "all projects"
+
+
+def _budget_scope_badge(scope_kind, scope_value):
+    label = _budget_scope_label(scope_kind, scope_value)
+    return f'<span style="color:#8b949e">{_escape_html(label)}</span>'
 
 
 def _fetch_project_breakdown():
@@ -1507,7 +1562,10 @@ def _build_budget_section(budgets, all_budgets):
                 bar_class = "budget-bar-fill budget-bar-green"
 
             pf = b.get("provider_filter")
-            pf_html = f' &middot; <span style="color:#8b949e">{_escape_html(pf)}</span>' if pf else ""
+            meta_bits = [_budget_scope_badge(b.get("scope_kind"), b.get("scope_value"))]
+            if pf:
+                meta_bits.append(f'<span style="color:#8b949e">{_escape_html(pf)}</span>')
+            meta_html = "".join(f" &middot; {bit}" for bit in meta_bits if bit)
 
             over_badge = ""
             if is_over:
@@ -1519,7 +1577,7 @@ def _build_budget_section(budgets, all_budgets):
                 f'<div style="display:flex;align-items:center;gap:8px">'
                 f'<span class="budget-name">{name}</span>'
                 f'<span class="budget-period-badge">{period}</span>'
-                f'{pf_html}'
+                f'{meta_html}'
                 f'</div>'
                 f'<div style="display:flex;align-items:center;gap:8px">'
                 f'{over_badge}'
@@ -1543,12 +1601,13 @@ def _build_budget_section(budgets, all_budgets):
         bname = _escape_html(b["name"])
         period = b["period"]
         threshold = b["threshold_usd"]
-        pf = b.get("provider_filter") or "all providers"
+        meta_parts = [_budget_scope_label(b.get("scope_kind"), b.get("scope_value"))]
+        meta_parts.append(b.get("provider_filter") or "all providers")
         manage_rows += (
             f'<div class="budget-manage-row" id="bmrow-{bid}">'
             f'<div>'
             f'<div class="budget-manage-info">{bname} &mdash; {fmt_cost(threshold)} / {period}</div>'
-            f'<div class="budget-manage-sub">{_escape_html(pf)}</div>'
+            f'<div class="budget-manage-sub">{_escape_html(" · ".join(meta_parts))}</div>'
             f'</div>'
             f'<button class="btn-delete-budget" onclick="deleteBudget({bid})">Delete</button>'
             f'</div>'
@@ -1576,6 +1635,17 @@ def _build_budget_section(budgets, all_budgets):
           <option value="weekly">Weekly</option>
           <option value="monthly" selected>Monthly</option>
         </select>
+      </div>
+      <div class="budget-form-group">
+        <label class="budget-form-label">Scope</label>
+        <select id="bScopeKind" onchange="syncBudgetScopeInput()">
+          <option value="global" selected>Overall</option>
+          <option value="source_tag">Project / Source Tag</option>
+        </select>
+      </div>
+      <div class="budget-form-group">
+        <label class="budget-form-label">Scope Value</label>
+        <input type="text" id="bScopeValue" placeholder="all projects" disabled>
       </div>
       <div class="budget-form-group">
         <label class="budget-form-label">Threshold ($)</label>
@@ -3025,23 +3095,40 @@ function toggleBudgetPanel() {{
   if (panel) panel.classList.toggle('open');
 }}
 
+function syncBudgetScopeInput() {{
+  var scopeKindEl = document.getElementById('bScopeKind');
+  var scopeValueEl = document.getElementById('bScopeValue');
+  if (!scopeKindEl || !scopeValueEl) return;
+  var scoped = scopeKindEl.value === 'source_tag';
+  scopeValueEl.disabled = !scoped;
+  scopeValueEl.placeholder = scoped ? 'e.g. project-alpha' : 'all projects';
+  if (!scoped) scopeValueEl.value = '';
+}}
+
 function addBudget() {{
   var nameEl = document.getElementById('bName');
   var periodEl = document.getElementById('bPeriod');
+  var scopeKindEl = document.getElementById('bScopeKind');
+  var scopeValueEl = document.getElementById('bScopeValue');
   var threshEl = document.getElementById('bThreshold');
   var provEl = document.getElementById('bProvider');
   var name = nameEl ? nameEl.value : '';
   var period = periodEl ? periodEl.value : 'monthly';
+  var scopeKind = scopeKindEl ? scopeKindEl.value : 'global';
+  var scopeValue = scopeValueEl ? scopeValueEl.value.trim() : '';
   var threshold = parseFloat(threshEl ? threshEl.value : '0');
   var provider = provEl ? provEl.value.trim() : '';
 
   if (!name.trim()) {{ alert('Please enter a budget name.'); return; }}
+  if (scopeKind === 'source_tag' && !scopeValue) {{ alert('Please enter a project/source tag.'); return; }}
   if (!threshold || threshold <= 0) {{ alert('Please enter a valid threshold.'); return; }}
 
   var body = 'name=' + encodeURIComponent(name.trim()) +
     '&period=' + encodeURIComponent(period) +
     '&threshold=' + encodeURIComponent(threshold);
   if (provider) body += '&provider_filter=' + encodeURIComponent(provider);
+  if (scopeKind) body += '&scope_kind=' + encodeURIComponent(scopeKind);
+  if (scopeValue) body += '&scope_value=' + encodeURIComponent(scopeValue);
 
   fetch('/api/budgets', {{
     method: 'POST',
@@ -3073,6 +3160,7 @@ document.addEventListener('DOMContentLoaded', function() {{
   var actLevel = Math.min(10, Math.round(recentCount / 2));
   initTokenFlow(actLevel);
   initActivityFeed(activityDots, recentCount);
+  syncBudgetScopeInput();
   initSpendChart();
   initExpandableRows();
   updatePulseDots(recentCount);
@@ -3251,6 +3339,9 @@ def _api_create_budget(form_data):
     except (ValueError, TypeError):
         return {"ok": False, "error": "Invalid threshold value"}
     provider_filter = (form_data.get("provider_filter") or [""])[0].strip() or None
+    scope_kind_raw = (form_data.get("scope_kind") or ["global"])[0].strip()
+    scope_kind = _normalize_budget_scope_kind(scope_kind_raw)
+    scope_value = (form_data.get("scope_value") or [""])[0].strip() or None
 
     if not name:
         return {"ok": False, "error": "Name is required"}
@@ -3258,14 +3349,21 @@ def _api_create_budget(form_data):
         return {"ok": False, "error": "Period must be daily, weekly, or monthly"}
     if threshold <= 0:
         return {"ok": False, "error": "Threshold must be positive"}
+    if scope_kind is None:
+        return {"ok": False, "error": "Scope must be overall or project/source tag"}
+    if scope_kind == "source_tag" and not scope_value:
+        return {"ok": False, "error": "Project/source tag budgets require a scope value"}
+    if scope_kind == "global":
+        scope_value = None
 
     try:
         conn = sqlite3.connect(DB_PATH)
+        _ensure_budget_scope_columns(conn)
         c = conn.cursor()
         c.execute(
-            "INSERT INTO budgets (name, period, threshold_usd, provider_filter, enabled, created_at) "
-            "VALUES (?, ?, ?, ?, 1, datetime('now'))",
-            (name, period, threshold, provider_filter)
+            "INSERT INTO budgets (name, period, threshold_usd, provider_filter, scope_kind, scope_value, enabled, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, 1, datetime('now'))",
+            (name, period, threshold, provider_filter, scope_kind, scope_value)
         )
         bid = c.lastrowid
         conn.commit()

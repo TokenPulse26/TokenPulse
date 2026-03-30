@@ -37,7 +37,7 @@ The **web dashboard** on port 4200 gives you full visibility from any browser on
 ### Dashboard
 - **Live activity feed** — animated, auto-updating timeline of all requests
 - **Spending forecasts** — projected costs based on your usage patterns
-- **Budget alerts** — set limits with macOS push notifications when thresholds are hit
+- **Budget alerts** — set overall or project/source-tag limits with macOS push notifications when thresholds are hit
 - **Error monitoring** — per-model error rates, error timeline, and troubleshooting info
 - **Cost optimization recommendations** — actionable suggestions to reduce spend
 - **Activity heatmap** — GitHub-style 30-day × 24-hour usage visualization
