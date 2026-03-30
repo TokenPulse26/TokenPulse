@@ -101,6 +101,17 @@ pub struct ReliabilitySnapshot {
     pub anomalies: Vec<ReliabilityAnomaly>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct NotificationEvent {
+    pub id: i64,
+    pub kind: String,
+    pub title: String,
+    pub body: String,
+    pub severity: String,
+    pub created_at: String,
+    pub dedupe_key: String,
+}
+
 fn fallback_model_for(model: &str) -> Option<&'static str> {
     match model.trim().to_lowercase().as_str() {
         "claude-opus-4-6" => Some("claude-sonnet-4-6"),
@@ -215,6 +226,25 @@ pub fn init_db(path: &str) -> Result<Connection> {
             threshold_usd REAL NOT NULL,
             FOREIGN KEY (budget_id) REFERENCES budgets(id)
         );
+
+        CREATE TABLE IF NOT EXISTS notifications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind TEXT NOT NULL,
+            title TEXT NOT NULL,
+            body TEXT NOT NULL,
+            severity TEXT NOT NULL DEFAULT 'info',
+            dedupe_key TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            delivered_at TEXT,
+            resolved_at TEXT
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_active_dedupe
+            ON notifications(dedupe_key)
+            WHERE resolved_at IS NULL;
+
+        CREATE INDEX IF NOT EXISTS idx_notifications_delivered
+            ON notifications(delivered_at, created_at DESC);
     ",
     )?;
 
@@ -230,6 +260,26 @@ pub fn init_db(path: &str) -> Result<Connection> {
     );
     let _ = conn.execute("ALTER TABLE budgets ADD COLUMN scope_value TEXT", []);
     let _ = conn.execute("ALTER TABLE budget_alerts ADD COLUMN resolved_at TEXT", []);
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS notifications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind TEXT NOT NULL,
+            title TEXT NOT NULL,
+            body TEXT NOT NULL,
+            severity TEXT NOT NULL DEFAULT 'info',
+            dedupe_key TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            delivered_at TEXT,
+            resolved_at TEXT
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_active_dedupe
+            ON notifications(dedupe_key)
+            WHERE resolved_at IS NULL;
+        CREATE INDEX IF NOT EXISTS idx_notifications_delivered
+            ON notifications(delivered_at, created_at DESC);
+    ",
+    )?;
 
     migrate_pricing_table(&conn)?;
 
@@ -647,6 +697,8 @@ pub struct BudgetStatus {
     pub current_spend: f64,
     pub percentage: f64,
     pub is_over: bool,
+    pub warning_tier_pct: Option<i64>,
+    pub warning_tier_label: Option<String>,
     pub alert_active: bool,
     pub last_alert_triggered_at: Option<String>,
 }
@@ -729,14 +781,26 @@ fn budget_time_expr(period: &str) -> &str {
     }
 }
 
-fn budget_current_spend(conn: &Connection, budget: &Budget) -> Result<f64> {
-    let time_expr = budget_time_expr(&budget.period);
+fn budget_warning_tier(percentage: f64) -> Option<(i64, &'static str)> {
+    if percentage >= 100.0 {
+        Some((100, "over_budget"))
+    } else if percentage >= 95.0 {
+        Some((95, "critical"))
+    } else if percentage >= 80.0 {
+        Some((80, "warning"))
+    } else {
+        None
+    }
+}
 
-    match (
-        budget.provider_filter.as_deref(),
-        budget.scope_kind.as_str(),
-        budget.scope_value.as_deref(),
-    ) {
+fn budget_spend_with_filters(
+    conn: &Connection,
+    time_expr: &str,
+    provider_filter: Option<&str>,
+    scope_kind: &str,
+    scope_value: Option<&str>,
+) -> Result<f64> {
+    match (provider_filter, scope_kind, scope_value) {
         (Some(provider), "source_tag", Some(scope_value)) => conn.query_row(
             &format!(
                 "SELECT COALESCE(SUM(cost_usd), 0.0) FROM requests \
@@ -777,6 +841,17 @@ fn budget_current_spend(conn: &Connection, budget: &Budget) -> Result<f64> {
             |row| row.get(0),
         ),
     }
+}
+
+fn budget_current_spend(conn: &Connection, budget: &Budget) -> Result<f64> {
+    let time_expr = budget_time_expr(&budget.period);
+    budget_spend_with_filters(
+        conn,
+        time_expr,
+        budget.provider_filter.as_deref(),
+        budget.scope_kind.as_str(),
+        budget.scope_value.as_deref(),
+    )
 }
 
 pub fn create_budget(
@@ -897,6 +972,8 @@ fn build_budget_status(conn: &Connection, budget: &Budget) -> Result<BudgetStatu
     };
     let (alert_active, last_alert_triggered_at) = get_active_alert_metadata(conn, budget.id)?;
 
+    let warning_tier = budget_warning_tier(percentage);
+
     Ok(BudgetStatus {
         id: budget.id,
         name: budget.name.clone(),
@@ -909,6 +986,8 @@ fn build_budget_status(conn: &Connection, budget: &Budget) -> Result<BudgetStatu
         current_spend,
         percentage,
         is_over: current_spend >= budget.threshold_usd,
+        warning_tier_pct: warning_tier.map(|(pct, _)| pct),
+        warning_tier_label: warning_tier.map(|(_, label)| label.to_string()),
         alert_active,
         last_alert_triggered_at,
     })
@@ -1022,53 +1101,194 @@ fn budget_trailing_average_daily_spend(
 ) -> Result<f64> {
     let time_expr = format!("datetime('now', '-{} days')", trailing_days.max(1));
 
-    let total_spend: f64 = match (
+    let total_spend = budget_spend_with_filters(
+        conn,
+        &time_expr,
         budget.provider_filter.as_deref(),
         budget.scope_kind.as_str(),
         budget.scope_value.as_deref(),
-    ) {
-        (Some(provider), "source_tag", Some(scope_value)) => conn.query_row(
-            &format!(
-                "SELECT COALESCE(SUM(cost_usd), 0.0) FROM requests \
-                 WHERE timestamp >= {} AND COALESCE(provider_type,'api') = 'api' \
-                 AND provider = ?1 AND COALESCE(source_tag, '') = ?2",
-                time_expr
-            ),
-            params![provider, scope_value],
-            |row| row.get(0),
-        ),
-        (Some(provider), _, _) => conn.query_row(
-            &format!(
-                "SELECT COALESCE(SUM(cost_usd), 0.0) FROM requests \
-                 WHERE timestamp >= {} AND COALESCE(provider_type,'api') = 'api' \
-                 AND provider = ?1",
-                time_expr
-            ),
-            params![provider],
-            |row| row.get(0),
-        ),
-        (None, "source_tag", Some(scope_value)) => conn.query_row(
-            &format!(
-                "SELECT COALESCE(SUM(cost_usd), 0.0) FROM requests \
-                 WHERE timestamp >= {} AND COALESCE(provider_type,'api') = 'api' \
-                 AND COALESCE(source_tag, '') = ?1",
-                time_expr
-            ),
-            params![scope_value],
-            |row| row.get(0),
-        ),
-        (None, _, _) => conn.query_row(
-            &format!(
-                "SELECT COALESCE(SUM(cost_usd), 0.0) FROM requests \
-                 WHERE timestamp >= {} AND COALESCE(provider_type,'api') = 'api'",
-                time_expr
-            ),
-            [],
-            |row| row.get(0),
-        ),
-    }?;
+    )?;
 
     Ok(total_spend / trailing_days.max(1) as f64)
+}
+
+fn create_notification(
+    conn: &Connection,
+    kind: &str,
+    title: &str,
+    body: &str,
+    severity: &str,
+    dedupe_key: &str,
+) -> Result<Option<NotificationEvent>> {
+    let updated = conn.execute(
+        "INSERT OR IGNORE INTO notifications (kind, title, body, severity, dedupe_key) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![kind, title, body, severity, dedupe_key],
+    )?;
+
+    if updated == 0 {
+        return Ok(None);
+    }
+
+    let id = conn.last_insert_rowid();
+    let event = conn.query_row(
+        "SELECT id, kind, title, body, severity, created_at, dedupe_key FROM notifications WHERE id = ?1",
+        params![id],
+        |row| {
+            Ok(NotificationEvent {
+                id: row.get(0)?,
+                kind: row.get(1)?,
+                title: row.get(2)?,
+                body: row.get(3)?,
+                severity: row.get(4)?,
+                created_at: row.get(5)?,
+                dedupe_key: row.get(6)?,
+            })
+        },
+    )?;
+    Ok(Some(event))
+}
+
+fn resolve_notifications_matching(
+    conn: &Connection,
+    pattern: &str,
+    active_keys: &[String],
+) -> Result<usize> {
+    let mut resolved = 0;
+    let mut stmt = conn.prepare(
+        "SELECT id, dedupe_key FROM notifications WHERE dedupe_key LIKE ?1 AND resolved_at IS NULL",
+    )?;
+    let rows = stmt.query_map(params![pattern], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+    })?;
+    for row in rows {
+        let (id, key) = row?;
+        if !active_keys.iter().any(|active| active == &key) {
+            resolved += conn.execute(
+                "UPDATE notifications SET resolved_at = datetime('now') WHERE id = ?1 AND resolved_at IS NULL",
+                params![id],
+            )?;
+        }
+    }
+    Ok(resolved)
+}
+
+pub fn get_undelivered_notifications(
+    conn: &Connection,
+    limit: i64,
+) -> Result<Vec<NotificationEvent>> {
+    let bounded_limit = limit.clamp(1, 100);
+    let mut stmt = conn.prepare(
+        "SELECT id, kind, title, body, severity, created_at, dedupe_key
+         FROM notifications
+         WHERE delivered_at IS NULL AND resolved_at IS NULL
+         ORDER BY created_at ASC, id ASC
+         LIMIT ?1",
+    )?;
+    let rows = stmt.query_map(params![bounded_limit], |row| {
+        Ok(NotificationEvent {
+            id: row.get(0)?,
+            kind: row.get(1)?,
+            title: row.get(2)?,
+            body: row.get(3)?,
+            severity: row.get(4)?,
+            created_at: row.get(5)?,
+            dedupe_key: row.get(6)?,
+        })
+    })?;
+    rows.collect()
+}
+
+pub fn mark_notifications_delivered(conn: &Connection, ids: &[i64]) -> Result<usize> {
+    let mut updated = 0;
+    for id in ids {
+        updated += conn.execute(
+            "UPDATE notifications SET delivered_at = COALESCE(delivered_at, datetime('now')) WHERE id = ?1",
+            params![id],
+        )?;
+    }
+    Ok(updated)
+}
+
+pub fn sync_budget_notifications(conn: &Connection) -> Result<Vec<NotificationEvent>> {
+    let budgets = get_budgets(conn)?;
+    let mut events = Vec::new();
+    let mut active_keys = Vec::new();
+
+    for budget in budgets.into_iter().filter(|budget| budget.enabled) {
+        let status = build_budget_status(conn, &budget)?;
+        if let Some((tier_pct, tier_label)) = budget_warning_tier(status.percentage) {
+            let dedupe_key = format!("budget:{}:tier:{}", budget.id, tier_pct);
+            active_keys.push(dedupe_key.clone());
+            let severity = if tier_pct >= 100 {
+                "critical"
+            } else if tier_pct >= 95 {
+                "high"
+            } else {
+                "medium"
+            };
+            let title = if tier_pct >= 100 {
+                format!("Budget exceeded: {}", budget.name)
+            } else {
+                format!("Budget {}% used: {}", tier_pct, budget.name)
+            };
+            let body = format!(
+                "{} is at ${:.2} of ${:.2} ({:.0}%) for this {} budget.",
+                budget.name,
+                status.current_spend,
+                status.threshold_usd,
+                status.percentage,
+                budget.period
+            );
+            if let Some(event) = create_notification(
+                conn,
+                &format!("budget_{}", tier_label),
+                &title,
+                &body,
+                severity,
+                &dedupe_key,
+            )? {
+                events.push(event);
+            }
+        }
+    }
+
+    resolve_notifications_matching(conn, "budget:%", &active_keys)?;
+    Ok(events)
+}
+
+pub fn sync_reliability_notifications(
+    conn: &Connection,
+    range: &str,
+) -> Result<Vec<NotificationEvent>> {
+    let snapshot = get_reliability_snapshot(conn, range)?;
+    let mut events = Vec::new();
+    let mut active_keys = Vec::new();
+
+    for anomaly in snapshot.anomalies.iter() {
+        let dedupe_key = format!(
+            "reliability:{}:{}:{}",
+            anomaly.kind, anomaly.provider, anomaly.model
+        );
+        active_keys.push(dedupe_key.clone());
+        let title = match anomaly.kind.as_str() {
+            "error_spike" => format!("Reliability issue: {}", anomaly.model),
+            _ => format!("Latency spike: {}", anomaly.model),
+        };
+        let body = anomaly.summary.clone();
+        if let Some(event) = create_notification(
+            conn,
+            &format!("reliability_{}", anomaly.kind),
+            &title,
+            &body,
+            &anomaly.severity,
+            &dedupe_key,
+        )? {
+            events.push(event);
+        }
+    }
+
+    resolve_notifications_matching(conn, "reliability:%", &active_keys)?;
+    Ok(events)
 }
 
 pub fn get_budget_forecasts(conn: &Connection) -> Result<Vec<BudgetForecast>> {
@@ -1501,6 +1721,7 @@ mod tests {
         assert_eq!(statuses.len(), 1);
         assert!(statuses[0].alert_active);
         assert!(statuses[0].is_over);
+        assert_eq!(statuses[0].warning_tier_pct, Some(100));
 
         update_budget(
             &conn,
@@ -1542,6 +1763,115 @@ mod tests {
         set_budget_enabled(&conn, budget_id, false).unwrap();
         let statuses = check_budgets(&conn).unwrap();
         assert!(statuses.is_empty());
+
+        drop(conn);
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn budget_warning_tiers_and_notifications_dedupe_cleanly() {
+        let db_path = std::env::temp_dir().join(format!(
+            "tokenpulse-budget-warning-test-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let conn = init_db(db_path.to_str().unwrap()).unwrap();
+
+        conn.execute(
+            "INSERT INTO requests (timestamp, provider, model, input_tokens, output_tokens, cached_tokens, reasoning_tokens, cost_usd, latency_ms, tokens_per_second, time_to_first_token_ms, is_streaming, is_complete, source_tag, error_message, provider_type)
+             VALUES (datetime('now', '-1 hour'), 'openai', 'gpt-4o', 100, 50, 0, 0, 8.20, 800, 0.0, 0, 0, 1, 'project-a', NULL, 'api')",
+            [],
+        ).unwrap();
+
+        let budget_id = create_budget(&conn, "Warn me", "monthly", 10.0, None, None, None).unwrap();
+        let statuses = check_budgets(&conn).unwrap();
+        assert_eq!(statuses[0].warning_tier_pct, Some(80));
+
+        let first = sync_budget_notifications(&conn).unwrap();
+        assert_eq!(first.len(), 1);
+        assert!(first[0].title.contains("80%"));
+
+        let second = sync_budget_notifications(&conn).unwrap();
+        assert!(second.is_empty());
+
+        conn.execute(
+            "UPDATE requests SET cost_usd = 9.60 WHERE source_tag = 'project-a'",
+            [],
+        )
+        .unwrap();
+        let statuses = check_budgets(&conn).unwrap();
+        assert_eq!(statuses[0].warning_tier_pct, Some(95));
+        let escalated = sync_budget_notifications(&conn).unwrap();
+        assert_eq!(escalated.len(), 1);
+        assert!(escalated[0].title.contains("95%"));
+
+        conn.execute(
+            "UPDATE requests SET cost_usd = 2.00 WHERE source_tag = 'project-a'",
+            [],
+        )
+        .unwrap();
+        let statuses = check_budgets(&conn).unwrap();
+        assert_eq!(statuses[0].warning_tier_pct, None);
+        sync_budget_notifications(&conn).unwrap();
+        let unresolved: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM notifications WHERE dedupe_key LIKE 'budget:%' AND resolved_at IS NULL",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(unresolved, 0);
+
+        delete_budget(&conn, budget_id).unwrap();
+        drop(conn);
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn reliability_notifications_are_created_once_and_marked_delivered() {
+        let db_path = std::env::temp_dir().join(format!(
+            "tokenpulse-reliability-notify-test-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let conn = init_db(db_path.to_str().unwrap()).unwrap();
+
+        for day_offset in 2..8 {
+            conn.execute(
+                "INSERT INTO requests (timestamp, provider, model, input_tokens, output_tokens, cached_tokens, reasoning_tokens, cost_usd, latency_ms, tokens_per_second, time_to_first_token_ms, is_streaming, is_complete, source_tag, error_message, provider_type) VALUES (datetime('now', ?1), 'openai', 'gpt-4o', 100, 50, 0, 0, 0.25, 900, 0.0, 0, 0, 1, 'tests', NULL, 'api')",
+                params![format!("-{} days", day_offset)],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO requests (timestamp, provider, model, input_tokens, output_tokens, cached_tokens, reasoning_tokens, cost_usd, latency_ms, tokens_per_second, time_to_first_token_ms, is_streaming, is_complete, source_tag, error_message, provider_type) VALUES (datetime('now', ?1), 'openai', 'gpt-4o', 100, 50, 0, 0, 0.25, 950, 0.0, 0, 0, 1, 'tests', NULL, 'api')",
+                params![format!("-{} days", day_offset)],
+            ).unwrap();
+        }
+        for hour_offset in 0..6 {
+            conn.execute(
+                "INSERT INTO requests (timestamp, provider, model, input_tokens, output_tokens, cached_tokens, reasoning_tokens, cost_usd, latency_ms, tokens_per_second, time_to_first_token_ms, is_streaming, is_complete, source_tag, error_message, provider_type) VALUES (datetime('now', ?1), 'openai', 'gpt-4o', 100, 50, 0, 0, 0.25, 2600, 0.0, 0, 0, ?2, 'tests', ?3, 'api')",
+                params![
+                    format!("-{} hours", hour_offset),
+                    if hour_offset < 2 { 0 } else { 1 },
+                    if hour_offset < 2 { Some("upstream 500") } else { Option::<&str>::None },
+                ],
+            ).unwrap();
+        }
+
+        let created = sync_reliability_notifications(&conn, "all").unwrap();
+        assert!(!created.is_empty());
+        let undelivered = get_undelivered_notifications(&conn, 10).unwrap();
+        assert_eq!(created.len(), undelivered.len());
+        let ids: Vec<i64> = undelivered.iter().map(|item| item.id).collect();
+        mark_notifications_delivered(&conn, &ids).unwrap();
+        let after = get_undelivered_notifications(&conn, 10).unwrap();
+        assert!(after.is_empty());
+
+        let duplicate = sync_reliability_notifications(&conn, "all").unwrap();
+        assert!(duplicate.is_empty());
 
         drop(conn);
         let _ = std::fs::remove_file(db_path);

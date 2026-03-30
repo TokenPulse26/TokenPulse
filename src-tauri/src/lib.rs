@@ -4,7 +4,8 @@ mod proxy;
 
 use db::{
     Budget, BudgetAlertHistoryItem, BudgetForecast, BudgetStatus, CostSummary, DailyProviderStat,
-    DailyStats, DashboardSummary, ModelStats, ReliabilitySnapshot, RequestRecord,
+    DailyStats, DashboardSummary, ModelStats, NotificationEvent, ReliabilitySnapshot,
+    RequestRecord,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -122,6 +123,21 @@ fn get_reliability_snapshot_cmd(
 ) -> Result<ReliabilitySnapshot, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::get_reliability_snapshot(&conn, &time_range).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_pending_notifications(
+    state: State<DbState>,
+    limit: Option<i64>,
+) -> Result<Vec<NotificationEvent>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::get_undelivered_notifications(&conn, limit.unwrap_or(20)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn mark_notifications_delivered_cmd(state: State<DbState>, ids: Vec<i64>) -> Result<usize, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::mark_notifications_delivered(&conn, &ids).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -531,6 +547,8 @@ pub fn run() {
             check_budgets,
             get_budget_alert_history,
             get_budget_forecasts,
+            get_pending_notifications,
+            mark_notifications_delivered_cmd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -608,19 +626,21 @@ fn setup_tray(
                     let _ = today_item_clone.set_text(text);
                 }
 
-                // Check budgets and send notifications for newly triggered alerts.
-                if let Ok(triggered_alerts) = db::sync_budget_alerts(&conn) {
-                    for status in &triggered_alerts {
+                let _ = db::sync_budget_alerts(&conn);
+                let _ = db::sync_budget_notifications(&conn);
+                let _ = db::sync_reliability_notifications(&conn, "7d");
+
+                if let Ok(events) = db::get_undelivered_notifications(&conn, 20) {
+                    let ids: Vec<i64> = events.iter().map(|event| event.id).collect();
+                    for event in &events {
                         let _ = app_handle_for_tray
                             .notification()
                             .builder()
-                            .title("⚠ Budget Alert")
-                            .body(format!(
-                                "{} — ${:.2} / ${:.2}",
-                                status.name, status.current_spend, status.threshold_usd,
-                            ))
+                            .title(&event.title)
+                            .body(&event.body)
                             .show();
                     }
+                    let _ = db::mark_notifications_delivered(&conn, &ids);
                 }
             }
         }

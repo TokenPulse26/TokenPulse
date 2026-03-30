@@ -7,6 +7,7 @@ import math
 import calendar
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
+from urllib.request import Request, urlopen
 from datetime import datetime, timedelta
 from string import Template
 
@@ -17,6 +18,19 @@ DB_PATH = os.environ.get(
     ),
 )
 VERSION = "0.4.0"
+PROXY_API_BASE = os.environ.get("TOKENPULSE_PROXY_API", "http://127.0.0.1:4100")
+
+def _fetch_proxy_json(path, timeout=1.2):
+    try:
+        req = Request(f"{PROXY_API_BASE}{path}", headers={"Accept": "application/json"})
+        with urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        if isinstance(payload, dict) and payload.get("status") == "ok":
+            return payload
+    except Exception:
+        return None
+    return None
+
 
 # ─── Cost Optimization constants ──────────────────────────────────────────────
 MODEL_COSTS = {
@@ -1021,6 +1035,9 @@ def _trend_html(current, prev):
 
 def _fetch_budgets_with_status():
     """Fetch all budgets with their current spend status."""
+    proxied = _fetch_proxy_json('/api/budgets')
+    if proxied:
+        return proxied.get('budgets') or []
     try:
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
@@ -1248,6 +1265,9 @@ def _fetch_budget_alert_history(limit=20):
 
 
 def _fetch_budget_forecasts(budgets):
+    proxied = _fetch_proxy_json('/api/budget-forecasts')
+    if proxied:
+        return proxied.get('forecasts') or []
     forecasts = []
     for budget in budgets or []:
         if not budget.get("enabled", True):
@@ -1426,6 +1446,9 @@ def _reliability_recommendation(kind, model_name, recent_latency, baseline_laten
 
 def _fetch_reliability_data(time_range):
     """Fetch latency/reliability rollups plus anomaly candidates."""
+    proxied = _fetch_proxy_json(f'/api/reliability?range={time_range}')
+    if proxied:
+        return proxied.get('reliability') or {}
     try:
         conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
@@ -3307,6 +3330,29 @@ var dailyChartData = {daily_chart_data_json};
 var recentCount = {recent_count_js};
 var dominantColor = "{dominant_color}";
 
+
+var seenNotificationKeys = {{}};
+
+function requestBrowserNotifications() {{
+  if (!('Notification' in window)) return;
+  if (Notification.permission === 'default') {{
+    Notification.requestPermission().catch(function(){{}});
+  }}
+}}
+
+function pollNotifications() {{
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  fetch('/api/notifications?limit=20')
+    .then(function(r) {{ return r.json(); }})
+    .then(function(data) {{
+      (data.notifications || []).forEach(function(item) {{
+        if (seenNotificationKeys[item.dedupe_key]) return;
+        seenNotificationKeys[item.dedupe_key] = true;
+        try {{ new Notification(item.title || 'TokenPulse', {{ body: item.body || '' }}); }} catch (e) {{}}
+      }});
+    }})
+    .catch(function(){{}});
+}}
 // ── Sticky nav ──────────────────────────────────────────
 function initStickyNav() {{
   var nav = document.getElementById('stickyNav');
@@ -3645,6 +3691,9 @@ document.addEventListener('DOMContentLoaded', function() {{
   initSpendChart();
   initExpandableRows();
   updatePulseDots(recentCount);
+  requestBrowserNotifications();
+  pollNotifications();
+  setInterval(pollNotifications, 30000);
   startAutoRefresh(30);
 }});
 </script>"""
@@ -3823,6 +3872,13 @@ def _api_get_budget_alert_history(limit=20):
 def _api_get_budget_forecasts():
     budgets = _fetch_budgets_with_status()
     return {"ok": True, "forecasts": _fetch_budget_forecasts(budgets)}
+
+
+def _api_get_notifications(limit=20):
+    proxied = _fetch_proxy_json(f'/api/notifications?limit={max(1, min(int(limit or 20), 50))}')
+    if proxied:
+        return {"ok": True, "notifications": proxied.get('notifications') or []}
+    return {"ok": True, "notifications": []}
 
 
 def _parse_budget_form(form_data):
@@ -4014,6 +4070,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         if path == "/api/budget-forecasts":
             _json_response(self, 200, _api_get_budget_forecasts())
+            return
+
+        if path == "/api/notifications":
+            limit = int((query.get('limit') or ['20'])[0] or 20)
+            _json_response(self, 200, _api_get_notifications(limit))
             return
 
         # CSV export endpoint
