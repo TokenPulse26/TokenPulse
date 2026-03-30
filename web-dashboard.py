@@ -342,6 +342,7 @@ td{padding:11px 16px;font-size:12px;border-top:1px solid rgba(42,45,58,.5);white
 .forecast-budget-note.over{color:#f85149}
 .forecast-budget-note.warn{color:#f59e0b}
 .forecast-budget-note.ok{color:#22c55e}
+.forecast-budget-note.caution{color:#f97316}
 
 /* ── Spending Forecast ──────────────────────────────── */
 .forecast-section{background:#1a1d27;border:1px solid #2a2d3a;border-radius:14px;padding:22px 24px;margin-bottom:20px}
@@ -429,11 +430,28 @@ td{padding:11px 16px;font-size:12px;border-top:1px solid rgba(42,45,58,.5);white
 .reliability-item-name,.anomaly-title{font-size:13px;font-weight:600;color:#f0f6fc}
 .reliability-item-meta,.anomaly-meta{display:flex;flex-wrap:wrap;gap:10px;font-size:11px;color:#8b949e}
 .reliability-item-stats{display:flex;gap:12px;flex-wrap:wrap;font-size:12px;color:#c9d1d9}
+.anomaly-recommendation{margin-top:10px;padding:10px 12px;border-radius:8px;background:rgba(88,166,255,.08);border:1px solid rgba(88,166,255,.16);font-size:11px;color:#c9d1d9;line-height:1.55}
+.anomaly-recommendation strong{color:#f0f6fc}
 .severity-badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px}
 .severity-badge.medium{background:rgba(234,179,8,.12);color:#eab308}
 .severity-badge.high{background:rgba(248,81,73,.15);color:#f85149}
 .reliability-empty{color:#6e7681;font-size:13px;padding:12px 0}
 @media(max-width:900px){.reliability-grid{grid-template-columns:1fr}}
+.attention-section{background:#1a1d27;border:1px solid #2a2d3a;border-radius:14px;padding:22px 24px;margin-bottom:20px}
+.attention-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:14px;margin-top:14px}
+.attention-card{background:#161922;border:1px solid #2a2d3a;border-radius:12px;padding:16px 18px}
+.attention-card.high{border-color:rgba(239,68,68,.35)}
+.attention-card.medium{border-color:rgba(245,158,11,.35)}
+.attention-card.low{border-color:rgba(34,197,94,.28)}
+.attention-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px}
+.attention-title{font-size:13px;font-weight:700;color:#f0f6fc}
+.attention-body{font-size:12px;color:#c9d1d9;line-height:1.6}
+.attention-foot{margin-top:10px;font-size:11px;color:#8b949e;line-height:1.5}
+.attention-empty{color:#6e7681;font-size:13px;padding:8px 0 2px}
+.attention-pill{display:inline-flex;align-items:center;gap:6px;padding:3px 8px;border-radius:999px;font-size:10px;font-weight:700;letter-spacing:.5px;text-transform:uppercase}
+.attention-pill.high{background:rgba(239,68,68,.12);color:#f87171;border:1px solid rgba(239,68,68,.22)}
+.attention-pill.medium{background:rgba(245,158,11,.12);color:#f59e0b;border:1px solid rgba(245,158,11,.22)}
+.attention-pill.low{background:rgba(34,197,94,.12);color:#22c55e;border:1px solid rgba(34,197,94,.22)}
 .project-stat-label{color:#8b949e}
 .project-stat-value{color:#c9d1d9;font-weight:600}
 .project-cost{font-size:18px;font-weight:800;margin-bottom:8px}
@@ -1373,6 +1391,39 @@ def _fetch_forecast_data():
         return {}
 
 
+def _fallback_model_for(model_name):
+    if not model_name:
+        return None
+    key = model_name.strip().lower()
+    return DOWNGRADE_MAP.get(key)
+
+
+def _reliability_recommendation(kind, model_name, recent_latency, baseline_latency, recent_error_rate):
+    fallback_model = _fallback_model_for(model_name)
+    if kind == "latency_spike":
+        if fallback_model:
+            return (
+                f"Route time-sensitive work to {fallback_model} until latency settles. "
+                f"Keep {model_name} for higher-value prompts only.",
+                fallback_model,
+            )
+        return (
+            "Avoid long-running interactive prompts on this model for now. Keep a second provider ready as a manual fallback.",
+            None,
+        )
+
+    if fallback_model:
+        return (
+            f"Retry traffic on {fallback_model} or your next-cheapest stable model while {model_name} is erroring. "
+            f"This reduces wasted retries and protects interactive flows.",
+            fallback_model,
+        )
+    return (
+        "This model is failing more than normal. Add a provider-level fallback or temporarily pin critical work to a more stable model.",
+        None,
+    )
+
+
 def _fetch_reliability_data(time_range):
     """Fetch latency/reliability rollups plus anomaly candidates."""
     try:
@@ -1426,7 +1477,8 @@ def _fetch_reliability_data(time_range):
             "WITH recent AS ("
             "  SELECT provider, model, COUNT(*) as recent_requests, "
             "         AVG(COALESCE(latency_ms,0)) as recent_avg_latency, "
-            "         1.0 * SUM(CASE WHEN COALESCE(error_message, '') != '' THEN 1 ELSE 0 END) / COUNT(*) as recent_error_rate "
+            "         1.0 * SUM(CASE WHEN COALESCE(error_message, '') != '' THEN 1 ELSE 0 END) / COUNT(*) as recent_error_rate, "
+            "         COALESCE(SUM(cost_usd), 0.0) as recent_cost "
             "  FROM requests WHERE timestamp >= datetime('now', '-24 hours') "
             "  GROUP BY provider, model HAVING COUNT(*) >= 5"
             "), baseline AS ("
@@ -1438,7 +1490,7 @@ def _fetch_reliability_data(time_range):
             "  GROUP BY provider, model HAVING COUNT(*) >= 10"
             ") "
             "SELECT recent.provider, recent.model, recent.recent_requests, baseline.baseline_requests, "
-            "recent.recent_avg_latency, baseline.baseline_avg_latency, recent.recent_error_rate, baseline.baseline_error_rate "
+            "recent.recent_avg_latency, baseline.baseline_avg_latency, recent.recent_error_rate, baseline.baseline_error_rate, recent.recent_cost "
             "FROM recent JOIN baseline ON recent.provider = baseline.provider AND recent.model = baseline.model"
         )
         anomalies = []
@@ -1447,13 +1499,18 @@ def _fetch_reliability_data(time_range):
             baseline_latency = float(r["baseline_avg_latency"] or 0.0)
             recent_error_rate = float(r["recent_error_rate"] or 0.0)
             baseline_error_rate = float(r["baseline_error_rate"] or 0.0)
+            recent_cost = float(r["recent_cost"] or 0.0)
             base = {
                 "provider": r["provider"],
                 "model": r["model"],
                 "recent_requests": r["recent_requests"] or 0,
                 "baseline_requests": r["baseline_requests"] or 0,
+                "recent_cost": recent_cost,
             }
             if baseline_latency > 0 and recent_latency > baseline_latency * 1.5 and (recent_latency - baseline_latency) >= 250:
+                recommendation, fallback_model = _reliability_recommendation(
+                    "latency_spike", r["model"], recent_latency, baseline_latency, recent_error_rate
+                )
                 anomalies.append({
                     **base,
                     "kind": "latency_spike",
@@ -1461,8 +1518,14 @@ def _fetch_reliability_data(time_range):
                     "summary": f"Latency jumped from {baseline_latency:.0f}ms to {recent_latency:.0f}ms in the last 24h",
                     "recent_value": recent_latency,
                     "baseline_value": baseline_latency,
+                    "delta_pct": ((recent_latency - baseline_latency) / baseline_latency * 100.0) if baseline_latency else 0.0,
+                    "recommendation": recommendation,
+                    "fallback_model": fallback_model,
                 })
             if recent_error_rate >= 0.10 and recent_error_rate > baseline_error_rate + 0.05:
+                recommendation, fallback_model = _reliability_recommendation(
+                    "error_spike", r["model"], recent_latency, baseline_latency, recent_error_rate
+                )
                 anomalies.append({
                     **base,
                     "kind": "error_spike",
@@ -1470,9 +1533,12 @@ def _fetch_reliability_data(time_range):
                     "summary": f"Error rate rose from {baseline_error_rate * 100:.1f}% to {recent_error_rate * 100:.1f}% in the last 24h",
                     "recent_value": recent_error_rate * 100,
                     "baseline_value": baseline_error_rate * 100,
+                    "delta_pct": (recent_error_rate - baseline_error_rate) * 100.0,
+                    "recommendation": recommendation,
+                    "fallback_model": fallback_model,
                 })
 
-        anomalies.sort(key=lambda item: item.get("recent_value", 0), reverse=True)
+        anomalies.sort(key=lambda item: ((2 if item.get("severity") == "high" else 1), item.get("recent_cost", 0.0), item.get("recent_value", 0)), reverse=True)
         conn.close()
         return {
             "summary": {
@@ -2172,12 +2238,19 @@ def _build_forecast_section(forecast, budgets, budget_forecasts):
     for item in budget_forecasts or []:
         note_class = "ok"
         note = f'On current burn, projected {fmt_cost(item.get("projected_period_spend", 0.0))} this {item.get("period")}. '
+        pct_used = ((item.get("current_spend", 0.0) / item.get("threshold_usd", 1.0)) * 100.0) if item.get("threshold_usd", 0.0) > 0 else 0.0
         if item.get("is_over"):
             note_class = "over"
             note = f'Already over budget by {fmt_cost(abs(item.get("remaining_budget", 0.0)))}.'
+        elif item.get("days_until_threshold") is not None and item.get("days_until_threshold") <= 1.5:
+            note_class = "caution"
+            note = f'Urgent: at this pace, threshold hit in {item.get("days_until_threshold"):.1f} days.'
         elif item.get("days_until_threshold") is not None and item.get("days_until_threshold") <= item.get("trailing_days", 7):
             note_class = "warn"
             note = f'At this pace, threshold hit in {item.get("days_until_threshold"):.1f} days.'
+        elif pct_used >= 80:
+            note_class = "caution"
+            note = f'{pct_used:.0f}% used already. Watch expensive prompts and retries.'
         budget_forecast_html += (
             f'<div class="forecast-budget-item">'
             f'<div class="forecast-budget-head">'
@@ -2221,6 +2294,98 @@ def _build_forecast_section(forecast, budgets, budget_forecasts):
     </div>
     {budget_forecast_html}
   </div>
+</div>"""
+
+
+def _build_attention_section(budgets, budget_forecasts, reliability_data, error_data):
+    """Build an action-first summary of what needs attention right now."""
+    cards = []
+
+    for item in (budget_forecasts or []):
+        remaining_budget = item.get("remaining_budget", 0.0)
+        pct_used = ((item.get("current_spend", 0.0) / item.get("threshold_usd", 1.0)) * 100.0) if item.get("threshold_usd", 0.0) > 0 else 0.0
+        if item.get("is_over"):
+            cards.append({
+                "severity": "high",
+                "title": f'{item.get("budget_name") or "Budget"} is over budget',
+                "body": (
+                    f'{_budget_scope_label(item.get("scope_kind"), item.get("scope_value"))} has already overshot by '
+                    f'{fmt_cost(abs(remaining_budget))}. Tighten prompts or move cheaper workloads before the next cycle.'
+                ),
+                "foot": f'Projected period spend: {fmt_cost(item.get("projected_period_spend", 0.0))}',
+            })
+        elif item.get("days_until_threshold") is not None and item.get("days_until_threshold") <= 3:
+            cards.append({
+                "severity": "high" if item.get("days_until_threshold") <= 1 else "medium",
+                "title": f'{item.get("budget_name") or "Budget"} will hit soon',
+                "body": (
+                    f'At the current burn of {fmt_cost(item.get("average_daily_spend", 0.0))}/day, '
+                    f'this budget is on pace to hit in {item.get("days_until_threshold"):.1f} days.'
+                ),
+                "foot": f'{pct_used:.0f}% used · {fmt_cost(max(remaining_budget, 0.0))} remaining',
+            })
+        elif pct_used >= 80:
+            cards.append({
+                "severity": "medium",
+                "title": f'{item.get("budget_name") or "Budget"} is in the caution zone',
+                "body": (
+                    f'{pct_used:.0f}% of this {item.get("period") or "monthly"} budget is already used. '
+                    'Watch for unnecessary retries or expensive model drift.'
+                ),
+                "foot": f'{fmt_cost(max(remaining_budget, 0.0))} remaining',
+            })
+
+    for item in (reliability_data or {}).get("anomalies", [])[:3]:
+        fallback = item.get("fallback_model")
+        foot = f'{fmt_cost(item.get("recent_cost", 0.0))} spend touched in last 24h'
+        if fallback:
+            foot += f' · Suggested fallback: {fallback}'
+        cards.append({
+            "severity": item.get("severity") or "medium",
+            "title": f'{item.get("model") or "Model"} needs a fallback plan',
+            "body": item.get("recommendation") or item.get("summary") or '',
+            "foot": foot,
+        })
+
+    total_errors = (error_data or {}).get("total_errors", 0)
+    error_rate = (error_data or {}).get("error_rate", 0.0)
+    wasted_cost = (error_data or {}).get("wasted_cost", 0.0)
+    if total_errors and error_rate >= 3.0:
+        cards.append({
+            "severity": "high" if error_rate >= 8.0 else "medium",
+            "title": 'Errors are burning paid requests',
+            "body": (
+                f'{total_errors} failed requests landed in this range, with {fmt_cost(wasted_cost)} already spent on failures. '
+                'If this is a live workflow, temporarily reduce retries and route critical tasks to the cleanest provider.'
+            ),
+            "foot": f'Current blended error rate: {error_rate:.1f}%',
+        })
+
+    if not cards:
+        return """<div class=\"attention-section\">
+  <div class=\"section-title\">Attention Center</div>
+  <div class=\"attention-empty\">No urgent budget or reliability issues right now. Your alerts and fallback posture look healthy.</div>
+</div>"""
+
+    severity_rank = {"high": 0, "medium": 1, "low": 2}
+    cards.sort(key=lambda item: severity_rank.get(item.get("severity"), 3))
+    cards = cards[:6]
+
+    cards_html = ''.join(
+        f'<div class=\"attention-card {item.get("severity", "medium")}\">'
+        f'<div class=\"attention-head\">'
+        f'<div class=\"attention-title\">{_escape_html(item.get("title") or "Attention")}</div>'
+        f'<span class=\"attention-pill {item.get("severity", "medium")}\">{_escape_html(item.get("severity") or "medium")}</span>'
+        f'</div>'
+        f'<div class=\"attention-body\">{_escape_html(item.get("body") or "")}</div>'
+        f'<div class=\"attention-foot\">{_escape_html(item.get("foot") or "")}</div>'
+        f'</div>'
+        for item in cards
+    )
+
+    return f"""<div class=\"attention-section\">
+  <div class=\"section-title\">Attention Center</div>
+  <div class=\"attention-grid\">{cards_html}</div>
 </div>"""
 
 
@@ -2279,6 +2444,20 @@ def _build_reliability_section(reliability_data):
     anomaly_items = []
     for item in anomalies:
         severity = item.get("severity") or "medium"
+        recommendation = item.get("recommendation") or ""
+        fallback_model = item.get("fallback_model")
+        impact_bits = [f'{item.get("recent_requests", 0)} recent / {item.get("baseline_requests", 0)} baseline']
+        if item.get("recent_cost", 0.0) > 0:
+            impact_bits.append(f'{fmt_cost(item.get("recent_cost", 0.0))} spend in 24h')
+        recommendation_html = ""
+        if recommendation:
+            recommendation_html = (
+                '<div class="anomaly-recommendation"><strong>Fallback:</strong> '
+                + _escape_html(recommendation)
+            )
+            if fallback_model:
+                recommendation_html += '<br><strong>Switch target:</strong> ' + _escape_html(fallback_model)
+            recommendation_html += '</div>'
         anomaly_items.append(
             f'<div class="anomaly-item">'
             f'<div class="anomaly-header">'
@@ -2287,9 +2466,10 @@ def _build_reliability_section(reliability_data):
             f'</div>'
             f'<div class="anomaly-meta">'
             f'{provider_badge_html(item.get("provider") or "unknown")}'
-            f'<span>{item.get("recent_requests", 0)} recent / {item.get("baseline_requests", 0)} baseline</span>'
+            f'<span>{_escape_html(" · ".join(impact_bits))}</span>'
             f'</div>'
             f'<div class="reliability-sub" style="margin-top:8px">{_escape_html(item.get("summary") or "")}</div>'
+            f'{recommendation_html}'
             f'</div>'
         )
     if not anomaly_items:
@@ -3546,6 +3726,7 @@ def build_page(time_range, page=1):
 
     reliability_data = _fetch_reliability_data(time_range)
     reliability_html = _build_reliability_section(reliability_data)
+    attention_html = _build_attention_section(budgets_status, budget_forecasts, reliability_data, error_data)
 
     opt_data = _fetch_optimizer_data()
     optimizer_html = _build_optimizer_section(opt_data)
@@ -3561,6 +3742,8 @@ def build_page(time_range, page=1):
 {stats_html}
 
   {budget_html}
+
+  {attention_html}
 
   {forecast_html}
 
