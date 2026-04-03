@@ -5,8 +5,8 @@ import os
 import json
 import math
 import calendar
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+from urllib.parse import urlparse, parse_qs, quote
 from urllib.request import Request, urlopen
 from datetime import datetime, timedelta
 from string import Template
@@ -86,6 +86,7 @@ PAGE_TEMPLATE = Template(r"""<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>TokenPulse &middot; $range_label</title>
+<link rel="icon" href="$favicon_href">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -94,10 +95,29 @@ PAGE_TEMPLATE = Template(r"""<!DOCTYPE html>
   --bg:#0b1018;--panel:#171e2c;--panel-soft:#121925;--border:#2a3347;--border-strong:#3a4761;
   --text:#d6dfeb;--text-muted:#94a0b4;--text-soft:#6e7a8f;--title:#f3f7fd;
   --green:#22c55e;--blue:#58a6ff;--amber:#f59e0b;--red:#f85149;--purple:#a78bfa;
+  --space:24px;--radius:18px;
 }
 *,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
 body{background:radial-gradient(circle at top left, rgba(88,166,255,.14), transparent 26%),radial-gradient(circle at top right, rgba(34,197,94,.10), transparent 20%),linear-gradient(180deg,#0a0f18 0%,#0d1320 42%,#0a0e16 100%);color:var(--text);font-family:'Inter',system-ui,-apple-system,sans-serif;line-height:1.5;min-height:100vh}
+body.preload .loading-surface{position:relative;overflow:hidden}
+body.preload .loading-surface::after{content:"";position:absolute;inset:0;background:linear-gradient(90deg, rgba(255,255,255,0) 0%, rgba(255,255,255,.04) 40%, rgba(255,255,255,0) 80%);transform:translateX(-100%);animation:shimmer 1.5s linear infinite}
+body.preload .reveal{opacity:.92;transform:none;animation:none}
 a{color:inherit;text-decoration:none}
+button{font:inherit}
+button,.range-btn,.export-btn,.budget-manage-link,.btn-add-budget,.btn-secondary-budget,.btn-edit-budget,.btn-delete-budget,.load-more,.scroll-top{transition:transform .18s ease, background .18s ease, border-color .18s ease, color .18s ease, box-shadow .18s ease}
+button:hover,.range-btn:hover,.export-btn:hover,.budget-manage-link:hover,.btn-add-budget:hover,.btn-secondary-budget:hover,.btn-edit-budget:hover,.btn-delete-budget:hover,.load-more:hover,.scroll-top:hover{transform:scale(1.015)}
+@keyframes shimmer{to{transform:translateX(100%)}}
+@keyframes fade-up{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+@keyframes load-bar{0%{transform:scaleX(0);transform-origin:left}60%{transform:scaleX(.78);transform-origin:left}100%{transform:scaleX(1);transform-origin:left}}
+@keyframes live-flash{0%,100%{box-shadow:0 0 0 0 rgba(34,197,94,0)}50%{box-shadow:0 0 0 10px rgba(34,197,94,.08)}}
+.reveal{opacity:0;animation:fade-up .55s ease forwards}
+.reveal-delay-1{animation-delay:.04s}
+.reveal-delay-2{animation-delay:.08s}
+.reveal-delay-3{animation-delay:.12s}
+.reveal-delay-4{animation-delay:.16s}
+.page-progress{position:fixed;top:0;left:0;right:0;height:2px;z-index:140;background:rgba(34,197,94,.08)}
+.page-progress::after{content:"";display:block;height:100%;background:linear-gradient(90deg, rgba(34,197,94,.25), #22c55e 50%, rgba(88,166,255,.7));animation:load-bar 1.2s ease forwards;transform-origin:left}
 
 /* Sticky nav */
 .sticky-nav{
@@ -109,24 +129,27 @@ a{color:inherit;text-decoration:none}
   transform:translateY(-100%);transition:transform .25s ease;
 }
 .sticky-nav.visible{transform:translateY(0)}
+.brand-lockup{display:flex;align-items:center;gap:10px}
+.brand-mark{width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;color:var(--green);filter:drop-shadow(0 0 12px rgba(34,197,94,.18))}
 .sticky-nav .wordmark{font-size:16px;font-weight:800;color:var(--title);letter-spacing:-0.5px}
+.version-badge{display:inline-flex;align-items:center;gap:6px;padding:4px 9px;border-radius:999px;background:rgba(88,166,255,.08);border:1px solid rgba(88,166,255,.15);font-size:11px;font-weight:700;color:#b9d7ff}
 .sticky-nav .range-bar{display:flex;gap:5px}
 @media(max-width:600px){.sticky-nav{display:none}}
 
 /* Layout */
-.shell{max-width:1380px;margin:0 auto;padding:24px 28px 40px}
-.dashboard-top{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(320px,.95fr);gap:18px;align-items:start;margin-bottom:20px}
+.shell{max-width:1380px;margin:0 auto;padding:30px 28px 84px}
+.dashboard-top{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(320px,.95fr);gap:18px;align-items:start;margin-bottom:28px}
 .dashboard-main,.dashboard-side{display:flex;flex-direction:column;gap:16px}
-.secondary-grid{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(290px,.9fr);gap:16px;margin-bottom:20px}
+.secondary-grid{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(290px,.9fr);gap:18px;margin-bottom:28px}
 .section-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:16px}
 .section-head.compact{margin-bottom:12px}
 .section-kicker{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--blue);margin-bottom:6px}
 .section-title{font-size:18px;font-weight:760;color:var(--title);letter-spacing:-.02em;margin-bottom:0}
-.section-copy{font-size:12px;color:var(--text-muted);max-width:680px;margin-top:4px}
+.section-copy{font-size:13px;color:var(--text-muted);max-width:680px;margin-top:4px}
 .section-meta{font-size:11px;color:var(--text-soft);white-space:nowrap}
 
 /* Header */
-.header{position:relative;overflow:hidden;border-radius:20px;background:radial-gradient(circle at top right, rgba(34,197,94,.16), transparent 28%),linear-gradient(135deg,rgba(15,23,42,.96),rgba(23,29,43,.94) 45%,rgba(18,24,38,.98));border:1px solid var(--border-strong);margin-bottom:20px;padding:24px 26px 0;box-shadow:0 18px 60px rgba(0,0,0,.24)}
+.header{position:relative;overflow:hidden;border-radius:20px;background:radial-gradient(circle at top right, rgba(34,197,94,.16), transparent 28%),linear-gradient(135deg,rgba(15,23,42,.96),rgba(23,29,43,.94) 45%,rgba(18,24,38,.98));border:1px solid var(--border-strong);margin-bottom:28px;padding:24px 24px 0;box-shadow:0 18px 60px rgba(0,0,0,.24)}
 .header::after{content:"";position:absolute;right:-80px;bottom:-120px;width:280px;height:280px;border-radius:50%;background:radial-gradient(circle, rgba(88,166,255,.16), transparent 62%);pointer-events:none}
 .header-top{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:16px;margin-bottom:12px}
 .header-left{display:flex;align-items:flex-start;gap:14px}
@@ -134,12 +157,13 @@ a{color:inherit;text-decoration:none}
 .wordmark{font-size:28px;font-weight:800;color:var(--title);letter-spacing:-0.6px}
 .header-subtitle{font-size:13px;color:var(--text-muted);max-width:720px}
 .live-badge{display:inline-flex;align-items:center;gap:6px;background:rgba(34,197,94,0.1);color:#22c55e;padding:4px 12px;border-radius:20px;font-size:11px;font-weight:600}
+.live-badge.has-update{animation:live-flash .9s ease 2}
 .pulse-dot{width:7px;height:7px;border-radius:50%;background:#22c55e;animation:pulse 2s ease-in-out infinite}
 .pulse-dot.fast{animation:pulse .6s ease-in-out infinite}
 @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.85)}}
 
 /* Token flow strip */
-.token-flow{height:80px;position:relative;overflow:hidden;margin:0 -26px}
+.token-flow{height:80px;position:relative;overflow:hidden;margin:0 -24px}
 .flow-dot{position:absolute;border-radius:50%;pointer-events:none;opacity:0;animation:flow-anim linear infinite}
 @keyframes flow-anim{
   0%{left:-20px;opacity:0}
@@ -149,16 +173,18 @@ a{color:inherit;text-decoration:none}
 }
 
 /* Range buttons */
-.range-bar{display:flex;gap:6px;flex-wrap:wrap}
-.range-btn{padding:7px 16px;border-radius:999px;font-size:13px;font-weight:500;background:rgba(255,255,255,.02);border:1px solid var(--border);color:var(--text-muted);cursor:pointer;transition:all .15s ease}
-.range-btn:hover{border-color:var(--border-strong);color:#e6edf3;background:rgba(255,255,255,.04)}
-.range-btn.active{background:var(--green);border-color:var(--green);color:#0f1117;font-weight:700;box-shadow:0 10px 24px rgba(34,197,94,.18)}
+.range-bar{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.range-pill-group{display:inline-flex;gap:6px;align-items:center;padding:4px;border-radius:999px;border:1px solid rgba(255,255,255,.05);background:rgba(9,13,21,.66);position:relative;overflow:hidden}
+.range-indicator{position:absolute;top:4px;left:4px;height:calc(100% - 8px);border-radius:999px;background:linear-gradient(135deg, rgba(34,197,94,.92), rgba(88,166,255,.75));box-shadow:0 8px 24px rgba(34,197,94,.2);transition:left .22s ease,width .22s ease,opacity .22s ease;opacity:0}
+.range-btn{position:relative;z-index:1;padding:8px 16px;border-radius:999px;font-size:13px;font-weight:600;background:transparent;border:1px solid transparent;color:var(--text-muted);cursor:pointer}
+.range-btn:hover{color:#e6edf3;background:rgba(255,255,255,.04)}
+.range-btn.active{color:#0f1117;font-weight:800}
 .export-btn{padding:7px 14px;border-radius:999px;font-size:11px;font-weight:600;background:transparent;border:1px solid var(--border-strong);color:var(--text-muted);cursor:pointer;transition:all .15s ease;text-decoration:none;display:inline-flex;align-items:center;gap:5px}
 .export-btn:hover{border-color:var(--blue);color:var(--text)}
 
 /* Activity feed */
-.activity-section,.stats .stat-card,.budget-section,.forecast-section,.optimizer-section,.project-section,.reliability-section,.chart-panel,.error-section,.heatmap-section,.insights-section,.table-wrap{background:linear-gradient(180deg, rgba(23,30,44,.98), rgba(19,25,37,.98));border:1px solid var(--border);border-radius:18px}
-.activity-section,.budget-section,.forecast-section,.optimizer-section,.project-section,.reliability-section,.chart-panel,.error-section,.heatmap-section,.insights-section{padding:22px 24px}
+.activity-section,.stats .stat-card,.budget-section,.forecast-section,.optimizer-section,.project-section,.reliability-section,.chart-panel,.error-section,.heatmap-section,.insights-section,.table-wrap{background:linear-gradient(180deg, rgba(23,30,44,.98), rgba(19,25,37,.98));border:1px solid var(--border);border-radius:var(--radius)}
+.activity-section,.budget-section,.forecast-section,.optimizer-section,.project-section,.reliability-section,.chart-panel,.error-section,.heatmap-section,.insights-section{padding:var(--space)}
 .activity-section{padding:18px 22px}
 .activity-label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.8px;color:var(--text-muted);margin-bottom:10px}
 .activity-timeline{position:relative;height:32px;background:#101623;border-radius:10px;overflow:hidden;margin-bottom:8px;border:1px solid rgba(255,255,255,.04)}
@@ -171,26 +197,31 @@ a{color:inherit;text-decoration:none}
 @keyframes breathe{0%,100%{opacity:.3}50%{opacity:1}}
 
 /* Stat cards */
-.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
-.stat-card{padding:20px 22px;transition:border-color .2s,transform .2s}
-.stat-card:hover{border-color:var(--border-strong);transform:translateY(-1px)}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:18px;margin-bottom:28px}
+.stat-card{padding:var(--space);transition:border-color .2s,transform .2s,background .2s;position:relative;background:linear-gradient(180deg, rgba(23,30,44,.98), rgba(19,25,37,.98));background-clip:padding-box,border-box}
+.stat-card::before{content:"";position:absolute;inset:-1px;border-radius:inherit;background:linear-gradient(135deg, rgba(34,197,94,0), rgba(88,166,255,0), rgba(34,197,94,0));opacity:0;transition:opacity .22s ease;z-index:-1}
+.stat-card:hover{transform:translateY(-1px)}
+.stat-card:hover::before{opacity:1;background:linear-gradient(135deg, rgba(34,197,94,.35), rgba(88,166,255,.12), rgba(34,197,94,.28))}
 .stat-label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.8px;color:var(--text-muted);margin-bottom:8px}
-.stat-value{font-size:30px;font-weight:800;color:var(--title);line-height:1}
+.stat-value{font-size:30px;font-weight:800;color:var(--title);line-height:1;letter-spacing:-.03em}
 .stat-sub{font-size:11px;color:var(--text-soft);margin-top:6px}
 .stat-trend{font-size:11px;margin-top:5px;font-weight:600}
 .stat-trend.up{color:var(--green)}
 .stat-trend.down{color:var(--red)}
 .stat-trend.flat{color:var(--text-muted)}
-.stat-sparkline{margin-top:10px;display:block}
+.stat-sparkline{margin-top:12px;display:block}
 .clr-green{color:var(--green)}
 .clr-blue{color:var(--blue)}
 .clr-purple{color:var(--purple)}
 
 /* Charts row */
-.charts-row{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px}
+.charts-row{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:28px}
 .chart-panel{min-height:320px;display:flex;flex-direction:column}
 .chart-title{font-size:15px;font-weight:700;color:var(--title);margin-bottom:8px}
 .chart-copy{font-size:12px;color:var(--text-muted);margin-bottom:18px}
+.chart-legend{display:flex;flex-wrap:wrap;gap:8px 10px;margin-bottom:14px}
+.chart-legend-item{display:inline-flex;align-items:center;gap:7px;padding:4px 9px;border-radius:999px;background:rgba(255,255,255,.03);font-size:11px;color:var(--text-muted)}
+.chart-legend-swatch{width:8px;height:8px;border-radius:999px;box-shadow:0 0 10px currentColor}
 
 /* SVG spend chart */
 .spend-svg-wrap{flex:1;position:relative;min-height:240px}
@@ -201,21 +232,30 @@ a{color:inherit;text-decoration:none}
   font-size:12px;color:var(--text);white-space:nowrap;z-index:50;
   opacity:0;transition:opacity .15s;box-shadow:0 4px 12px rgba(0,0,0,.4);
 }
+.svg-tooltip::after{content:"";position:absolute;left:16px;bottom:-6px;width:10px;height:10px;transform:rotate(45deg);background:rgba(10,15,24,.96);border-right:1px solid var(--border-strong);border-bottom:1px solid var(--border-strong)}
 .svg-tooltip.visible{opacity:1}
 .chart-empty{flex:1;display:flex;align-items:center;justify-content:center;color:var(--text-soft);font-size:13px}
+.empty-state-card{display:flex;align-items:center;justify-content:center;min-height:220px;border:1px dashed rgba(148,160,180,.24);border-radius:16px;background:linear-gradient(180deg, rgba(255,255,255,.02), rgba(255,255,255,0))}
+.empty-state-inner{max-width:460px;padding:28px 24px;text-align:center}
+.empty-state-icon{width:54px;height:54px;margin:0 auto 14px;display:flex;align-items:center;justify-content:center;border-radius:18px;background:rgba(34,197,94,.08);color:var(--green);box-shadow:inset 0 1px 0 rgba(255,255,255,.04)}
+.empty-state-title{font-size:20px;font-weight:800;color:var(--title);letter-spacing:-.03em;margin-bottom:8px}
+.empty-state-copy{font-size:13px;color:var(--text-muted);line-height:1.7}
+.empty-state-hint{margin-top:12px;font-size:12px;color:var(--text-soft)}
+.chart-empty .empty-state-card{min-height:100%;width:100%}
 
 /* Model breakdown */
 .model-list{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:10px}
-.model-item{background:#101724;border:1px solid var(--border);border-radius:12px;padding:14px 16px;transition:border-color .2s}
+.model-item{background:#101724;border:1px solid var(--border);border-radius:14px;padding:16px 18px;transition:border-color .2s,transform .2s}
 .model-item:hover{border-color:var(--border-strong)}
 .model-row{display:flex;align-items:center;justify-content:space-between;gap:10px}
 .model-name{font-size:13px;font-weight:600;color:var(--title);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:200px}
 .model-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .model-meta span{font-size:11px;color:var(--text-muted)}
 .model-cost{font-size:15px;font-weight:700;white-space:nowrap}
-.usage-bar-bg{height:3px;background:#2a3347;border-radius:2px;margin-top:10px}
-.usage-bar-fill{height:3px;border-radius:2px;transition:width .3s ease}
-.prov-badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:10px;font-weight:600;white-space:nowrap}
+.usage-bar-bg{height:6px;background:#2a3347;border-radius:999px;margin-top:12px;overflow:hidden}
+.usage-bar-fill{height:6px;border-radius:999px;transition:width .3s ease;box-shadow:0 0 16px currentColor}
+.prov-badge{display:inline-flex;align-items:center;gap:7px;padding:3px 9px;border-radius:999px;font-size:10px;font-weight:700;white-space:nowrap;text-transform:capitalize}
+.prov-dot{width:8px;height:8px;border-radius:999px;display:inline-block;box-shadow:0 0 12px currentColor}
 
 /* Heatmap */
 .heatmap-section{background:#1a1d27;border:1px solid #2a2d3a;border-radius:14px;padding:22px 24px;margin-bottom:0}
@@ -240,18 +280,20 @@ a{color:inherit;text-decoration:none}
 .insight-desc{font-size:12px;color:#8b949e;line-height:1.5}
 
 /* Requests table */
-.table-section{margin-bottom:28px}
+.table-section{margin-bottom:32px}
 .section-title{font-size:14px;font-weight:700;color:#f0f6fc;margin-bottom:14px}
 .table-wrap{background:#1a1d27;border:1px solid #2a2d3a;border-radius:14px;overflow:hidden;overflow-x:auto}
 table{width:100%;border-collapse:collapse;min-width:720px}
 th{background:#161922;color:#6e7681;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.8px;padding:12px 16px;text-align:left;white-space:nowrap;border-bottom:1px solid #2a2d3a}
-td{padding:11px 16px;font-size:12px;border-top:1px solid rgba(42,45,58,.5);white-space:nowrap}
+td{padding:13px 16px;font-size:12px;border-top:1px solid rgba(42,45,58,.5);white-space:nowrap}
 .req-row{cursor:pointer;transition:background .15s}
-.req-row:nth-child(even) td{background:rgba(22,25,34,.35)}
-.req-row:hover td{background:rgba(22,25,34,.7) !important}
+.req-row:nth-child(even) td{background:rgba(255,255,255,.02)}
+.req-row:hover td{background:rgba(88,166,255,.08) !important}
 .req-row td:first-child{border-left:3px solid transparent}
 .td-time{color:#6e7681}
 .td-model{max-width:200px;overflow:hidden;text-overflow:ellipsis;color:#c9d1d9}
+.td-num,.td-latency,.td-cost{text-align:right}
+.td-provider{text-align:left}
 .cost-api{color:#22c55e;font-weight:600}
 .cost-sub{color:#8b949e;font-style:italic}
 .cost-local{color:#a78bfa;font-style:italic}
@@ -275,17 +317,17 @@ td{padding:11px 16px;font-size:12px;border-top:1px solid rgba(42,45,58,.5);white
 .load-more:hover{background:rgba(88,166,255,.05)}
 
 /* Footer */
-.footer{text-align:center;color:#30363d;font-size:11px;padding:16px 0;border-top:1px solid #1a1d27}
+.footer{position:fixed;left:0;right:0;bottom:0;z-index:90;background:rgba(10,15,24,.92);backdrop-filter:blur(12px);border-top:1px solid rgba(255,255,255,.05);padding:10px 18px}
+.footer-inner{max-width:1380px;margin:0 auto;display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;font-size:11px;color:var(--text-soft)}
+.footer-group{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.status-chip{display:inline-flex;align-items:center;gap:8px;padding:5px 10px;border-radius:999px;background:rgba(255,255,255,.04);color:var(--text-muted)}
+.status-dot{width:8px;height:8px;border-radius:999px;background:#586274}
+.status-dot.online{background:var(--green);box-shadow:0 0 12px rgba(34,197,94,.35)}
+.status-dot.offline{background:var(--red);box-shadow:0 0 12px rgba(248,81,73,.2)}
 
 /* Empty / error */
-.empty-state{text-align:center;padding:60px 20px;color:#6e7681}
-.empty-state h2{color:#f0f6fc;font-size:20px;margin-bottom:12px}
-.empty-state p{max-width:480px;margin:0 auto 8px;font-size:13px;line-height:1.7}
-.empty-state code{background:#1a1d27;padding:2px 6px;border-radius:4px;font-size:12px;color:#c9d1d9}
-.error-state{text-align:center;padding:60px 20px}
-.error-state h2{color:#f85149;font-size:20px;margin-bottom:12px}
-.error-state p{color:#6e7681;font-size:13px}
-.error-state code{display:block;margin-top:16px;background:#1a1d27;padding:12px;border-radius:8px;color:#c9d1d9;font-size:12px;text-align:left;max-width:600px;margin-left:auto;margin-right:auto;word-break:break-all}
+.empty-state,.error-state{padding:24px 0}
+.empty-state code,.error-state code{background:#101724;padding:3px 7px;border-radius:6px;font-size:12px;color:#c9d1d9}
 
 /* Responsive */
 @media(max-width:900px){
@@ -294,7 +336,7 @@ td{padding:11px 16px;font-size:12px;border-top:1px solid rgba(42,45,58,.5);white
   .insights-grid{grid-template-columns:repeat(2,1fr)}
 }
 @media(max-width:600px){
-  .shell{padding:16px 14px 32px}
+  .shell{padding:16px 14px 88px}
   .stats{grid-template-columns:1fr 1fr;gap:10px}
   .stat-value{font-size:22px}
   .stat-card{padding:16px}
@@ -302,6 +344,7 @@ td{padding:11px 16px;font-size:12px;border-top:1px solid rgba(42,45,58,.5);white
   td,th{padding:8px 10px;font-size:11px}
   .model-name{max-width:140px}
   .insights-grid{grid-template-columns:1fr}
+  .footer-inner{flex-direction:column;align-items:flex-start}
 }
 @media(max-width:400px){.stats{grid-template-columns:1fr}}
 
@@ -540,13 +583,20 @@ td{padding:11px 16px;font-size:12px;border-top:1px solid rgba(42,45,58,.5);white
 .forecast-grid{margin-top:0}
 @media(max-width:1080px){.primary-grid,.secondary-grid{grid-template-columns:1fr}.attention-summary,.budget-overview{grid-template-columns:repeat(2,minmax(0,1fr))}.budget-form{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:700px){.attention-summary,.budget-overview,.budget-form{grid-template-columns:1fr}.budget-summary-row,.budget-supporting,.section-header{align-items:flex-start;flex-direction:column}.budget-form-group.span-2{grid-column:auto}}
+.scroll-top{position:fixed;right:22px;bottom:74px;width:42px;height:42px;border:none;border-radius:999px;background:linear-gradient(135deg, rgba(34,197,94,.92), rgba(88,166,255,.78));color:#081016;box-shadow:0 14px 30px rgba(0,0,0,.28);cursor:pointer;display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transform:translateY(10px);z-index:120}
+.scroll-top.visible{opacity:1;pointer-events:auto;transform:translateY(0)}
 </style>
 </head>
-<body>
+<body class="preload">
+<div class="page-progress" aria-hidden="true"></div>
 
 <!-- Sticky Nav -->
 <nav class="sticky-nav" id="stickyNav">
-  <span class="wordmark">TokenPulse</span>
+  <div class="brand-lockup">
+    <span class="brand-mark">$pulse_mark_small</span>
+    <span class="wordmark">TokenPulse</span>
+    <span class="version-badge">v$version</span>
+  </div>
   <div class="range-bar">$range_buttons</div>
   <span class="live-badge"><span class="pulse-dot" id="stickyPulseDot"></span> Live</span>
 </nav>
@@ -554,11 +604,18 @@ td{padding:11px 16px;font-size:12px;border-top:1px solid rgba(42,45,58,.5);white
 <div class="shell">
 
   <!-- Header with token flow -->
-  <div class="header">
+  <div class="header loading-surface reveal">
     <div class="header-top">
       <div class="header-left">
-        <span class="wordmark">TokenPulse</span>
-        <span class="live-badge"><span class="pulse-dot" id="mainPulseDot"></span> Live</span>
+        <span class="brand-mark" style="width:28px;height:28px">$pulse_mark_large</span>
+        <div class="header-copy">
+          <div class="brand-lockup">
+            <span class="wordmark">TokenPulse</span>
+            <span class="version-badge">v$version</span>
+            <span class="live-badge"><span class="pulse-dot" id="mainPulseDot"></span> Live</span>
+          </div>
+          <div class="header-subtitle">AI token usage tracking with live spend, reliability, and optimization signals for local and hosted workloads.</div>
+        </div>
       </div>
       <div class="range-bar">$range_buttons</div>
     </div>
@@ -568,9 +625,21 @@ td{padding:11px 16px;font-size:12px;border-top:1px solid rgba(42,45,58,.5);white
   $body_content
 
   <div class="footer">
-    TokenPulse v$version &nbsp;&middot;&nbsp; Proxy: localhost:4100 &nbsp;&middot;&nbsp; Last updated: $updated_at
+    <div class="footer-inner">
+      <div class="footer-group">
+        <span class="status-chip"><span class="status-dot $proxy_status_class"></span> Proxy $proxy_status_label</span>
+        <span>Last request: $last_request_at</span>
+        <span>Total requests: $total_requests</span>
+      </div>
+      <div class="footer-group">
+        <span>Updated $updated_at</span>
+        <span>v$version</span>
+      </div>
+    </div>
   </div>
 </div>
+
+<button class="scroll-top" id="scrollTopBtn" type="button" aria-label="Scroll to top">&#8593;</button>
 
 $page_scripts
 </body>
@@ -578,18 +647,28 @@ $page_scripts
 
 EMPTY_TEMPLATE = Template(r"""
 <div class="empty-state">
-  <h2>Welcome to TokenPulse</h2>
-  <p>No request data found yet. Make sure the TokenPulse proxy is running on <code>localhost:4100</code> and route your API calls through it.</p>
-  <p style="margin-top:16px;color:#8b949e;font-size:12px">Database path: <code>$db_path</code></p>
+  <div class="empty-state-card reveal reveal-delay-1">
+    <div class="empty-state-inner">
+      <div class="empty-state-icon">$icon_svg</div>
+      <h2 class="empty-state-title">Welcome to TokenPulse</h2>
+      <p class="empty-state-copy">No request data found yet. Start the local proxy on <code>localhost:4100</code> and route requests through it so the dashboard can track spend, tokens, and reliability.</p>
+      <p class="empty-state-hint">Setup hint: keep the dashboard and proxy local, then make a test request to populate the first cards. Database path: <code>$db_path</code></p>
+    </div>
+  </div>
 </div>
 """)
 
 ERROR_TEMPLATE = Template(r"""
 <div class="error-state">
-  <h2>Database Error</h2>
-  <p>Could not connect to the TokenPulse database.</p>
-  <code>$error_message</code>
-  <p style="margin-top:16px">Expected path: <code>$db_path</code></p>
+  <div class="empty-state-card reveal reveal-delay-1">
+    <div class="empty-state-inner">
+      <div class="empty-state-icon" style="background:rgba(248,81,73,.08);color:#f85149">$icon_svg</div>
+      <h2 class="empty-state-title" style="color:#f87171">Database Error</h2>
+      <p class="empty-state-copy">Could not connect to the TokenPulse database.</p>
+      <p class="empty-state-hint"><code>$error_message</code></p>
+      <p class="empty-state-hint">Expected path: <code>$db_path</code></p>
+    </div>
+  </div>
 </div>
 """)
 
@@ -615,7 +694,12 @@ def provider_badge_html(provider):
     color = _provider_color(p)
     bg = _provider_bg(p)
     label = "LM Studio" if p == "lmstudio" else p
-    return f'<span class="prov-badge" style="background:{bg};color:{color}">{_escape_html(label)}</span>'
+    return (
+        f'<span class="prov-badge" style="background:{bg};color:{color}">'
+        f'<span class="prov-dot" style="background:{color};color:{color}"></span>'
+        f'{_escape_html(label)}'
+        f'</span>'
+    )
 
 
 def fmt_tokens(n):
@@ -708,6 +792,80 @@ def _escape_html(text):
         .replace(">", "&gt;")
         .replace('"', "&quot;")
     )
+
+
+def _pulse_mark_svg(size=18):
+    return (
+        f'<svg width="{size}" height="{size}" viewBox="0 0 24 24" fill="none" '
+        'xmlns="http://www.w3.org/2000/svg" aria-hidden="true">'
+        '<path d="M2 13h4.1l2.1-4.6 3.3 9.2 2.8-6h7.7" '
+        'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
+        '<path d="M2 13h4.1l2.1-4.6 3.3 9.2 2.8-6h7.7" '
+        'stroke="rgba(34,197,94,.45)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>'
+        '</svg>'
+    )
+
+
+def _favicon_href():
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
+        '<rect width="64" height="64" rx="18" fill="#0b1018"/>'
+        '<path d="M10 34h12l6-13 9 26 8-17h9" '
+        'stroke="#22c55e" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>'
+        '</svg>'
+    )
+    return f"data:image/svg+xml;utf8,{quote(svg)}"
+
+
+def fmt_compact_number(value):
+    try:
+        value = float(value or 0)
+    except (TypeError, ValueError):
+        return "0"
+    abs_value = abs(value)
+    if abs_value >= 1_000_000:
+        return f"{value / 1_000_000:.1f}M".replace(".0M", "M")
+    if abs_value >= 1_000:
+        return f"{value / 1_000:.1f}K".replace(".0K", "K")
+    return f"{int(value):,}"
+
+
+def fmt_timestamp_full(ts_str):
+    if not ts_str:
+        return "—"
+    try:
+        ts = datetime.fromisoformat(
+            ts_str.replace("T", " ").replace("Z", "").split(".")[0]
+        )
+        return ts.strftime("%b %d, %Y %I:%M:%S %p")
+    except Exception:
+        return ts_str
+
+
+def _render_empty_state(title, description, hint, icon_svg=None, extra_class=""):
+    return (
+        f'<div class="empty-state-card {extra_class}">'
+        f'<div class="empty-state-inner">'
+        f'<div class="empty-state-icon">{icon_svg or _pulse_mark_svg(24)}</div>'
+        f'<div class="empty-state-title">{_escape_html(title)}</div>'
+        f'<div class="empty-state-copy">{description}</div>'
+        f'<div class="empty-state-hint">{hint}</div>'
+        f'</div>'
+        f'</div>'
+    )
+
+
+def _proxy_status_summary():
+    status = _fetch_proxy_json("/health", timeout=0.5)
+    if status is not None:
+        return True, "online"
+    return False, "offline"
+
+
+def _append_sql_condition(where_clause, condition):
+    if where_clause.strip():
+        return f"{where_clause} AND {condition}"
+    return f" WHERE {condition}"
 
 
 # ---------------------------------------------------------------------------
@@ -1024,7 +1182,7 @@ def _fetch_data(time_range):
 
         # Avg latency
         c.execute(
-            f"SELECT AVG(latency_ms) as v FROM requests{where} WHERE latency_ms IS NOT NULL"
+            f"SELECT AVG(latency_ms) as v FROM requests{_append_sql_condition(where, 'latency_ms IS NOT NULL')}"
         )
         lat_row = c.fetchone()
         if lat_row and lat_row["v"]:
@@ -1036,7 +1194,7 @@ def _fetch_data(time_range):
 
         # Streaming pct
         c.execute(
-            f"SELECT COUNT(*) as cnt FROM requests{where} WHERE is_streaming=1"
+            f"SELECT COUNT(*) as cnt FROM requests{_append_sql_condition(where, 'is_streaming=1')}"
         )
         stream_cnt = c.fetchone()["cnt"] or 0
         if total_requests > 0:
@@ -1084,8 +1242,8 @@ def _build_range_buttons(active):
     for key, label in RANGE_LABELS.items():
         cls = "range-btn active" if key == active else "range-btn"
         parts.append(f'<a href="?range={key}" class="{cls}">{label}</a>')
-    parts.append(f'<a href="/export/csv?range={active}" class="export-btn" title="Export CSV">&#128229; CSV</a>')
-    return "\n      ".join(parts)
+    pill_group = '<div class="range-pill-group"><span class="range-indicator" aria-hidden="true"></span>' + "".join(parts) + '</div>'
+    return pill_group + f'<a href="/export/csv?range={active}" class="export-btn" title="Export CSV">&#128229; CSV</a>'
 
 
 def _trend_html(current, prev):
@@ -1869,7 +2027,12 @@ def _format_budget_alert_time(ts):
 def _build_budget_section(budgets, all_budgets, alert_history):
     """Build the budget status section with progress bars."""
     if not budgets:
-        status_html = '<div class="budget-empty">No budgets configured — set one up to control your spending.</div>'
+        status_html = _render_empty_state(
+            "No budgets yet",
+            "Set spending limits to stay in control as usage grows across providers and projects.",
+            "Action hint: open Manage budgets and add a daily, weekly, or monthly threshold.",
+            '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M4 7h16M7 4v6M17 4v6M5 11h14v8H5z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+        )
     else:
         items = []
         for b in budgets:
@@ -2020,7 +2183,7 @@ def _build_budget_section(budgets, all_budgets, alert_history):
 
     status_html = f'<div class="budget-list">{status_html}</div>' if budgets else status_html
 
-    return f"""<div class="budget-section">
+    return f"""<div class="budget-section loading-surface reveal reveal-delay-1">
   <div class="section-header">
     <div class="section-heading">
       <div class="section-kicker">Spend control</div>
@@ -2249,7 +2412,12 @@ def _build_optimizer_section(opt_data):
     if not recommendations:
         return f"""<div class="optimizer-section">
   <div class="section-title">Cost Optimizer</div>
-  <div class="optimizer-empty">&#10003; No optimization opportunities found — your usage looks efficient!</div>
+  {_render_empty_state(
+      "Looking good",
+      "No optimization opportunities found. Current usage looks efficient across the models and providers TokenPulse can evaluate.",
+      "Action hint: revisit this panel after larger prompt, model, or routing changes.",
+      '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M5 13l4 4L19 7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+  )}
 </div>"""
 
     # Sort by savings desc
@@ -2272,7 +2440,7 @@ def _build_optimizer_section(opt_data):
         )
 
     cards_html = "\n".join(cards)
-    return f"""<div class="optimizer-section">
+    return f"""<div class="optimizer-section loading-surface reveal reveal-delay-2">
   <div class="section-title">Cost Optimizer</div>
   <div class="optimizer-grid">
     {cards_html}
@@ -2285,7 +2453,12 @@ def _build_project_section(projects):
     if not projects:
         return f"""<div class="project-section">
   <div class="section-title">By Project</div>
-  <div class="project-empty">No tagged requests yet. Source tags are auto-detected from User-Agent, or set <code>X-TokenPulse-Project</code> header.</div>
+  {_render_empty_state(
+      "No tagged requests yet",
+      "Project cards appear when requests include a detected or explicit source tag.",
+      "Action hint: TokenPulse can infer tags from User-Agent, or you can send the X-TokenPulse-Project header.",
+      '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M4 6h8l2 2h6v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+  )}
 </div>"""
 
     cards = []
@@ -2310,7 +2483,7 @@ def _build_project_section(projects):
         )
 
     cards_html = "\n".join(cards)
-    return f"""<div class="project-section">
+    return f"""<div class="project-section loading-surface reveal reveal-delay-2">
   <div class="section-title">By Project</div>
   <div class="project-grid">
     {cards_html}
@@ -2323,7 +2496,12 @@ def _build_forecast_section(forecast, budgets, budget_forecasts):
     if not forecast or forecast.get("daily_avg", 0) == 0:
         return f"""<div class="forecast-section">
   <div class="section-title">Spending Forecast</div>
-  <div style="color:#6e7681;font-size:13px;padding:12px 0">Not enough data yet — need at least one day of API spend to project.</div>
+  {_render_empty_state(
+      "Forecast waiting on more data",
+      "TokenPulse needs at least one day of paid API activity before it can project burn and runway with confidence.",
+      "Action hint: once spend starts landing, this section will estimate month-end cost and budget pressure.",
+      _pulse_mark_svg(28)
+  )}
 </div>"""
 
     daily_avg = forecast["daily_avg"]
@@ -2402,7 +2580,7 @@ def _build_forecast_section(forecast, budgets, budget_forecasts):
 
     busiest_month_cost = busiest_day_cost * days_in_month
 
-    return f"""<div class="forecast-section">
+    return f"""<div class="forecast-section loading-surface reveal reveal-delay-2">
   <div class="section-title">Spending Forecast</div>
   <div class="forecast-grid">
     <div class="forecast-card">
@@ -2515,7 +2693,13 @@ def _build_attention_section(budgets, budget_forecasts, reliability_data, error_
     </div>
   </div>
   {summary_html}
-  <div class=\"attention-empty\">No urgent budget or reliability issues right now. Your alerts and fallback posture look healthy.</div>
+  {_render_empty_state(
+      "Nothing urgent right now",
+      "Budget pressure, failed-request waste, and reliability drift are all within a healthy range.",
+      "Action hint: use this area as the first stop when spend rises, alerts trigger, or a provider starts degrading.",
+      '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M5 12h14M12 5l7 7-7 7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+      "attention-empty"
+  )}
 </div>"""
 
     cards_html = ''.join(
@@ -2555,7 +2739,12 @@ def _build_reliability_section(reliability_data):
     if total_requests == 0:
         return f"""<div class="reliability-section">
   <div class="section-title">Reliability &amp; Latency</div>
-  <div class="reliability-empty">No requests in this time range yet.</div>
+  {_render_empty_state(
+      "No reliability data yet",
+      "This panel needs tracked requests in the selected range before it can summarize success rates and anomaly risk.",
+      "Action hint: send a few requests through the proxy or widen the time window.",
+      _pulse_mark_svg(28)
+  )}
 </div>"""
 
     summary_html = f"""<div class="reliability-summary">
@@ -2817,30 +3006,30 @@ def _build_stats_cards(data):
     req_trend = _trend_html(data["total_requests"], trend.get("total_requests_prev"))
 
     return f"""<div class="stats">
-  <div class="stat-card">
+  <div class="stat-card loading-surface reveal reveal-delay-1">
     <div class="stat-label">API Spend</div>
-    <div class="stat-value clr-green">{fmt_cost(data['api_cost'])}</div>
+    <div class="stat-value clr-green" data-countup="{data['api_cost']:.4f}" data-prefix="$" data-decimals="2">{fmt_cost(data['api_cost'])}</div>
     <div class="stat-sub">paid API calls</div>
     {api_trend}
     {spend_spark}
   </div>
-  <div class="stat-card">
+  <div class="stat-card loading-surface reveal reveal-delay-2">
     <div class="stat-label">Subscription Usage</div>
-    <div class="stat-value clr-blue">{fmt_tokens(data['sub_tokens'])}</div>
+    <div class="stat-value clr-blue" data-countup="{float(data['sub_tokens'])}" data-format="compact">{fmt_tokens(data['sub_tokens'])}</div>
     <div class="stat-sub">tokens &middot; included in plan</div>
     {sub_trend}
     {sub_spark}
   </div>
-  <div class="stat-card">
+  <div class="stat-card loading-surface reveal reveal-delay-3">
     <div class="stat-label">Local Usage</div>
-    <div class="stat-value clr-purple">{fmt_tokens(data['local_tokens'])}</div>
+    <div class="stat-value clr-purple" data-countup="{float(data['local_tokens'])}" data-format="compact">{fmt_tokens(data['local_tokens'])}</div>
     <div class="stat-sub">tokens &middot; free</div>
     {local_trend}
     {local_spark}
   </div>
-  <div class="stat-card">
+  <div class="stat-card loading-surface reveal reveal-delay-4">
     <div class="stat-label">Total Requests</div>
-    <div class="stat-value">{data['total_requests']:,}</div>
+    <div class="stat-value" data-countup="{float(data['total_requests'])}">{data['total_requests']:,}</div>
     <div class="stat-sub">{fmt_tokens(data['total_tokens'])} total tokens</div>
     {req_trend}
     {req_spark}
@@ -2854,7 +3043,16 @@ def _build_svg_spend_chart(data):
     days = data["chart_days"]
 
     if not daily_raw:
-        return '<div class="chart-empty">No spend data for this period</div>'
+        return (
+            '<div class="chart-empty">'
+            + _render_empty_state(
+                "No spend data yet",
+                "This chart will light up once paid API usage starts flowing through the local proxy.",
+                "Action hint: make a tracked API request or change the range to inspect an earlier period.",
+                _pulse_mark_svg(28),
+            )
+            + '</div>'
+        )
 
     # Organize by day
     day_data = {}
@@ -2875,7 +3073,16 @@ def _build_svg_spend_chart(data):
     all_provs = sorted(all_provs)
 
     if not all_provs:
-        return '<div class="chart-empty">No spend data for this period</div>'
+        return (
+            '<div class="chart-empty">'
+            + _render_empty_state(
+                "No spend data yet",
+                "There are requests in this range, but none with billable API spend.",
+                "Action hint: compare another range or check whether recent usage is local or subscription based.",
+                _pulse_mark_svg(28),
+            )
+            + '</div>'
+        )
 
     # Compute daily totals per provider
     day_stacks = {}
@@ -2888,7 +3095,16 @@ def _build_svg_spend_chart(data):
             max_total = tot
 
     if max_total == 0:
-        return '<div class="chart-empty">No spend data for this period</div>'
+        return (
+            '<div class="chart-empty">'
+            + _render_empty_state(
+                "No spend data yet",
+                "Nothing billable landed in the selected window.",
+                "Action hint: expand the range to see the most recent spend-bearing requests.",
+                _pulse_mark_svg(28),
+            )
+            + '</div>'
+        )
 
     # SVG dimensions
     W, H = 520, 220
@@ -2965,10 +3181,21 @@ def _build_svg_spend_chart(data):
         if len(top_pts) < 2:
             continue
 
-        def pts_to_d(pts):
+        def pts_to_d(pts, smooth=False):
             d_str = f"M {pts[0][0]:.1f},{pts[0][1]:.1f}"
-            for px, py in pts[1:]:
-                d_str += f" L {px:.1f},{py:.1f}"
+            if not smooth or len(pts) < 3:
+                for px, py in pts[1:]:
+                    d_str += f" L {px:.1f},{py:.1f}"
+                return d_str
+            for i in range(1, len(pts)):
+                prev_pt = pts[i - 1]
+                curr_pt = pts[i]
+                next_pt = pts[i + 1] if i + 1 < len(pts) else curr_pt
+                cp1x = prev_pt[0] + (curr_pt[0] - prev_pt[0]) * 0.55
+                cp1y = prev_pt[1]
+                cp2x = curr_pt[0] - (next_pt[0] - prev_pt[0]) * 0.12
+                cp2y = curr_pt[1]
+                d_str += f" C {cp1x:.1f},{cp1y:.1f} {cp2x:.1f},{cp2y:.1f} {curr_pt[0]:.1f},{curr_pt[1]:.1f}"
             return d_str
 
         top_d = pts_to_d(top_pts)
@@ -2980,7 +3207,7 @@ def _build_svg_spend_chart(data):
         area_d += " Z"
 
         # Stroke path (top line only)
-        stroke_d = pts_to_d(top_pts)
+        stroke_d = pts_to_d(top_pts, smooth=True)
 
         svg_parts.append(
             f'<path d="{area_d}" fill="url(#grad_{prov_safe})" opacity="0.85"/>'
@@ -3029,9 +3256,14 @@ def _build_svg_spend_chart(data):
     )
 
     tooltip_html = '<div class="svg-tooltip" id="spendTooltip"></div>'
+    legend_html = '<div class="chart-legend">' + "".join(
+        f'<span class="chart-legend-item" style="color:{_provider_color(prov)}"><span class="chart-legend-swatch" style="background:{_provider_color(prov)}"></span>{_escape_html("LM Studio" if prov == "lmstudio" else prov)}</span>'
+        for prov in all_provs
+    ) + '</div>'
 
     return (
-        f'<div class="spend-svg-wrap" id="spendChartWrap">'
+        legend_html
+        + f'<div class="spend-svg-wrap" id="spendChartWrap">'
         + "".join(svg_parts)
         + tooltip_html
         + "</div>"
@@ -3041,7 +3273,16 @@ def _build_svg_spend_chart(data):
 def _build_model_breakdown(data):
     models = data["models"]
     if not models:
-        return '<div class="chart-empty">No model data yet</div>'
+        return (
+            '<div class="chart-empty">'
+            + _render_empty_state(
+                "No model activity yet",
+                "Model usage cards appear once TokenPulse sees at least one tracked request in this range.",
+                "Action hint: send a request through the proxy to populate provider and model breakdowns.",
+                _pulse_mark_svg(28),
+            )
+            + '</div>'
+        )
 
     max_tok = max((m["inp"] + m["outp"] for m in models), default=1)
     if max_tok == 0:
@@ -3066,20 +3307,20 @@ def _build_model_breakdown(data):
             bar_color = "#22c55e"
 
         items.append(
-            f'<div class="model-item">'
+            f'<div class="model-item loading-surface reveal reveal-delay-1">'
             f'<div class="model-row">'
             f'<div>'
             f'<div class="model-name" title="{_escape_html(model_name)}">{_escape_html(model_name)}</div>'
             f'<div class="model-meta">'
             f"{provider_badge_html(prov)} "
             f"<span>{m['cnt']} reqs</span> "
-            f"<span>{fmt_tokens(tok)} tokens</span>"
+            f"<span title=\"{fmt_tokens(tok)} tokens\">{fmt_compact_number(tok)} tokens</span>"
             f"</div>"
             f"</div>"
             f"{cost_html}"
             f"</div>"
             f'<div class="usage-bar-bg">'
-            f'<div class="usage-bar-fill" style="width:{bar_w}%;background:{bar_color}"></div>'
+            f'<div class="usage-bar-fill" style="width:{bar_w}%;background:{bar_color};color:{bar_color}"></div>'
             f"</div>"
             f"</div>"
         )
@@ -3298,13 +3539,19 @@ def _build_requests_table(data, time_range="today", page=1):
     if not requests:
         return (
             '<div class="table-wrap">'
-            '<div class="chart-empty" style="padding:40px">'
-            "No requests in this time range"
-            "</div></div>"
+            '<div class="chart-empty" style="padding:28px">'
+            + _render_empty_state(
+                "No requests in this range",
+                "There are no tracked requests for the selected filter yet.",
+                "Action hint: switch ranges or send a new request through the local proxy to populate the table.",
+                _pulse_mark_svg(28),
+            )
+            + "</div></div>"
         )
 
     rows_html = []
     for idx, r in enumerate(requests):
+        ts_full = fmt_timestamp_full(r["timestamp"])
         ts = relative_time(r["timestamp"])
         prov = r["provider"] or "unknown"
         ptype = r.get("ptype", "api")
@@ -3341,13 +3588,13 @@ def _build_requests_table(data, time_range="today", page=1):
 
         rows_html.append(
             f'<tr class="req-row" id="{row_id}" data-detail="{detail_json}" data-detail-id="{detail_id}">'
-            f'<td class="td-time" style="border-left:3px solid {prov_color}">{ts}</td>'
-            f"<td>{provider_badge_html(prov)}</td>"
+            f'<td class="td-time" style="border-left:3px solid {prov_color}" title="{_escape_html(ts_full)}">{ts}</td>'
+            f'<td class="td-provider">{provider_badge_html(prov)}</td>'
             f'<td class="td-model" title="{model_name}">{model_name}</td>'
-            f"<td>{inp}</td>"
-            f"<td>{out}</td>"
-            f"<td>{cost_td}</td>"
-            f'<td class="latency">{lat}</td>'
+            f'<td class="td-num" title="{r["input_tokens"]:,}">{inp}</td>'
+            f'<td class="td-num" title="{r["output_tokens"]:,}">{out}</td>'
+            f'<td class="td-cost">{cost_td}</td>'
+            f'<td class="latency td-latency">{lat}</td>'
             f"<td>{stream_html}<span class='expand-chevron'>&#9660;</span></td>"
             f"</tr>"
             f'<tr class="detail-row" id="{detail_id}">'
@@ -3463,6 +3710,28 @@ var dominantColor = "{dominant_color}";
 
 
 var seenNotificationKeys = {{}};
+var previousRecentCount = parseInt(window.sessionStorage.getItem('tpRecentCount') || '0', 10);
+
+function formatCompactNumber(value) {{
+  var num = Number(value || 0);
+  if (!isFinite(num)) return '0';
+  if (Math.abs(num) >= 1000000) return (num / 1000000).toFixed(1).replace(/\\.0$/, '') + 'M';
+  if (Math.abs(num) >= 1000) return (num / 1000).toFixed(1).replace(/\\.0$/, '') + 'K';
+  return Math.round(num).toLocaleString();
+}}
+
+function formatCurrency(value) {{
+  var num = Number(value || 0);
+  if (!isFinite(num)) return '$0.00';
+  if (Math.abs(num) < 0.01 && num !== 0) return '$' + num.toFixed(4);
+  return new Intl.NumberFormat('en-US', {{ style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 }}).format(num);
+}}
+
+function formatCurrencyPrecise(value) {{
+  var num = Number(value || 0);
+  if (!isFinite(num)) return '$0.00';
+  return '$' + num.toLocaleString('en-US', {{ minimumFractionDigits: num < 1 ? 4 : 2, maximumFractionDigits: num < 1 ? 4 : 2 }});
+}}
 
 function requestBrowserNotifications() {{
   if (!('Notification' in window)) return;
@@ -3498,6 +3767,46 @@ function initStickyNav() {{
       nav.classList.remove('visible');
       shown = false;
     }}
+  }});
+}}
+
+function initRangeIndicators() {{
+  document.querySelectorAll('.range-pill-group').forEach(function(group) {{
+    var indicator = group.querySelector('.range-indicator');
+    var active = group.querySelector('.range-btn.active');
+    if (!indicator || !active) return;
+    indicator.style.left = active.offsetLeft + 'px';
+    indicator.style.width = active.offsetWidth + 'px';
+    indicator.style.opacity = '1';
+  }});
+}}
+
+function initCountups() {{
+  document.querySelectorAll('[data-countup]').forEach(function(el) {{
+    var target = Number(el.getAttribute('data-countup') || '0');
+    var decimals = parseInt(el.getAttribute('data-decimals') || '0', 10);
+    var prefix = el.getAttribute('data-prefix') || '';
+    var format = el.getAttribute('data-format') || '';
+    var start = 0;
+    var duration = 700;
+    var startTs = null;
+    function render(value) {{
+      if (format === 'compact') {{
+        el.textContent = formatCompactNumber(value);
+      }} else if (prefix === '$') {{
+        el.textContent = prefix + value.toLocaleString('en-US', {{ minimumFractionDigits: decimals, maximumFractionDigits: decimals }});
+      }} else {{
+        el.textContent = Math.round(value).toLocaleString();
+      }}
+    }}
+    function step(ts) {{
+      if (!startTs) startTs = ts;
+      var progress = Math.min((ts - startTs) / duration, 1);
+      var eased = 1 - Math.pow(1 - progress, 3);
+      render(start + ((target - start) * eased));
+      if (progress < 1) window.requestAnimationFrame(step);
+    }}
+    window.requestAnimationFrame(step);
   }});
 }}
 
@@ -3578,12 +3887,12 @@ function initSpendChart() {{
       try {{ costs = JSON.parse(costsStr); }} catch(ex) {{ costs = {{}}; }}
 
       var lines = '<strong>' + day + '</strong><br>';
-      lines += 'Total: $' + total.toFixed(4) + '<br>';
+      lines += 'Total: ' + formatCurrencyPrecise(total) + '<br>';
       var provs = Object.keys(costs).sort();
       provs.forEach(function(p) {{
         if (costs[p] > 0) {{
           var clr = provColors[p] || '#8b949e';
-          lines += '<span style="color:' + clr + '">' + p + '</span>: $' + costs[p].toFixed(4) + '<br>';
+          lines += '<span style="color:' + clr + '">' + p + '</span>: ' + formatCurrencyPrecise(costs[p]) + '<br>';
         }}
       }});
       tooltip.innerHTML = lines;
@@ -3619,6 +3928,31 @@ function initSpendChart() {{
       if (hoverLine) hoverLine.setAttribute('opacity', '0');
     }});
   }});
+}}
+
+function initScrollTop() {{
+  var btn = document.getElementById('scrollTopBtn');
+  if (!btn) return;
+  window.addEventListener('scroll', function() {{
+    if ((window.scrollY || window.pageYOffset) > 420) btn.classList.add('visible');
+    else btn.classList.remove('visible');
+  }});
+  btn.addEventListener('click', function() {{
+    window.scrollTo({{ top: 0, behavior: 'smooth' }});
+  }});
+}}
+
+function markLiveUpdate() {{
+  if (recentCount > previousRecentCount) {{
+    document.querySelectorAll('.live-badge').forEach(function(el) {{
+      el.classList.add('has-update');
+    }});
+  }}
+  window.sessionStorage.setItem('tpRecentCount', String(recentCount));
+}}
+
+function initLoadedState() {{
+  document.body.classList.remove('preload');
 }}
 
 // ── Expandable rows ──────────────────────────────────────
@@ -3814,17 +4148,23 @@ function deleteBudget(id) {{
 
 // ── Init ─────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', function() {{
+  initLoadedState();
   initStickyNav();
+  initRangeIndicators();
   var actLevel = Math.min(10, Math.round(recentCount / 2));
   initTokenFlow(actLevel);
   initActivityFeed(activityDots, recentCount);
   resetBudgetForm();
   initSpendChart();
   initExpandableRows();
+  initCountups();
+  initScrollTop();
   updatePulseDots(recentCount);
+  markLiveUpdate();
   requestBrowserNotifications();
   pollNotifications();
   setInterval(pollNotifications, 30000);
+  window.addEventListener('resize', initRangeIndicators);
   startAutoRefresh(30);
 }});
 </script>"""
@@ -3840,34 +4180,55 @@ def build_page(time_range, page=1):
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     range_label = RANGE_LABELS.get(time_range, "Today")
     range_buttons = _build_range_buttons(time_range)
+    favicon_href = _favicon_href()
+    pulse_mark_small = _pulse_mark_svg(18)
+    pulse_mark_large = _pulse_mark_svg(28)
+    proxy_online, proxy_label = _proxy_status_summary()
+    proxy_status_class = "online" if proxy_online else "offline"
 
     try:
         data = _fetch_data(time_range)
     except Exception as e:
         error_body = ERROR_TEMPLATE.substitute(
+            icon_svg='<svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 8v5m0 4h.01M10.3 3.85 1.82 18a2 2 0 0 0 1.72 3h16.92a2 2 0 0 0 1.72-3L13.7 3.85a2 2 0 0 0-3.4 0Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
             error_message=_escape_html(str(e)),
             db_path=_escape_html(DB_PATH),
         )
-        empty_scripts = "<script>setTimeout(function(){location.reload()},3000);</script>"
+        empty_scripts = "<script>document.body.classList.remove('preload');setTimeout(function(){location.reload()},3000);</script>"
         return PAGE_TEMPLATE.substitute(
             range_label=range_label,
             range_buttons=range_buttons,
             body_content=error_body,
+            favicon_href=favicon_href,
+            pulse_mark_small=pulse_mark_small,
+            pulse_mark_large=pulse_mark_large,
             version=VERSION,
+            proxy_status_class=proxy_status_class,
+            proxy_status_label=proxy_label,
+            last_request_at="—",
+            total_requests="0",
             updated_at=now_str,
             page_scripts=empty_scripts,
         )
 
     if data["total_requests"] == 0:
         empty_body = EMPTY_TEMPLATE.substitute(
+            icon_svg=_pulse_mark_svg(28),
             db_path=_escape_html(DB_PATH),
         )
-        empty_scripts = "<script>setTimeout(function(){location.reload()},3000);</script>"
+        empty_scripts = "<script>document.body.classList.remove('preload');setTimeout(function(){location.reload()},3000);</script>"
         return PAGE_TEMPLATE.substitute(
             range_label=range_label,
             range_buttons=range_buttons,
             body_content=empty_body,
+            favicon_href=favicon_href,
+            pulse_mark_small=pulse_mark_small,
+            pulse_mark_large=pulse_mark_large,
             version=VERSION,
+            proxy_status_class=proxy_status_class,
+            proxy_status_label=proxy_label,
+            last_request_at="—",
+            total_requests="0",
             updated_at=now_str,
             page_scripts=empty_scripts,
         )
@@ -3877,7 +4238,9 @@ def build_page(time_range, page=1):
     # Activity feed section
     activity_60s = data.get("activity_60s", [])
     recent_count = len(activity_60s)
-    activity_section = f"""<div class="activity-section">
+    last_request_at = fmt_timestamp_full(data["requests"][0]["timestamp"]) if data.get("requests") else "—"
+
+    activity_section = f"""<div class="activity-section loading-surface reveal reveal-delay-1">
   <div class="activity-label">Live Activity</div>
   <div class="activity-timeline" id="activityTimeline"></div>
   <div class="activity-count" id="activityCount"></div>
@@ -3937,11 +4300,11 @@ def build_page(time_range, page=1):
 
   <!-- Charts -->
   <div class="charts-row">
-    <div class="chart-panel">
+    <div class="chart-panel loading-surface reveal reveal-delay-2">
       <div class="chart-title">Daily Spend</div>
       {spend_chart}
     </div>
-    <div class="chart-panel">
+    <div class="chart-panel loading-surface reveal reveal-delay-3">
       <div class="chart-title">Model Breakdown</div>
       {model_breakdown}
     </div>
@@ -3972,7 +4335,14 @@ def build_page(time_range, page=1):
         range_label=range_label,
         range_buttons=range_buttons,
         body_content=body,
+        favicon_href=favicon_href,
+        pulse_mark_small=pulse_mark_small,
+        pulse_mark_large=pulse_mark_large,
         version=VERSION,
+        proxy_status_class=proxy_status_class,
+        proxy_status_label=proxy_label,
+        last_request_at=last_request_at,
+        total_requests=f"{data['total_requests']:,}",
         updated_at=now_str,
         page_scripts=page_scripts,
     )
@@ -3987,7 +4357,6 @@ def _json_response(handler, status, data):
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json")
     handler.send_header("Content-Length", str(len(body)))
-    handler.send_header("Access-Control-Allow-Origin", "*")
     handler.end_headers()
     handler.wfile.write(body)
 
@@ -4206,7 +4575,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/notifications":
-            limit = int((query.get('limit') or ['20'])[0] or 20)
+            params = parse_qs(parsed.query)
+            try:
+                limit = int((params.get('limit') or ['20'])[0] or 20)
+            except (TypeError, ValueError):
+                limit = 20
             _json_response(self, 200, _api_get_notifications(limit))
             return
 
@@ -4227,7 +4600,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_header("Content-Type", "text/csv")
                 self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
                 self.send_header("Content-Length", str(len(csv_bytes)))
-                self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
                 self.wfile.write(csv_bytes)
             except Exception as e:
@@ -4322,7 +4694,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_OPTIONS(self):
         self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
@@ -4332,30 +4703,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    import socket
     import time
 
     PORT = 4200
     MAX_RETRIES = 5
 
-    HTTPServer.allow_reuse_address = True
-
-    # Use dual-stack IPv6 socket so both IPv4 and IPv6 work
-    import http.server
-
-    class DualStackHTTPServer(HTTPServer):
-        address_family = socket.AF_INET6
-        allow_reuse_address = True
-
-        def server_bind(self):
-            # Allow IPv4 connections on the IPv6 socket (dual-stack)
-            self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
-            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            super().server_bind()
+    ThreadingHTTPServer.allow_reuse_address = True
 
     for attempt in range(MAX_RETRIES):
         try:
-            server = DualStackHTTPServer(("::", PORT), DashboardHandler)
+            server = ThreadingHTTPServer(("", PORT), DashboardHandler)
             break
         except OSError as e:
             if attempt < MAX_RETRIES - 1:
