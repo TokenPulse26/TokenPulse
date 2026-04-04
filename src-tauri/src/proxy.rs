@@ -693,6 +693,36 @@ async fn proxy_handler(
             .unwrap());
     }
 
+    if path == "/api/context-audit" && parts.method == Method::GET {
+        let time_range = parts
+            .uri
+            .query()
+            .and_then(|q| {
+                url::form_urlencoded::parse(q.as_bytes())
+                    .find(|(k, _)| k == "range")
+                    .map(|(_, v)| v.into_owned())
+            })
+            .unwrap_or_else(|| "today".to_string());
+
+        let result = if let Ok(conn) = state.db.lock() {
+            match db::get_context_audit_snapshot(&conn, &time_range) {
+                Ok(snapshot) => serde_json::json!({
+                    "status": "ok",
+                    "context_audit": snapshot,
+                }),
+                Err(e) => serde_json::json!({"status": "error", "message": e.to_string()}),
+            }
+        } else {
+            serde_json::json!({"status": "error", "message": "database lock failed"})
+        };
+
+        return Ok(Response::builder()
+            .status(200)
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&result).unwrap()))
+            .unwrap());
+    }
+
     let provider = detect_provider(&parts.headers, &path);
     let forward_path = build_forward_path(&provider, &path);
     let target_url = format!("{}{}{}", provider.base_url, forward_path, query);

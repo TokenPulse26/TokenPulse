@@ -1672,6 +1672,14 @@ def _reliability_recommendation(kind, model_name, recent_latency, baseline_laten
     )
 
 
+def _fetch_context_audit_data(time_range):
+    """Fetch context audit heuristics from the local proxy when available."""
+    proxied = _fetch_proxy_json(f'/api/context-audit?range={time_range}')
+    if proxied:
+        return proxied.get('context_audit') or {}
+    return {}
+
+
 def _fetch_reliability_data(time_range):
     """Fetch latency/reliability rollups plus anomaly candidates."""
     proxied = _fetch_proxy_json(f'/api/reliability?range={time_range}')
@@ -2724,6 +2732,77 @@ def _build_attention_section(budgets, budget_forecasts, reliability_data, error_
   </div>
   {summary_html}
   <div class=\"attention-grid\">{cards_html}</div>
+</div>"""
+
+
+def _build_context_audit_section(audit_data):
+    """Build the Context Audit section."""
+    if not audit_data:
+        return ""
+
+    score = int(audit_data.get("score", 100) or 100)
+    estimated_savings = float(audit_data.get("estimated_savings_usd", 0.0) or 0.0)
+    findings = audit_data.get("findings") or []
+
+    score_tone = "good" if score >= 80 else "warn" if score >= 55 else "bad"
+    score_label = "Clean" if score >= 80 else "Needs work" if score >= 55 else "Wasteful"
+
+    summary_html = f"""<div class="reliability-summary">
+  <div class="reliability-card">
+    <div class="reliability-label">Audit Score</div>
+    <div class="reliability-value">{score}/100</div>
+    <div class="reliability-sub">{score_label} context hygiene</div>
+  </div>
+  <div class="reliability-card">
+    <div class="reliability-label">Estimated Savings</div>
+    <div class="reliability-value">{fmt_cost(estimated_savings)}</div>
+    <div class="reliability-sub">Heuristic recoverable waste in this range</div>
+  </div>
+  <div class="reliability-card">
+    <div class="reliability-label">Findings</div>
+    <div class="reliability-value">{len(findings)}</div>
+    <div class="reliability-sub">Top waste patterns detected</div>
+  </div>
+</div>"""
+
+    if not findings:
+        return f"""<div class="reliability-section">
+  <div class="section-title">Context Audit</div>
+  {summary_html}
+  {_render_empty_state(
+      "No obvious context waste",
+      "This range looks pretty clean based on current heuristics.",
+      "Action hint: revisit after bigger prompt changes, routing changes, or a week of heavier usage.",
+      _pulse_mark_svg(28)
+  )}
+</div>"""
+
+    items = []
+    for item in findings[:6]:
+        severity = item.get("severity") or "medium"
+        meta_bits = [f'{item.get("requests", 0)} request(s)']
+        impact = float(item.get("estimated_cost_impact_usd", 0.0) or 0.0)
+        if impact > 0:
+            meta_bits.append(f'{fmt_cost(impact)} impact')
+        items.append(
+            f'<div class="anomaly-item">'
+            f'<div class="anomaly-header">'
+            f'<div class="anomaly-title">{_escape_html(item.get("title") or "Finding")}</div>'
+            f'<span class="severity-badge {severity}">{_escape_html(severity)}</span>'
+            f'</div>'
+            f'<div class="anomaly-meta"><span>{_escape_html(" · ".join(meta_bits))}</span></div>'
+            f'<div class="reliability-sub" style="margin-top:8px">{_escape_html(item.get("summary") or "")}</div>'
+            f'<div class="anomaly-recommendation"><strong>Recommendation:</strong> {_escape_html(item.get("recommendation") or "")}</div>'
+            f'</div>'
+        )
+
+    score_banner = f'<div class="attention-card {score_tone}" style="margin-bottom:14px"><div class="attention-head"><div class="attention-title">Context hygiene verdict</div><span class="attention-pill {score_tone}">{score_label}</span></div><div class="attention-body">This panel flags likely prompt waste, model misuse, and cache misses using the request data TokenPulse already tracks.</div><div class="attention-foot">Use it to decide what to preprocess, what to reroute, and what to trim.</div></div>'
+
+    return f"""<div class="reliability-section">
+  <div class="section-title">Context Audit</div>
+  {summary_html}
+  {score_banner}
+  <div class="anomaly-list">{''.join(items)}</div>
 </div>"""
 
 
@@ -4269,6 +4348,8 @@ def build_page(time_range, page=1):
 
     reliability_data = _fetch_reliability_data(time_range)
     reliability_html = _build_reliability_section(reliability_data)
+    context_audit_data = _fetch_context_audit_data(time_range)
+    context_audit_html = _build_context_audit_section(context_audit_data)
     attention_html = _build_attention_section(budgets_status, budget_forecasts, reliability_data, error_data)
 
     opt_data = _fetch_optimizer_data()
@@ -4295,6 +4376,8 @@ def build_page(time_range, page=1):
     {optimizer_html}
     {reliability_html}
   </div>
+
+  {context_audit_html}
 
   {project_html}
 
@@ -4581,6 +4664,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except (TypeError, ValueError):
                 limit = 20
             _json_response(self, 200, _api_get_notifications(limit))
+            return
+
+        if path == "/api/context-audit":
+            params = parse_qs(parsed.query)
+            time_range = (params.get("range") or ["today"])[0]
+            _json_response(self, 200, {"ok": True, "context_audit": _fetch_context_audit_data(time_range)})
             return
 
         # CSV export endpoint
