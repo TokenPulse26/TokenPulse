@@ -3,9 +3,9 @@ mod pricing;
 mod proxy;
 
 use db::{
-    Budget, BudgetAlertHistoryItem, BudgetForecast, BudgetStatus, CostSummary, DailyProviderStat,
-    DailyStats, DashboardSummary, ModelStats, NotificationEvent, ReliabilitySnapshot,
-    RequestRecord,
+    Budget, BudgetAlertHistoryItem, BudgetForecast, BudgetStatus, ContextAuditSnapshot,
+    CostSummary, DailyProviderStat, DailyStats, DashboardSummary, ModelStats, NotificationEvent,
+    ReliabilitySnapshot, RequestRecord,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -123,6 +123,15 @@ fn get_reliability_snapshot_cmd(
 ) -> Result<ReliabilitySnapshot, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::get_reliability_snapshot(&conn, &time_range).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_context_audit_snapshot_cmd(
+    state: State<DbState>,
+    time_range: String,
+) -> Result<ContextAuditSnapshot, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::get_context_audit_snapshot(&conn, &time_range).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -533,6 +542,7 @@ pub fn run() {
             test_proxy,
             get_cost_summary,
             get_reliability_snapshot_cmd,
+            get_context_audit_snapshot_cmd,
             update_pricing_now,
             get_pricing_status,
             export_csv,

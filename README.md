@@ -57,6 +57,7 @@ Your API keys pass through to the upstream provider. TokenPulse is designed to t
 - spending forecasts
 - reliability and error monitoring
 - cost optimization suggestions
+- context audit heuristics for prompt waste / model misuse / cache underuse
 - CSV export
 
 ---

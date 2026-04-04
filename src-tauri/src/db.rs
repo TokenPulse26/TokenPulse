@@ -102,6 +102,25 @@ pub struct ReliabilitySnapshot {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ContextAuditFinding {
+    pub key: String,
+    pub title: String,
+    pub severity: String,
+    pub summary: String,
+    pub requests: i64,
+    pub estimated_cost_impact_usd: f64,
+    pub recommendation: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ContextAuditSnapshot {
+    pub range: String,
+    pub score: i64,
+    pub estimated_savings_usd: f64,
+    pub findings: Vec<ContextAuditFinding>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct NotificationEvent {
     pub id: i64,
     pub kind: String,
@@ -1383,6 +1402,170 @@ pub fn get_model_breakdown(conn: &Connection, days: u32) -> Result<Vec<ModelStat
         .collect::<Result<Vec<_>>>()?;
 
     Ok(records)
+}
+
+pub fn get_context_audit_snapshot(
+    conn: &Connection,
+    time_range: &str,
+) -> Result<ContextAuditSnapshot> {
+    let where_clause = time_range_filter(time_range);
+    let api_where = if where_clause.is_empty() {
+        "WHERE COALESCE(provider_type, 'api') = 'api'".to_string()
+    } else {
+        format!("{} AND COALESCE(provider_type, 'api') = 'api'", where_clause)
+    };
+
+    let mut findings: Vec<ContextAuditFinding> = Vec::new();
+    let mut estimated_savings = 0.0_f64;
+
+    let overprompt: (i64, f64) = conn.query_row(
+        &format!(
+            "SELECT COUNT(*) as cnt, COALESCE(SUM(cost_usd), 0.0) as cost FROM requests {} AND input_tokens > 2000 AND output_tokens < 100",
+            api_where
+        ),
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if overprompt.0 > 0 {
+        estimated_savings += overprompt.1;
+        findings.push(ContextAuditFinding {
+            key: "overprompting".to_string(),
+            title: "Possible over-prompting".to_string(),
+            severity: if overprompt.0 >= 10 { "high" } else { "medium" }.to_string(),
+            summary: format!(
+                "{} request(s) sent large prompts but produced very small outputs. That's usually context bloat, bad scoping, or a task that should have been preprocessed first.",
+                overprompt.0
+            ),
+            requests: overprompt.0,
+            estimated_cost_impact_usd: overprompt.1,
+            recommendation: "Trim input context, preprocess raw files before reasoning, and start fresh execution threads once the task is clear.".to_string(),
+        });
+    }
+
+    let expensive_small_work: (i64, f64) = conn.query_row(
+        &format!(
+            "SELECT COUNT(*) as cnt, COALESCE(SUM(cost_usd), 0.0) as cost FROM requests {} AND lower(model) IN ('claude-opus-4-6','gpt-4o','gpt-4.1','o1') AND (input_tokens + output_tokens) <= 1200",
+            api_where
+        ),
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if expensive_small_work.0 > 0 {
+        let impact = expensive_small_work.1 * 0.5;
+        estimated_savings += impact;
+        findings.push(ContextAuditFinding {
+            key: "premium_small_tasks".to_string(),
+            title: "Premium models handling small tasks".to_string(),
+            severity: if expensive_small_work.0 >= 15 { "high" } else { "medium" }.to_string(),
+            summary: format!(
+                "{} small request(s) hit premium models. Some of that is justified, but a chunk of it is probably formatting, extraction, or simple transforms that should route cheaper.",
+                expensive_small_work.0
+            ),
+            requests: expensive_small_work.0,
+            estimated_cost_impact_usd: impact,
+            recommendation: "Reserve premium models for synthesis and judgment. Push extraction, OCR cleanup, formatting, and small transforms to a cheaper lane or local model.".to_string(),
+        });
+    }
+
+    let low_cache_use: (i64, f64) = conn.query_row(
+        &format!(
+            "SELECT COUNT(*) as cnt, COALESCE(SUM(cost_usd), 0.0) as cost FROM requests {} AND input_tokens >= 4000 AND COALESCE(cached_tokens, 0) = 0",
+            api_where
+        ),
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if low_cache_use.0 > 0 {
+        let impact = low_cache_use.1 * 0.35;
+        estimated_savings += impact;
+        findings.push(ContextAuditFinding {
+            key: "cache_underuse".to_string(),
+            title: "Repeated heavy context without cache signal".to_string(),
+            severity: if low_cache_use.0 >= 8 { "high" } else { "medium" }.to_string(),
+            summary: format!(
+                "{} request(s) carried 4K+ input tokens with zero cached tokens reported. That suggests stable prompt or reference material is being resent without cache benefit.",
+                low_cache_use.0
+            ),
+            requests: low_cache_use.0,
+            estimated_cost_impact_usd: impact,
+            recommendation: "Cache stable system prompts, tool definitions, and recurring references where the provider supports it. Reuse prepared context instead of resending full scaffolding every call.".to_string(),
+        });
+    }
+
+    let failed_spend: (i64, f64) = conn.query_row(
+        &format!(
+            "SELECT COUNT(*) as cnt, COALESCE(SUM(cost_usd), 0.0) as cost FROM requests {} AND COALESCE(error_message, '') != ''",
+            api_where
+        ),
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if failed_spend.0 > 0 && failed_spend.1 > 0.0 {
+        estimated_savings += failed_spend.1;
+        findings.push(ContextAuditFinding {
+            key: "failed_requests".to_string(),
+            title: "Failures are burning spend".to_string(),
+            severity: if failed_spend.1 >= 1.0 { "high" } else { "medium" }.to_string(),
+            summary: format!(
+                "{} failed request(s) still consumed about ${:.2} in paid traffic. That's reliability waste, not productive work.",
+                failed_spend.0, failed_spend.1
+            ),
+            requests: failed_spend.0,
+            estimated_cost_impact_usd: failed_spend.1,
+            recommendation: "Add retries carefully, tighten upstream health checks, and route time-sensitive workloads away from unstable providers or models.".to_string(),
+        });
+    }
+
+    let small_api_local: (i64, f64) = conn.query_row(
+        &format!(
+            "SELECT COUNT(*) as cnt, COALESCE(SUM(cost_usd), 0.0) as cost FROM requests {} AND (input_tokens + output_tokens) < 500",
+            api_where
+        ),
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if small_api_local.0 >= 10 {
+        let impact = small_api_local.1 * 0.4;
+        estimated_savings += impact;
+        findings.push(ContextAuditFinding {
+            key: "local_model_opportunity".to_string(),
+            title: "Local model opportunity".to_string(),
+            severity: "low".to_string(),
+            summary: format!(
+                "{} small API request(s) fell under 500 total tokens. Many of these could probably run on a local model or budget-tier cloud model without changing the result much.",
+                small_api_local.0
+            ),
+            requests: small_api_local.0,
+            estimated_cost_impact_usd: impact,
+            recommendation: "Route lightweight transforms, extraction cleanup, tagging, and simple formatting to a local or budget lane before escalating to premium reasoning.".to_string(),
+        });
+    }
+
+    findings.sort_by(|a, b| {
+        b.estimated_cost_impact_usd
+            .partial_cmp(&a.estimated_cost_impact_usd)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| b.requests.cmp(&a.requests))
+    });
+
+    let mut score = 100_i64;
+    for finding in &findings {
+        score -= match finding.severity.as_str() {
+            "high" => 18,
+            "medium" => 10,
+            _ => 5,
+        };
+    }
+    if score < 0 {
+        score = 0;
+    }
+
+    Ok(ContextAuditSnapshot {
+        range: time_range.to_string(),
+        score,
+        estimated_savings_usd: (estimated_savings * 100.0).round() / 100.0,
+        findings,
+    })
 }
 
 pub fn get_reliability_snapshot(
