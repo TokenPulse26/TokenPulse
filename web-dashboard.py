@@ -75,6 +75,112 @@ RANGE_LABELS = {
     "all": "All Time",
 }
 
+UNKNOWN_MODEL_VALUES = {"", "unknown", "unknown model", "unidentified"}
+UNKNOWN_SOURCE_VALUES = {"", "unknown", "unknown source", "unknown project", "unattributed"}
+HTTP_ERROR_EXPLANATIONS = {
+    401: "Authentication failed or the API key was missing.",
+    404: "Endpoint not found or the API path was wrong.",
+    421: "Request went to the wrong server or endpoint.",
+}
+
+
+def _is_unknownish(value):
+    return (value or "").strip().lower() in UNKNOWN_MODEL_VALUES
+
+
+def _extract_http_status(error_message):
+    if not error_message:
+        return None
+    msg = str(error_message).strip()
+    if not msg.startswith("HTTP "):
+        return None
+    try:
+        return int(msg.split(":", 1)[0].split()[1])
+    except Exception:
+        return None
+
+
+def _plain_error_label(error_message):
+    status = _extract_http_status(error_message)
+    if status is not None:
+        return HTTP_ERROR_EXPLANATIONS.get(status, f"Provider returned HTTP {status}.")
+    if error_message:
+        return "Provider returned an error."
+    return "No error message recorded."
+
+
+def _display_model_name(model, provider=None, error_message=None, success_count=None):
+    if not _is_unknownish(model):
+        return model
+    if error_message:
+        status = _extract_http_status(error_message)
+        if provider and provider.lower() == "openai":
+            if status:
+                return f"Unidentified failed OpenAI requests (HTTP {status})"
+            return "Unidentified failed OpenAI requests"
+        if provider:
+            return f"Unidentified failed {provider.title()} requests"
+        return "Unidentified failed requests"
+    if success_count and success_count > 0:
+        return "Unidentified model"
+    return "Unidentified requests"
+
+
+def _source_fallback_label(provider, provider_type, model=None):
+    provider_key = (provider or "").strip().lower()
+    provider_type = (provider_type or "").strip().lower()
+    if provider_type == "subscription" or provider_key == "cliproxy":
+        return "OpenClaw / CLIProxy"
+    if provider_type == "local":
+        if provider_key == "lmstudio":
+            return "LM Studio local"
+        if provider_key == "ollama":
+            return "Ollama local"
+        return "Local model lane"
+    if provider_key == "openai":
+        return "OpenAI API"
+    if provider_key == "anthropic":
+        return "Anthropic API"
+    if provider_key == "google":
+        return "Google API"
+    if provider_key == "groq":
+        return "Groq API"
+    if provider_key == "mistral":
+        return "Mistral API"
+    if provider:
+        return f"{provider.title()} API"
+    if model and not _is_unknownish(model):
+        return f"{model} traffic"
+    return "Unattributed traffic"
+
+
+def _normalize_source_label(source_tag, provider=None, provider_type=None, model=None):
+    tag = (source_tag or "").strip()
+    if tag and tag.lower() not in UNKNOWN_SOURCE_VALUES:
+        return tag
+    return _source_fallback_label(provider, provider_type, model=model)
+
+
+def _budget_state(percentage):
+    pct = float(percentage or 0.0)
+    if pct >= 100.0:
+        return ("Over budget", "over")
+    if pct >= 90.0:
+        return ("Critical", "critical")
+    if pct >= 75.0:
+        return ("Approaching", "approaching")
+    return ("Healthy", "healthy")
+
+
+def _model_family(model_name):
+    model = (model_name or "").strip().lower()
+    if not model:
+        return ""
+    for prefix in ("claude", "gpt", "gemini", "llama", "mistral"):
+        if model.startswith(prefix):
+            return prefix
+    return model.split("-", 1)[0]
+
 # ---------------------------------------------------------------------------
 # Page Template — uses string.Template for the outer skeleton only.
 # JS is injected via $page_scripts to avoid $ escaping issues.
@@ -1004,7 +1110,9 @@ def _fetch_data(time_range):
             f"COALESCE(SUM(input_tokens), 0) as inp, "
             f"COALESCE(SUM(output_tokens), 0) as outp, "
             f"COALESCE(SUM(cost_usd), 0) as cost, "
-            f"COALESCE(provider_type, 'api') as ptype "
+            f"COALESCE(provider_type, 'api') as ptype, "
+            f"SUM(CASE WHEN COALESCE(error_message, '') = '' THEN 1 ELSE 0 END) as success_cnt, "
+            f"MAX(COALESCE(error_message, '')) as sample_error "
             f"FROM requests{where} "
             f"GROUP BY model, provider "
             f"ORDER BY (inp + outp) DESC LIMIT 15"
@@ -1016,7 +1124,9 @@ def _fetch_data(time_range):
             f"COALESCE(SUM(input_tokens), 0) as inp, "
             f"COALESCE(SUM(output_tokens), 0) as outp, "
             f"COALESCE(SUM(cost_usd), 0) as cost, "
-            f"'api' as ptype "
+            f"'api' as ptype, "
+            f"SUM(CASE WHEN COALESCE(error_message, '') = '' THEN 1 ELSE 0 END) as success_cnt, "
+            f"MAX(COALESCE(error_message, '')) as sample_error "
             f"FROM requests{where} "
             f"GROUP BY model, provider "
             f"ORDER BY (inp + outp) DESC LIMIT 15"
@@ -1067,34 +1177,47 @@ def _fetch_data(time_range):
                 })
             requests_rows = rows_base
 
-    # Activity feed — try last 5 minutes first, fall back to last 20 requests
+    # Live activity summary: last 60 minutes in 5-minute buckets
     activity_60s = []
-    activity_window = "5 minutes"
+    activity_buckets = []
     try:
         c.execute(
-            "SELECT timestamp, provider, COALESCE(provider_type,'api') as ptype "
-            "FROM requests WHERE timestamp >= datetime('now', '-5 minutes') "
+            "SELECT timestamp, provider, model, COALESCE(provider_type,'api') as ptype "
+            "FROM requests WHERE timestamp >= datetime('now', '-60 minutes') "
             "ORDER BY timestamp ASC"
         )
         activity_60s = [dict(r) for r in c.fetchall()]
-        # If no activity in 5 min, grab the last 20 requests regardless of time
         if not activity_60s:
             c.execute(
-                "SELECT timestamp, provider, COALESCE(provider_type,'api') as ptype "
-                "FROM requests ORDER BY timestamp DESC LIMIT 20"
+                "SELECT timestamp, provider, model, COALESCE(provider_type,'api') as ptype "
+                "FROM requests ORDER BY timestamp DESC LIMIT 12"
             )
             activity_60s = list(reversed([dict(r) for r in c.fetchall()]))
-            activity_window = "recent"
     except Exception:
         try:
             c.execute(
-                "SELECT timestamp, provider, 'api' as ptype "
-                "FROM requests ORDER BY timestamp DESC LIMIT 20"
+                "SELECT timestamp, provider, model, 'api' as ptype "
+                "FROM requests ORDER BY timestamp DESC LIMIT 12"
             )
             activity_60s = list(reversed([dict(r) for r in c.fetchall()]))
-            activity_window = "recent"
         except Exception:
             pass
+
+    now_dt = datetime.now()
+    bucket_counts = [0] * 12
+    for item in activity_60s:
+        try:
+            ts = datetime.fromisoformat(
+                item.get("timestamp", "").replace("T", " ").replace("Z", "").split(".")[0]
+            )
+            age_mins = (now_dt - ts).total_seconds() / 60.0
+            if 0 <= age_mins <= 60:
+                idx = min(11, max(0, int((60 - age_mins - 0.0001) // 5)))
+                bucket_counts[idx] += 1
+        except Exception:
+            continue
+    activity_buckets = [{"count": count} for count in bucket_counts]
+    activity_last_request_at = activity_60s[-1]["timestamp"] if activity_60s else None
 
     # Trend data (previous period)
     trend = {"api_cost_prev": None, "sub_tokens_prev": None,
@@ -1200,7 +1323,7 @@ def _fetch_data(time_range):
         )
         tm_row = c.fetchone()
         if tm_row and tm_row["cnt"] > 0 and total_requests > 0:
-            insights_raw["top_model"] = tm_row["model"] or "unknown"
+            insights_raw["top_model"] = _display_model_name(tm_row["model"])
             insights_raw["top_model_pct"] = round(tm_row["cnt"] / total_requests * 100, 1)
 
         # Avg latency
@@ -1249,6 +1372,10 @@ def _fetch_data(time_range):
         "requests": requests_rows,
         "chart_days": days,
         "activity_60s": activity_60s,
+        "activity_buckets": activity_buckets,
+        "activity_requests_last_hour": sum(bucket_counts),
+        "activity_busiest_window": max(bucket_counts) if bucket_counts else 0,
+        "activity_last_request_at": activity_last_request_at,
         "trend": trend,
         "sparklines": sparklines,
         "heatmap": heatmap,
@@ -1568,21 +1695,36 @@ def _fetch_budget_forecasts(budgets):
 
 
 def _fetch_project_breakdown():
-    """Fetch per-project cost/request/token breakdown."""
+    """Fetch per-source breakdown with source_tag fallback normalization."""
     try:
         conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
         try:
             c.execute(
-                "SELECT COALESCE(source_tag,'unknown') as tag, "
+                "SELECT COALESCE(source_tag,'') as source_tag, provider, "
+                "COALESCE(provider_type,'api') as provider_type, COALESCE(model,'') as model, "
                 "COUNT(*) as cnt, "
                 "COALESCE(SUM(cost_usd),0) as cost, "
                 "COALESCE(SUM(input_tokens+output_tokens),0) as tokens "
                 "FROM requests "
-                "GROUP BY tag ORDER BY cost DESC"
+                "GROUP BY source_tag, provider, provider_type, model "
+                "ORDER BY cost DESC"
             )
-            rows = [dict(r) for r in c.fetchall()]
+            grouped = {}
+            for row in c.fetchall():
+                item = dict(row)
+                label = _normalize_source_label(
+                    item.get("source_tag"),
+                    item.get("provider"),
+                    item.get("provider_type"),
+                    item.get("model"),
+                )
+                bucket = grouped.setdefault(label, {"tag": label, "cnt": 0, "cost": 0.0, "tokens": 0})
+                bucket["cnt"] += item.get("cnt") or 0
+                bucket["cost"] += item.get("cost") or 0.0
+                bucket["tokens"] += item.get("tokens") or 0
+            rows = sorted(grouped.values(), key=lambda row: (row["cost"], row["cnt"]), reverse=True)
         except Exception:
             rows = []
         conn.close()
@@ -1592,7 +1734,7 @@ def _fetch_project_breakdown():
 
 
 def _fetch_forecast_data():
-    """Fetch cost projection / spending forecast data."""
+    """Fetch spend and usage forecasting for API and subscription/local traffic."""
     try:
         conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
@@ -1636,6 +1778,53 @@ def _fetch_forecast_data():
         )
         busiest_day_cost = c.fetchone()[0] or 0.0
 
+        c.execute(
+            "SELECT COUNT(*), "
+            "COALESCE(SUM(input_tokens + output_tokens), 0), "
+            "COUNT(DISTINCT date(timestamp)) "
+            "FROM requests "
+            "WHERE COALESCE(provider_type, 'api') != 'api' "
+            "AND timestamp >= datetime('now', 'start of month')"
+        )
+        usage_month_requests, usage_month_tokens, usage_active_days = c.fetchone()
+        usage_month_requests = usage_month_requests or 0
+        usage_month_tokens = usage_month_tokens or 0
+        usage_active_days = usage_active_days or 0
+
+        c.execute(
+            "SELECT COALESCE(AVG(daily_requests), 0), COALESCE(AVG(daily_tokens), 0) FROM ("
+            "  SELECT date(timestamp) as day, COUNT(*) as daily_requests, "
+            "  SUM(input_tokens + output_tokens) as daily_tokens "
+            "  FROM requests "
+            "  WHERE COALESCE(provider_type, 'api') != 'api' "
+            "  AND timestamp >= datetime('now', 'start of month') "
+            "  GROUP BY day"
+            ")"
+        )
+        usage_avg_day_requests, usage_avg_day_tokens = c.fetchone()
+        usage_avg_day_requests = usage_avg_day_requests or 0.0
+        usage_avg_day_tokens = usage_avg_day_tokens or 0.0
+
+        c.execute(
+            "SELECT COALESCE(MAX(daily_requests), 0), COALESCE(MAX(daily_tokens), 0) FROM ("
+            "  SELECT date(timestamp) as day, COUNT(*) as daily_requests, "
+            "  SUM(input_tokens + output_tokens) as daily_tokens "
+            "  FROM requests "
+            "  WHERE COALESCE(provider_type, 'api') != 'api' "
+            "  AND timestamp >= datetime('now', 'start of month') "
+            "  GROUP BY day"
+            ")"
+        )
+        usage_busiest_day_requests, usage_busiest_day_tokens = c.fetchone()
+        usage_busiest_day_requests = usage_busiest_day_requests or 0
+        usage_busiest_day_tokens = usage_busiest_day_tokens or 0
+
+        c.execute(
+            "SELECT COUNT(*) "
+            "FROM requests WHERE timestamp >= datetime('now', 'start of month')"
+        )
+        total_month_requests = c.fetchone()[0] or 0
+
         conn.close()
 
         # Calculate projections
@@ -1657,6 +1846,16 @@ def _fetch_forecast_data():
             "days_elapsed": days_elapsed,
             "days_remaining": days_remaining,
             "busiest_day_cost": busiest_day_cost,
+            "usage_month_requests": usage_month_requests,
+            "usage_month_tokens": usage_month_tokens,
+            "usage_active_days": usage_active_days,
+            "usage_avg_day_requests": usage_avg_day_requests,
+            "usage_avg_day_tokens": usage_avg_day_tokens,
+            "usage_busiest_day_requests": usage_busiest_day_requests,
+            "usage_busiest_day_tokens": usage_busiest_day_tokens,
+            "usage_projected_month_requests": int(round(usage_avg_day_requests * days_in_month)),
+            "usage_projected_month_tokens": int(round(usage_avg_day_tokens * days_in_month)),
+            "usage_share_pct": round((100.0 * usage_month_requests / total_month_requests), 1) if total_month_requests else 0.0,
         }
     except Exception:
         return {}
@@ -1669,10 +1868,15 @@ def _fallback_model_for(model_name):
     return DOWNGRADE_MAP.get(key)
 
 
-def _reliability_recommendation(kind, model_name, recent_latency, baseline_latency, recent_error_rate):
+def _reliability_recommendation(kind, model_name, recent_latency, baseline_latency, recent_error_rate, fallback_visible=False):
     fallback_model = _fallback_model_for(model_name)
     if kind == "latency_spike":
         if fallback_model:
+            if fallback_visible:
+                return (
+                    f"Fallback traffic is already visible. Confirm {fallback_model} actually takes over when {model_name} slows down, then keep critical work on the failover lane until latency settles.",
+                    fallback_model,
+                )
             return (
                 f"Route time-sensitive work to {fallback_model} until latency settles. "
                 f"Keep {model_name} for higher-value prompts only.",
@@ -1684,6 +1888,11 @@ def _reliability_recommendation(kind, model_name, recent_latency, baseline_laten
         )
 
     if fallback_model:
+        if fallback_visible:
+            return (
+                f"Fallback traffic is already visible next to {model_name}. Check that failover triggers early enough and that retries are not still hitting the unstable lane first.",
+                fallback_model,
+            )
         return (
             f"Retry traffic on {fallback_model} or your next-cheapest stable model while {model_name} is erroring. "
             f"This reduces wasted retries and protects interactive flows.",
@@ -1775,23 +1984,43 @@ def _fetch_reliability_data(time_range):
             "recent.recent_avg_latency, baseline.baseline_avg_latency, recent.recent_error_rate, baseline.baseline_error_rate, recent.recent_cost "
             "FROM recent JOIN baseline ON recent.provider = baseline.provider AND recent.model = baseline.model"
         )
+        anomaly_rows = [dict(r) for r in c.fetchall()]
+        c.execute(
+            "SELECT provider, model, COUNT(*) as cnt "
+            "FROM requests WHERE timestamp >= datetime('now', '-7 days') "
+            "GROUP BY provider, model"
+        )
+        recent_mix = {}
+        for mix_row in c.fetchall():
+            recent_mix[(mix_row["provider"], mix_row["model"])] = mix_row["cnt"] or 0
         anomalies = []
-        for r in c.fetchall():
+        for r in anomaly_rows:
             recent_latency = float(r["recent_avg_latency"] or 0.0)
             baseline_latency = float(r["baseline_avg_latency"] or 0.0)
             recent_error_rate = float(r["recent_error_rate"] or 0.0)
             baseline_error_rate = float(r["baseline_error_rate"] or 0.0)
             recent_cost = float(r["recent_cost"] or 0.0)
+            fallback_model = _fallback_model_for(r["model"])
+            family = _model_family(r["model"])
+            fallback_visible = False
+            if fallback_model and recent_mix.get((r["provider"], fallback_model), 0) > 0:
+                fallback_visible = True
+            elif family:
+                fallback_visible = any(
+                    provider != r["provider"] and _model_family(model) == family and count > 0
+                    for (provider, model), count in recent_mix.items()
+                )
             base = {
                 "provider": r["provider"],
                 "model": r["model"],
                 "recent_requests": r["recent_requests"] or 0,
                 "baseline_requests": r["baseline_requests"] or 0,
                 "recent_cost": recent_cost,
+                "fallback_visible": fallback_visible,
             }
             if baseline_latency > 0 and recent_latency > baseline_latency * 1.5 and (recent_latency - baseline_latency) >= 250:
                 recommendation, fallback_model = _reliability_recommendation(
-                    "latency_spike", r["model"], recent_latency, baseline_latency, recent_error_rate
+                    "latency_spike", r["model"], recent_latency, baseline_latency, recent_error_rate, fallback_visible=fallback_visible
                 )
                 anomalies.append({
                     **base,
@@ -1806,7 +2035,7 @@ def _fetch_reliability_data(time_range):
                 })
             if recent_error_rate >= 0.10 and recent_error_rate > baseline_error_rate + 0.05:
                 recommendation, fallback_model = _reliability_recommendation(
-                    "error_spike", r["model"], recent_latency, baseline_latency, recent_error_rate
+                    "error_spike", r["model"], recent_latency, baseline_latency, recent_error_rate, fallback_visible=fallback_visible
                 )
                 anomalies.append({
                     **base,
@@ -1872,6 +2101,7 @@ def _fetch_error_data(time_range):
             "SELECT model, provider, "
             "COUNT(*) as total, "
             "SUM(CASE WHEN error_message IS NOT NULL AND error_message != '' THEN 1 ELSE 0 END) as errors, "
+            "SUM(CASE WHEN COALESCE(error_message, '') = '' THEN 1 ELSE 0 END) as successes, "
             "ROUND(100.0 * SUM(CASE WHEN error_message IS NOT NULL AND error_message != '' THEN 1 ELSE 0 END) / COUNT(*), 1) as error_rate "
             "FROM requests "
             "WHERE timestamp >= datetime('now', '-7 days') "
@@ -1880,6 +2110,27 @@ def _fetch_error_data(time_range):
             "ORDER BY error_rate DESC"
         )
         error_by_model = [dict(r) for r in c.fetchall()]
+
+        c.execute(
+            "SELECT error_message, provider, model, COUNT(*) as cnt, COALESCE(SUM(cost_usd), 0) as wasted_cost "
+            "FROM requests "
+            "WHERE error_message IS NOT NULL AND error_message != '' "
+            f"{and_clause} "
+            "GROUP BY error_message, provider, model "
+            "ORDER BY cnt DESC, wasted_cost DESC "
+            "LIMIT 8"
+        )
+        error_classes = []
+        for row in c.fetchall():
+            item = dict(row)
+            item["status"] = _extract_http_status(item.get("error_message"))
+            item["plain_label"] = _plain_error_label(item.get("error_message"))
+            item["display_model"] = _display_model_name(
+                item.get("model"),
+                item.get("provider"),
+                item.get("error_message"),
+            )
+            error_classes.append(item)
 
         # Error timeline (errors per hour, last 24 hours)
         c.execute(
@@ -1916,6 +2167,7 @@ def _fetch_error_data(time_range):
             "error_by_model": error_by_model,
             "error_timeline": error_timeline,
             "recent_errors": recent_errors,
+            "error_classes": error_classes,
             "worst_model": worst_model,
             "worst_model_rate": worst_model_rate,
         }
@@ -1923,7 +2175,7 @@ def _fetch_error_data(time_range):
         return {
             "total_requests": 0, "total_errors": 0, "error_rate": 0.0,
             "wasted_cost": 0.0, "error_by_model": [], "error_timeline": [],
-            "recent_errors": [], "worst_model": None, "worst_model_rate": 0.0,
+            "recent_errors": [], "error_classes": [], "worst_model": None, "worst_model_rate": 0.0,
         }
 
 
@@ -1937,7 +2189,7 @@ def _fetch_optimizer_data():
         # Per-model avg token counts and costs (API only)
         try:
             c.execute(
-                "SELECT model, "
+                "SELECT model, provider, "
                 "AVG(input_tokens+output_tokens) as avg_tokens, "
                 "AVG(input_tokens) as avg_input, "
                 "AVG(output_tokens) as avg_output, "
@@ -1947,7 +2199,7 @@ def _fetch_optimizer_data():
                 "SUM(output_tokens) as sum_output "
                 "FROM requests "
                 "WHERE COALESCE(provider_type,'api')='api' "
-                "GROUP BY model"
+                "GROUP BY model, provider"
             )
             model_stats = [dict(r) for r in c.fetchall()]
         except Exception:
@@ -2074,11 +2326,12 @@ def _build_budget_section(budgets, all_budgets, alert_history):
             pct = min(b["percentage"], 100.0)
             pct_raw = b["percentage"]
             is_over = b["is_over"]
+            state_label, _ = _budget_state(pct_raw)
             if is_over:
                 bar_class = "budget-bar-fill budget-bar-over"
-            elif pct_raw >= 95:
+            elif pct_raw >= 90:
                 bar_class = "budget-bar-fill budget-bar-red"
-            elif pct_raw >= 80:
+            elif pct_raw >= 75:
                 bar_class = "budget-bar-fill budget-bar-orange"
             elif pct_raw >= 60:
                 bar_class = "budget-bar-fill budget-bar-yellow"
@@ -2104,7 +2357,12 @@ def _build_budget_section(budgets, all_budgets, alert_history):
                     f'{_escape_html(_format_budget_alert_time(b.get("last_alert_triggered_at")))}</div>'
                 )
 
-            status_copy = 'Already over threshold' if is_over else ('Close to the limit' if pct_raw >= 80 else 'Within budget')
+            status_copy = (
+                'Already over threshold' if is_over else
+                'Crossed the critical warning band' if pct_raw >= 90 else
+                'Approaching the budget limit' if pct_raw >= 75 else
+                'Comfortably within budget'
+            )
             alert_display = alert_state or f'<div class="budget-alert-state">{fmt_cost(max(threshold-current, 0.0))} remaining before the limit</div>'
             items.append(
                 f'<div class="budget-item">'
@@ -2126,7 +2384,7 @@ def _build_budget_section(budgets, all_budgets, alert_history):
                 f'<div class="{bar_class}" style="width:{pct:.1f}%"></div>'
                 f'</div>'
                 f'<div class="budget-supporting">'
-                f'<div class="budget-status-copy">{status_copy}</div>'
+                f'<div class="budget-status-copy">{state_label} · {status_copy}</div>'
                 f'{alert_display}'
                 f'</div>'
                 f'</div>'
@@ -2287,6 +2545,7 @@ def _build_optimizer_section(opt_data):
     # 1. Model downgrade opportunities
     for ms in opt_data.get("model_stats", []):
         model = (ms.get("model") or "").lower()
+        provider = ms.get("provider") or "unknown"
         avg_tokens = ms.get("avg_tokens") or 0
         cnt = ms.get("cnt") or 0
         sum_input = ms.get("sum_input") or 0
@@ -2332,12 +2591,12 @@ def _build_optimizer_section(opt_data):
             savings = max(0.0, current_estimated - cheaper_estimated)
 
         pct_under = 100
-        desc = (f"{cnt} requests to {_escape_html(model)} averaged {int(avg_tokens):,} tokens — "
-                f"under the 1K threshold. {_escape_html(downgrade)} handles simple tasks at a fraction of the cost.")
+        desc = (f"{cnt} small requests hit {_escape_html(model)} on {_escape_html(provider)} and averaged {int(avg_tokens):,} tokens. "
+                f"Test routing this lane to {_escape_html(downgrade)} first for lighter prompts.")
         savings_str = f"~{fmt_cost(savings)}" if savings > 0.001 else None
         recommendations.append({
             "icon": "💰",
-            "title": f"Downgrade {_escape_html(model)} → {_escape_html(downgrade)}",
+            "title": f"Shift {_escape_html(model)} to {_escape_html(downgrade)}",
             "desc": desc,
             "savings": savings,
             "savings_str": savings_str,
@@ -2358,12 +2617,11 @@ def _build_optimizer_section(opt_data):
             cheapest = prov_costs[0]
             most_exp = prov_costs[-1]
             if most_exp[1] > cheapest[1] * 1.5:
-                desc = (f"Cost per 1K tokens: {_escape_html(cheapest[0])} ${cheapest[1]:.4f} vs "
-                        f"{_escape_html(most_exp[0])} ${most_exp[1]:.4f}. "
-                        f"Consider {_escape_html(cheapest[0])} for cost-sensitive workloads.")
+                desc = (f"{_escape_html(most_exp[0])} is landing at ${most_exp[1]:.4f} per 1K tokens versus "
+                        f"${cheapest[1]:.4f} on {_escape_html(cheapest[0])}. Move cost-sensitive work to the cheaper provider where output quality is acceptable.")
                 recommendations.append({
                     "icon": "💰",
-                    "title": "Provider Efficiency Gap",
+                    "title": f"Provider gap: {_escape_html(most_exp[0])} vs {_escape_html(cheapest[0])}",
                     "desc": desc,
                     "savings": 0,
                     "savings_str": None,
@@ -2373,12 +2631,11 @@ def _build_optimizer_section(opt_data):
     failed_cnt = opt_data.get("failed_cnt", 0)
     failed_cost = opt_data.get("failed_cost", 0.0)
     if failed_cnt > 0 and failed_cost > 0.001:
-        desc = (f"{failed_cnt} failed request{'s' if failed_cnt != 1 else ''} cost "
-                f"{fmt_cost(failed_cost)} in wasted tokens this week. "
-                f"Review error patterns to reduce waste.")
+        desc = (f"{failed_cnt} paid requests failed this week and already burned {fmt_cost(failed_cost)}. "
+                "Review the dominant HTTP failure type and stop retrying the broken route blindly.")
         recommendations.append({
             "icon": "⚠️",
-            "title": "Wasted Spend on Errors",
+            "title": "Paid failures are wasting spend",
             "desc": desc,
             "savings": failed_cost,
             "savings_str": fmt_cost(failed_cost),
@@ -2388,12 +2645,11 @@ def _build_optimizer_section(opt_data):
     overprompt_cnt = opt_data.get("overprompt_cnt", 0)
     overprompt_cost = opt_data.get("overprompt_cost", 0.0)
     if overprompt_cnt >= 3:
-        desc = (f"{overprompt_cnt} requests sent large prompts (&gt;2K input tokens) "
-                f"but got tiny responses (&lt;50 output tokens). "
-                f"Consider trimming context windows.")
+        desc = (f"{overprompt_cnt} API requests sent more than 2K input tokens but returned under 50 output tokens. "
+                "Trim the prompt or cache repeated context before sending it to premium models.")
         recommendations.append({
             "icon": "⚠️",
-            "title": "Possible Over-Prompting",
+            "title": "Large prompts, tiny answers",
             "desc": desc,
             "savings": overprompt_cost,
             "savings_str": fmt_cost(overprompt_cost) if overprompt_cost > 0.001 else None,
@@ -2430,11 +2686,11 @@ def _build_optimizer_section(opt_data):
     local_cnt = opt_data.get("local_cnt", 0)
     small_api_cnt = opt_data.get("small_api_cnt", 0)
     if local_cnt == 0 and small_api_cnt >= 50:
-        desc = (f"You made {small_api_cnt:,} API requests under 500 tokens this month. "
-                f"A local 7B model (Ollama, LM Studio) could handle many of these for free.")
+        desc = (f"You made {small_api_cnt:,} short API requests under 500 tokens this month with no local traffic visible. "
+                "A small Ollama or LM Studio lane could absorb the simplest prompts for near-zero cost.")
         recommendations.append({
             "icon": "💡",
-            "title": "Local Model Opportunity",
+            "title": "Short prompts could move local",
             "desc": desc,
             "savings": 0,
             "savings_str": None,
@@ -2480,14 +2736,15 @@ def _build_optimizer_section(opt_data):
 
 
 def _build_project_section(projects):
-    """Build the By Project breakdown section."""
+    """Build the By Source breakdown section."""
     if not projects:
         return f"""<div class="project-section">
-  <div class="section-title">By Project</div>
+  <div class="section-title">By Source</div>
+  <div class="forecast-sub" style="margin-bottom:12px">Uses explicit source tags when available. Falls back to routing source when tags are missing.</div>
   {_render_empty_state(
       "No tagged requests yet",
-      "Project cards appear when requests include a detected or explicit source tag.",
-      "Action hint: TokenPulse can infer tags from User-Agent, or you can send the X-TokenPulse-Project header.",
+      "Source cards appear when requests include a detected source tag or a recognizable routing lane.",
+      "Action hint: send the X-TokenPulse-Project header for explicit grouping, otherwise TokenPulse falls back to provider/source detection.",
       '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M4 6h8l2 2h6v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>'
   )}
 </div>"""
@@ -2515,7 +2772,8 @@ def _build_project_section(projects):
 
     cards_html = "\n".join(cards)
     return f"""<div class="project-section loading-surface reveal reveal-delay-2">
-  <div class="section-title">By Project</div>
+  <div class="section-title">By Source</div>
+  <div class="forecast-sub" style="margin-bottom:12px">Uses explicit source tags when available. Falls back to routing source when tags are missing.</div>
   <div class="project-grid">
     {cards_html}
   </div>
@@ -2523,27 +2781,35 @@ def _build_project_section(projects):
 
 
 def _build_forecast_section(forecast, budgets, budget_forecasts):
-    """Build the spending forecast section."""
-    if not forecast or forecast.get("daily_avg", 0) == 0:
+    """Build spend forecast and usage forecast together when appropriate."""
+    if not forecast:
         return f"""<div class="forecast-section">
   <div class="section-title">Spending Forecast</div>
   {_render_empty_state(
       "Forecast waiting on more data",
-      "TokenPulse needs at least one day of paid API activity before it can project burn and runway with confidence.",
-      "Action hint: once spend starts landing, this section will estimate month-end cost and budget pressure.",
+      "TokenPulse needs recent paid or tracked usage before it can project what the rest of the month will look like.",
+      "Action hint: once tracked traffic lands, this section will estimate either spend or usage depending on the lane.",
       _pulse_mark_svg(28)
   )}
 </div>"""
 
-    daily_avg = forecast["daily_avg"]
+    daily_avg = forecast.get("daily_avg", 0)
     month_to_date = forecast["month_to_date"]
     projected_month = forecast["projected_month"]
     last_month_total = forecast["last_month_total"]
     days_in_month = forecast["days_in_month"]
     days_remaining = forecast["days_remaining"]
     busiest_day_cost = forecast["busiest_day_cost"]
+    usage_month_requests = forecast.get("usage_month_requests", 0)
+    usage_month_tokens = forecast.get("usage_month_tokens", 0)
+    usage_projected_month_requests = forecast.get("usage_projected_month_requests", 0)
+    usage_projected_month_tokens = forecast.get("usage_projected_month_tokens", 0)
+    usage_avg_day_requests = forecast.get("usage_avg_day_requests", 0)
+    usage_avg_day_tokens = forecast.get("usage_avg_day_tokens", 0)
+    usage_busiest_day_requests = forecast.get("usage_busiest_day_requests", 0)
+    usage_share_pct = forecast.get("usage_share_pct", 0.0)
 
-    if last_month_total > 0:
+    if daily_avg > 0 and last_month_total > 0:
         if projected_month > last_month_total:
             pct_diff = ((projected_month - last_month_total) / last_month_total) * 100
             trend_html = f'<span class="forecast-trend over">&#8593; {pct_diff:.0f}% vs last month ({fmt_cost(last_month_total)})</span>'
@@ -2587,9 +2853,12 @@ def _build_forecast_section(forecast, budgets, budget_forecasts):
         elif item.get("days_until_threshold") is not None and item.get("days_until_threshold") <= item.get("trailing_days", 7):
             note_class = "warn"
             note = f'At this pace, threshold hit in {item.get("days_until_threshold"):.1f} days.'
-        elif pct_used >= 80:
+        elif pct_used >= 90:
             note_class = "caution"
-            note = f'{pct_used:.0f}% used already. Watch expensive prompts and retries.'
+            note = f'{pct_used:.0f}% used already. This budget is in the critical zone.'
+        elif pct_used >= 75:
+            note_class = "caution"
+            note = f'{pct_used:.0f}% used already. This budget is approaching its limit.'
         budget_forecast_html += (
             f'<div class="forecast-budget-item">'
             f'<div class="forecast-budget-head">'
@@ -2609,29 +2878,66 @@ def _build_forecast_section(forecast, budgets, budget_forecasts):
     if budget_forecast_html:
         budget_forecast_html = f'<div class="forecast-card"><div class="forecast-label">Scoped Budget Burn</div><div class="forecast-budget-list">{budget_forecast_html}</div></div>'
 
-    busiest_month_cost = busiest_day_cost * days_in_month
+    cards = []
+    if daily_avg > 0:
+        busiest_month_cost = busiest_day_cost * days_in_month
+        cards.extend([
+            f"""<div class="forecast-card">
+      <div class="forecast-label">Projected API Spend This Month</div>
+      <div class="forecast-value clr-amber">{fmt_cost(projected_month)}</div>
+      <div class="forecast-sub">Based on your 7-day paid API average of {fmt_cost(daily_avg)}/day</div>
+      {trend_html}
+      {budget_html}
+    </div>""",
+            f"""<div class="forecast-card">
+      <div class="forecast-label">API Spend Month to Date</div>
+      <div class="forecast-value clr-green">{fmt_cost(month_to_date)}</div>
+      <div class="forecast-sub">{forecast['days_elapsed']} days elapsed &middot; {days_remaining} remaining</div>
+    </div>""",
+            f"""<div class="forecast-card">
+      <div class="forecast-label">Peak Paid Day Scenario</div>
+      <div class="forecast-value" style="color:#f87171">{fmt_cost(busiest_month_cost)}</div>
+      <div class="forecast-sub">If every paid API day matched your peak of {fmt_cost(busiest_day_cost)}</div>
+    </div>""",
+        ])
+    if usage_month_requests > 0 or usage_month_tokens > 0:
+        cards.extend([
+            f"""<div class="forecast-card">
+      <div class="forecast-label">Projected Usage This Month</div>
+      <div class="forecast-value clr-amber">{usage_projected_month_requests:,} reqs</div>
+      <div class="forecast-sub">{fmt_tokens(usage_projected_month_tokens)} projected on subscription/local lanes</div>
+      <span class="forecast-trend neutral">{usage_share_pct:.0f}% of this month's traffic is non-billable usage</span>
+    </div>""",
+            f"""<div class="forecast-card">
+      <div class="forecast-label">Usage Month to Date</div>
+      <div class="forecast-value clr-green">{usage_month_requests:,} reqs</div>
+      <div class="forecast-sub">{fmt_tokens(usage_month_tokens)} so far &middot; avg {usage_avg_day_requests:.1f} reqs/day</div>
+    </div>""",
+            f"""<div class="forecast-card">
+      <div class="forecast-label">Busiest Usage Day</div>
+      <div class="forecast-value" style="color:#58a6ff">{usage_busiest_day_requests:,} reqs</div>
+      <div class="forecast-sub">{fmt_tokens(forecast.get('usage_busiest_day_tokens', 0))} on your busiest subscription/local day</div>
+    </div>""",
+        ])
+    if not cards:
+        return f"""<div class="forecast-section">
+  <div class="section-title">Spending Forecast</div>
+  {_render_empty_state(
+      "Forecast waiting on more data",
+      "There is not enough paid or tracked usage in the current month to project month-end behavior yet.",
+      "Action hint: revisit after more requests land.",
+      _pulse_mark_svg(28)
+  )}
+</div>"""
+
+    if budget_forecast_html:
+        cards.append(budget_forecast_html)
 
     return f"""<div class="forecast-section loading-surface reveal reveal-delay-2">
   <div class="section-title">Spending Forecast</div>
+  <div class="forecast-sub" style="margin-bottom:12px">Shows API spend when dollars are meaningful and usage forecasting when most traffic is subscription or local.</div>
   <div class="forecast-grid">
-    <div class="forecast-card">
-      <div class="forecast-label">Projected This Month</div>
-      <div class="forecast-value clr-amber">{fmt_cost(projected_month)}</div>
-      <div class="forecast-sub">Based on your 7-day average of {fmt_cost(daily_avg)}/day</div>
-      {trend_html}
-      {budget_html}
-    </div>
-    <div class="forecast-card">
-      <div class="forecast-label">Month to Date</div>
-      <div class="forecast-value clr-green">{fmt_cost(month_to_date)}</div>
-      <div class="forecast-sub">{forecast['days_elapsed']} days elapsed &middot; {days_remaining} remaining</div>
-    </div>
-    <div class="forecast-card">
-      <div class="forecast-label">Busiest Day Scenario</div>
-      <div class="forecast-value" style="color:#f87171">{fmt_cost(busiest_month_cost)}</div>
-      <div class="forecast-sub">If every day cost {fmt_cost(busiest_day_cost)} (your peak)</div>
-    </div>
-    {budget_forecast_html}
+    {''.join(cards)}
   </div>
 </div>"""
 
@@ -2646,44 +2952,38 @@ def _build_attention_section(budgets, budget_forecasts, reliability_data, error_
         if item.get("is_over"):
             cards.append({
                 "severity": "high",
-                "title": f'{item.get("budget_name") or "Budget"} is over budget',
-                "body": (
-                    f'{_budget_scope_label(item.get("scope_kind"), item.get("scope_value"))} has already overshot by '
-                    f'{fmt_cost(abs(remaining_budget))}. Tighten prompts or move cheaper workloads before the next cycle.'
-                ),
-                "foot": f'Projected period spend: {fmt_cost(item.get("projected_period_spend", 0.0))}',
+                "title": f'Budget over limit: {item.get("budget_name") or "Budget"} at {pct_used:.0f}%',
+                "why": f'{_budget_scope_label(item.get("scope_kind"), item.get("scope_value"))} has already overshot by {fmt_cost(abs(remaining_budget))}.',
+                "next": "Trim retries or move cheaper work before the next billing cycle compounds the overage.",
             })
         elif item.get("days_until_threshold") is not None and item.get("days_until_threshold") <= 3:
             cards.append({
                 "severity": "high" if item.get("days_until_threshold") <= 1 else "medium",
-                "title": f'{item.get("budget_name") or "Budget"} will hit soon',
-                "body": (
-                    f'At the current burn of {fmt_cost(item.get("average_daily_spend", 0.0))}/day, '
-                    f'this budget is on pace to hit in {item.get("days_until_threshold"):.1f} days.'
-                ),
-                "foot": f'{pct_used:.0f}% used · {fmt_cost(max(remaining_budget, 0.0))} remaining',
+                "title": f'Budget threshold approaching: {item.get("budget_name") or "Budget"} at {pct_used:.0f}%',
+                "why": f'At {fmt_cost(item.get("average_daily_spend", 0.0))}/day, this budget is on pace to hit in {item.get("days_until_threshold"):.1f} days.',
+                "next": "Slow expensive prompts, reduce retries, or shift work to a cheaper lane now.",
             })
-        elif pct_used >= 80:
+        elif pct_used >= 90:
+            cards.append({
+                "severity": "high",
+                "title": f'Critical budget warning: {item.get("budget_name") or "Budget"} at {pct_used:.0f}%',
+                "why": f'Only {fmt_cost(max(remaining_budget, 0.0))} remains before this {item.get("period") or "monthly"} budget is exhausted.',
+                "next": "Treat this like a live warning and confirm the expensive lane is still intentional.",
+            })
+        elif pct_used >= 75:
             cards.append({
                 "severity": "medium",
-                "title": f'{item.get("budget_name") or "Budget"} is in the caution zone',
-                "body": (
-                    f'{pct_used:.0f}% of this {item.get("period") or "monthly"} budget is already used. '
-                    'Watch for unnecessary retries or expensive model drift.'
-                ),
-                "foot": f'{fmt_cost(max(remaining_budget, 0.0))} remaining',
+                "title": f'Budget approaching limit: {item.get("budget_name") or "Budget"} at {pct_used:.0f}%',
+                "why": f'This budget has crossed the early warning band with {fmt_cost(max(remaining_budget, 0.0))} left.',
+                "next": "Review high-cost prompts and failed retries before this becomes a critical warning.",
             })
 
     for item in (reliability_data or {}).get("anomalies", [])[:3]:
-        fallback = item.get("fallback_model")
-        foot = f'{fmt_cost(item.get("recent_cost", 0.0))} spend touched in last 24h'
-        if fallback:
-            foot += f' · Suggested fallback: {fallback}'
         cards.append({
             "severity": item.get("severity") or "medium",
-            "title": f'{item.get("model") or "Model"} needs a fallback plan',
-            "body": item.get("recommendation") or item.get("summary") or '',
-            "foot": foot,
+            "title": f'{item.get("recent_requests", 0)} unstable requests on {item.get("model") or "this model"}',
+            "why": item.get("summary") or '',
+            "next": item.get("recommendation") or 'Review failover behavior and route urgent work to the most stable lane.',
         })
 
     total_errors = (error_data or {}).get("total_errors", 0)
@@ -2692,12 +2992,9 @@ def _build_attention_section(budgets, budget_forecasts, reliability_data, error_
     if total_errors and error_rate >= 3.0:
         cards.append({
             "severity": "high" if error_rate >= 8.0 else "medium",
-            "title": 'Errors are burning paid requests',
-            "body": (
-                f'{total_errors} failed requests landed in this range, with {fmt_cost(wasted_cost)} already spent on failures. '
-                'If this is a live workflow, temporarily reduce retries and route critical tasks to the cleanest provider.'
-            ),
-            "foot": f'Current blended error rate: {error_rate:.1f}%',
+            "title": f'{total_errors:,} failed requests in this range',
+            "why": f'{total_errors:,} of {error_data.get("total_requests", 0):,} requests failed, with {fmt_cost(wasted_cost)} already spent on failures.',
+            "next": "Check Error Monitor for the dominant HTTP failure type and stop blind retries on that lane first.",
         })
 
     severity_rank = {"high": 0, "medium": 1, "low": 2}
@@ -2709,8 +3006,8 @@ def _build_attention_section(budgets, budget_forecasts, reliability_data, error_
     summary_html = (
         f'<div class="attention-summary">'
         f'<div class="attention-stat"><div class="attention-stat-label">Needs action</div><div class="attention-stat-value">{len(cards)}</div><div class="attention-stat-sub">{high_count} high priority · {medium_count} medium</div></div>'
-        f'<div class="attention-stat"><div class="attention-stat-label">Error rate</div><div class="attention-stat-value">{error_rate:.1f}%</div><div class="attention-stat-sub">{total_errors:,} failed requests in this range</div></div>'
-        f'<div class="attention-stat"><div class="attention-stat-label">Spend at risk</div><div class="attention-stat-value">{fmt_cost(covered_spend)}</div><div class="attention-stat-sub">Reliability anomalies and failed request waste</div></div>'
+        f'<div class="attention-stat"><div class="attention-stat-label">Failed Requests</div><div class="attention-stat-value">{total_errors:,}</div><div class="attention-stat-sub">{error_rate:.1f}% of requests failed in this range</div></div>'
+        f'<div class="attention-stat"><div class="attention-stat-label">Spend tied to failures / instability</div><div class="attention-stat-value">{fmt_cost(covered_spend)}</div><div class="attention-stat-sub">Paid traffic already burned on failed requests and unstable providers</div></div>'
         f'</div>'
     )
 
@@ -2739,8 +3036,8 @@ def _build_attention_section(budgets, budget_forecasts, reliability_data, error_
         f'<div class=\"attention-title\">{_escape_html(item.get("title") or "Attention")}</div>'
         f'<span class=\"attention-pill {item.get("severity", "medium")}\">{_escape_html(item.get("severity") or "medium")}</span>'
         f'</div>'
-        f'<div class=\"attention-body\">{_escape_html(item.get("body") or "")}</div>'
-        f'<div class=\"attention-foot\">{_escape_html(item.get("foot") or "")}</div>'
+        f'<div class=\"attention-body\"><strong>Why this matters:</strong> {_escape_html(item.get("why") or "")}</div>'
+        f'<div class=\"attention-foot\"><strong>What to do next:</strong> {_escape_html(item.get("next") or "")}</div>'
         f'</div>'
         for item in visible_cards
     )
@@ -2870,7 +3167,7 @@ def _build_context_audit_section(audit_data):
             '</div>'
         )
 
-    score_banner = f'<div class="attention-card {score_tone}" style="margin-bottom:14px"><div class="attention-head"><div class="attention-title">Context hygiene verdict</div><span class="attention-pill {score_tone}">{score_label}</span></div><div class="attention-body">This audit separates likely waste from cheaper-routing opportunities using the request data TokenPulse already tracks.</div><div class="attention-foot">Treat the spend estimate as heuristic. Use the grouped findings to decide what to trim, cache, reroute, or ignore.</div></div>'
+    score_banner = f'<div class="attention-card {score_tone}" style="margin-bottom:14px"><div class="attention-head"><div class="attention-title">Context hygiene verdict</div><span class="attention-pill {score_tone}">{score_label}</span></div><div class="attention-body">This audit uses the request traces TokenPulse already has. It separates likely waste from cheaper-routing opportunities rather than pretending to know prompt quality with certainty.</div><div class="attention-foot">Treat the spend estimate as heuristic, not an invoice. Use the grouped findings to decide what to trim, cache, reroute, or ignore.</div></div>'
 
     return f"""<div class="reliability-section">
   <div class="section-title">Context Audit</div>
@@ -2920,10 +3217,11 @@ def _build_reliability_section(reliability_data):
 
     provider_items = []
     for item in providers:
+        display_model = _display_model_name(item.get("model"), item.get("provider"), success_count=max((item.get("total_requests", 0) or 0) - (item.get("failed_requests", 0) or 0), 0))
         provider_items.append(
             f'<div class="reliability-item">'
             f'<div class="reliability-item-header">'
-            f'<div class="reliability-item-name" title="{_escape_html(item.get("model") or "unknown")}">{_escape_html(item.get("model") or "unknown")}</div>'
+            f'<div class="reliability-item-name" title="{_escape_html(display_model)}">{_escape_html(display_model)}</div>'
             f'{provider_badge_html(item.get("provider") or "unknown")}'
             f'</div>'
             f'<div class="reliability-item-stats">'
@@ -2957,7 +3255,7 @@ def _build_reliability_section(reliability_data):
         anomaly_items.append(
             f'<div class="anomaly-item">'
             f'<div class="anomaly-header">'
-            f'<div class="anomaly-title">{_escape_html(item.get("model") or "unknown")}</div>'
+            f'<div class="anomaly-title">{_escape_html(_display_model_name(item.get("model"), item.get("provider")))}</div>'
             f'<span class="severity-badge {severity}">{severity}</span>'
             f'</div>'
             f'<div class="anomaly-meta">'
@@ -2999,6 +3297,7 @@ def _build_error_section(error_data, time_range):
     error_by_model = error_data.get("error_by_model", [])
     error_timeline = error_data.get("error_timeline", [])
     recent_errors = error_data.get("recent_errors", [])
+    error_classes = error_data.get("error_classes", [])
 
     range_label = RANGE_LABELS.get(time_range, "today").lower()
 
@@ -3028,10 +3327,12 @@ def _build_error_section(error_data, time_range):
   {summary_bar}
 </div>"""
 
-    # Error rate by model
+    # Failed requests by model
     model_items = ""
     for m in error_by_model[:8]:
-        model_name = _escape_html(m.get("model", "unknown"))
+        if _is_unknownish(m.get("model")) and (m.get("successes") or 0) == 0:
+            continue
+        model_name = _escape_html(_display_model_name(m.get("model"), m.get("provider"), success_count=m.get("successes")))
         provider = m.get("provider", "unknown")
         total = m.get("total", 0)
         errors = m.get("errors", 0)
@@ -3064,8 +3365,27 @@ def _build_error_section(error_data, time_range):
     model_section = ""
     if model_items:
         model_section = f"""<div style="margin-bottom:14px">
-  <div style="font-size:12px;font-weight:600;color:#f0f6fc;margin-bottom:8px">Error Rate by Model (7 days)</div>
+  <div style="font-size:12px;font-weight:600;color:#f0f6fc;margin-bottom:8px">Failed Requests by Model (7 days)</div>
   <div class="error-models">{model_items}</div>
+</div>"""
+
+    class_items = ""
+    for item in error_classes[:6]:
+        status = item.get("status")
+        plain_label = item.get("plain_label")
+        affected = item.get("display_model")
+        class_items += (
+            f'<div class="error-model-item">'
+            f'<div class="error-model-left"><span class="error-model-name">{_escape_html(f"HTTP {status}" if status else "Provider error")}</span></div>'
+            f'<div class="error-model-stats"><span>{item.get("cnt", 0):,} hits</span><span>{fmt_cost(item.get("wasted_cost", 0.0))} wasted</span></div>'
+            f'</div>'
+            f'<div class="forecast-sub" style="margin:4px 0 10px 0">{_escape_html(plain_label)} Most affected: {_escape_html(affected)}</div>'
+        )
+    class_section = ""
+    if class_items:
+        class_section = f"""<div style="margin-bottom:14px">
+  <div style="font-size:12px;font-weight:600;color:#f0f6fc;margin-bottom:8px">Plain-language Error Types</div>
+  <div class="error-models">{class_items}</div>
 </div>"""
 
     # Error timeline (last 24 hours bar chart)
@@ -3104,12 +3424,13 @@ def _build_error_section(error_data, time_range):
         items_html = ""
         for idx, err in enumerate(recent_errors):
             ts = relative_time(err.get("timestamp", ""))
-            model = _escape_html(err.get("model", "unknown"))
+            model = _escape_html(_display_model_name(err.get("model"), err.get("provider"), err.get("error_message")))
             provider = err.get("provider", "unknown")
             msg = err.get("error_message", "")
             cost = err.get("cost_usd", 0)
             short_msg = _escape_html(msg[:100]) + ("..." if len(msg) > 100 else "")
             full_msg = _escape_html(msg)
+            explainer = _escape_html(_plain_error_label(msg))
             cost_html = f'<span class="error-recent-cost">{fmt_cost(cost)} wasted</span>' if cost > 0 else ""
 
             items_html += (
@@ -3123,6 +3444,7 @@ def _build_error_section(error_data, time_range):
                 f'{cost_html}'
                 f'</div>'
                 f'<div class="error-recent-msg">{short_msg}</div>'
+                f'<div class="forecast-sub" style="margin-top:6px">{explainer}</div>'
                 f'<div class="error-recent-full">{full_msg}</div>'
                 f'</div>'
             )
@@ -3135,6 +3457,7 @@ def _build_error_section(error_data, time_range):
     return f"""<div class="error-section">
   <div class="section-title" style="margin-bottom:14px">Error Monitor</div>
   {summary_bar}
+  {class_section}
   {model_section}
   {timeline_section}
   {recent_section}
@@ -3430,7 +3753,7 @@ def _build_model_breakdown(data):
             '<div class="chart-empty">'
             + _render_empty_state(
                 "No model activity yet",
-                "Model usage cards appear once TokenPulse sees at least one tracked request in this range.",
+                "Model usage cards appear once TokenPulse sees identifiable successful model traffic in this range.",
                 "Action hint: send a request through the proxy to populate provider and model breakdowns.",
                 _pulse_mark_svg(28),
             )
@@ -3443,7 +3766,15 @@ def _build_model_breakdown(data):
 
     items = []
     for m in models:
-        model_name = m["model"] or "unknown"
+        success_cnt = m.get("success_cnt", 0) or 0
+        if _is_unknownish(m.get("model")) and success_cnt == 0:
+            continue
+        model_name = _display_model_name(
+            m.get("model"),
+            m.get("provider"),
+            m.get("sample_error"),
+            success_count=success_cnt,
+        )
         prov = m["provider"] or "unknown"
         ptype = m.get("ptype", "api")
         tok = m["inp"] + m["outp"]
@@ -3476,6 +3807,18 @@ def _build_model_breakdown(data):
             f'<div class="usage-bar-fill" style="width:{bar_w}%;background:{bar_color};color:{bar_color}"></div>'
             f"</div>"
             f"</div>"
+        )
+
+    if not items:
+        return (
+            '<div class="chart-empty">'
+            + _render_empty_state(
+                "No identifiable model traffic yet",
+                "Tracked requests exist, but the current range is dominated by failures without reliable model metadata.",
+                "Action hint: check Error Monitor for unidentified failed requests.",
+                _pulse_mark_svg(28),
+            )
+            + '</div>'
         )
 
     return '<div class="model-list">' + "\n".join(items) + "</div>"
@@ -3602,7 +3945,7 @@ def _build_insights(data, forecast=None, error_data=None, reliability_data=None)
 
         worst = error_data.get("worst_model")
         worst_rate = error_data.get("worst_model_rate", 0)
-        if worst and worst_rate > 2:
+        if worst and worst_rate > 2 and not _is_unknownish(worst):
             cards.append(
                 ('<span class="insight-emoji">&#128308;</span>',
                  "Model Alert",
@@ -3775,6 +4118,55 @@ def _build_requests_table(data, time_range="today", page=1):
         + load_more_html
         + "</div>"
     )
+
+
+def _build_activity_section(data):
+    buckets = data.get("activity_buckets") or []
+    recent_requests = data.get("activity_requests_last_hour", 0)
+    busiest_window = data.get("activity_busiest_window", 0)
+    last_request_at = data.get("activity_last_request_at")
+
+    if not buckets:
+        return f"""<div class="activity-section loading-surface reveal reveal-delay-1">
+  <div class="activity-label">Live Activity</div>
+  {_render_empty_state(
+      "No recent requests",
+      "This panel summarizes request volume over the last hour once traffic starts flowing.",
+      "Action hint: send a request through the proxy or expand the date range for historical detail.",
+      _pulse_mark_svg(28)
+  )}
+</div>"""
+
+    max_count = max((item.get("count", 0) for item in buckets), default=1) or 1
+    bars_html = "".join(
+        f'<div class="error-bar{" error-bar-empty" if (item.get("count", 0) == 0) else ""}" '
+        f'style="height:{max(6, int(((item.get("count", 0) or 0) / max_count) * 100)) if item.get("count", 0) else 6}%;" '
+        f'title="{item.get("count", 0)} requests in this 5-minute window"></div>'
+        for item in buckets
+    )
+    last_seen = fmt_timestamp_full(last_request_at) if last_request_at else "No recent request"
+
+    return f"""<div class="activity-section loading-surface reveal reveal-delay-1">
+  <div class="activity-label">Live Activity</div>
+  <div class="reliability-summary" style="margin-bottom:10px">
+    <div class="reliability-card">
+      <div class="reliability-label">Requests last 60 min</div>
+      <div class="reliability-value">{recent_requests:,}</div>
+    </div>
+    <div class="reliability-card">
+      <div class="reliability-label">Busiest 5 min window</div>
+      <div class="reliability-value">{busiest_window:,}</div>
+    </div>
+    <div class="reliability-card">
+      <div class="reliability-label">Last request seen</div>
+      <div class="reliability-sub" style="color:#f0f6fc">{_escape_html(last_seen)}</div>
+    </div>
+  </div>
+  <div class="error-timeline-wrap">
+    <div class="error-timeline-label">5-minute request volume over the last hour</div>
+    <div class="error-timeline-chart">{bars_html}</div>
+  </div>
+</div>"""
 
 
 # ---------------------------------------------------------------------------
@@ -4388,16 +4780,8 @@ def build_page(time_range, page=1):
 
     data["time_range"] = time_range
 
-    # Activity feed section
-    activity_60s = data.get("activity_60s", [])
-    recent_count = len(activity_60s)
     last_request_at = fmt_timestamp_full(data["requests"][0]["timestamp"]) if data.get("requests") else "—"
-
-    activity_section = f"""<div class="activity-section loading-surface reveal reveal-delay-1">
-  <div class="activity-label">Live Activity</div>
-  <div class="activity-timeline" id="activityTimeline"></div>
-  <div class="activity-count" id="activityCount"></div>
-</div>"""
+    activity_section = _build_activity_section(data)
 
     stats_html = _build_stats_cards(data)
     spend_chart = _build_svg_spend_chart(data)

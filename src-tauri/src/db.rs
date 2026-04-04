@@ -1,5 +1,6 @@
 use rusqlite::{params, Connection, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RequestRecord {
@@ -151,13 +152,41 @@ fn fallback_model_for(model: &str) -> Option<&'static str> {
     }
 }
 
-fn reliability_recommendation(kind: &str, model: &str) -> (String, Option<String>) {
+fn model_family(model: &str) -> String {
+    let lower = model.trim().to_lowercase();
+    for prefix in ["claude", "gpt", "gemini", "llama", "mistral"] {
+        if lower.starts_with(prefix) {
+            return prefix.to_string();
+        }
+    }
+    lower.split('-').next().unwrap_or("").to_string()
+}
+
+fn reliability_recommendation(
+    kind: &str,
+    model: &str,
+    fallback_visible: bool,
+) -> (String, Option<String>) {
     if let Some(fallback) = fallback_model_for(model) {
         return match kind {
+            "latency_spike" if fallback_visible => (
+                format!(
+                    "Fallback traffic is already visible. Confirm {} actually takes over when {} slows down, then keep critical work on the failover lane until latency settles.",
+                    fallback, model
+                ),
+                Some(fallback.to_string()),
+            ),
             "latency_spike" => (
                 format!(
                     "Route time-sensitive work to {} until latency settles. Keep {} for higher-value prompts only.",
                     fallback, model
+                ),
+                Some(fallback.to_string()),
+            ),
+            _ if fallback_visible => (
+                format!(
+                    "Fallback traffic is already visible next to {}. Check that failover triggers early enough and that retries are not still hitting the unstable lane first.",
+                    model
                 ),
                 Some(fallback.to_string()),
             ),
@@ -925,10 +954,10 @@ fn budget_time_expr(period: &str) -> &str {
 fn budget_warning_tier(percentage: f64) -> Option<(i64, &'static str)> {
     if percentage >= 100.0 {
         Some((100, "over_budget"))
-    } else if percentage >= 95.0 {
-        Some((95, "critical"))
-    } else if percentage >= 80.0 {
-        Some((80, "warning"))
+    } else if percentage >= 90.0 {
+        Some((90, "critical"))
+    } else if percentage >= 75.0 {
+        Some((75, "warning"))
     } else {
         None
     }
@@ -1362,7 +1391,7 @@ pub fn sync_budget_notifications(conn: &Connection) -> Result<Vec<NotificationEv
             active_keys.push(dedupe_key.clone());
             let severity = if tier_pct >= 100 {
                 "critical"
-            } else if tier_pct >= 95 {
+            } else if tier_pct >= 90 {
                 "high"
             } else {
                 "medium"
@@ -1370,7 +1399,7 @@ pub fn sync_budget_notifications(conn: &Connection) -> Result<Vec<NotificationEv
             let title = if tier_pct >= 100 {
                 format!("Budget exceeded: {}", budget.name)
             } else {
-                format!("Budget {}% used: {}", tier_pct, budget.name)
+                format!("Budget warning at {}%: {}", tier_pct, budget.name)
             };
             let body = format!(
                 "{} is at ${:.2} of ${:.2} ({:.0}%) for this {} budget.",
@@ -1981,6 +2010,25 @@ pub fn get_reliability_snapshot(
         ))
     })?;
 
+    let mut mix_stmt = conn.prepare(
+        "SELECT provider, model, COUNT(*) as cnt
+         FROM requests
+         WHERE timestamp >= datetime('now', '-7 days')
+         GROUP BY provider, model",
+    )?;
+    let mix_rows = mix_stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, i64>(2)?,
+        ))
+    })?;
+    let mut recent_mix: HashMap<(String, String), i64> = HashMap::new();
+    for row in mix_rows {
+        let (provider, model, count) = row?;
+        recent_mix.insert((provider, model), count);
+    }
+
     let mut anomalies = Vec::new();
     for row in anomaly_rows {
         let (
@@ -1994,6 +2042,18 @@ pub fn get_reliability_snapshot(
             baseline_error_rate,
             recent_cost,
         ) = row?;
+        let fallback_visible = if let Some(fallback) = fallback_model_for(&model) {
+            recent_mix
+                .get(&(provider.clone(), fallback.to_string()))
+                .copied()
+                .unwrap_or(0)
+                > 0
+        } else {
+            let family = model_family(&model);
+            recent_mix.iter().any(|((other_provider, other_model), count)| {
+                *count > 0 && *other_provider != provider && model_family(other_model) == family
+            })
+        };
 
         if baseline_latency > 0.0
             && recent_latency > baseline_latency * 1.5
@@ -2005,7 +2065,7 @@ pub fn get_reliability_snapshot(
                 "medium"
             };
             let (recommendation, fallback_model) =
-                reliability_recommendation("latency_spike", &model);
+                reliability_recommendation("latency_spike", &model, fallback_visible);
             anomalies.push(ReliabilityAnomaly {
                 kind: "latency_spike".to_string(),
                 provider: provider.clone(),
@@ -2033,7 +2093,7 @@ pub fn get_reliability_snapshot(
                 "medium"
             };
             let (recommendation, fallback_model) =
-                reliability_recommendation("error_spike", &model);
+                reliability_recommendation("error_spike", &model, fallback_visible);
             anomalies.push(ReliabilityAnomaly {
                 kind: "error_spike".to_string(),
                 provider: provider.clone(),

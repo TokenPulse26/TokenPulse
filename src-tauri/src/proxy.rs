@@ -139,27 +139,67 @@ fn detect_provider(headers: &HeaderMap, path: &str) -> ProviderInfo {
 }
 
 fn extract_model(body: &Value, provider: &str, path: &str) -> String {
+    fn candidate_from_path(path: &str) -> Option<String> {
+        if let Some(idx) = path.find("/models/") {
+            let after = &path[idx + "/models/".len()..];
+            let model_name = after
+                .split([':', '/', '?'])
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if !model_name.is_empty() {
+                return Some(model_name);
+            }
+        }
+        if let Some(idx) = path.find("/engines/") {
+            let after = &path[idx + "/engines/".len()..];
+            let model_name = after
+                .split(['/', '?'])
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if !model_name.is_empty() {
+                return Some(model_name);
+            }
+        }
+        None
+    }
+
+    fn candidate_from_body(body: &Value) -> Option<String> {
+        let candidates = [
+            body.get("model").and_then(|v| v.as_str()),
+            body.get("model_name").and_then(|v| v.as_str()),
+            body.get("deployment").and_then(|v| v.as_str()),
+            body.get("engine").and_then(|v| v.as_str()),
+            body.get("metadata")
+                .and_then(|v| v.get("model"))
+                .and_then(|v| v.as_str()),
+        ];
+        candidates
+            .into_iter()
+            .flatten()
+            .map(str::trim)
+            .find(|value| !value.is_empty())
+            .map(str::to_string)
+    }
+
     match provider {
         "google" => {
             // Try body first
-            if let Some(m) = body.get("model").and_then(|v| v.as_str()) {
+            if let Some(m) = candidate_from_body(body) {
                 return m.to_string();
             }
             // Google puts model in URL: /v1beta/models/gemini-1.5-pro:generateContent
-            if let Some(idx) = path.find("/models/") {
-                let after = &path[idx + "/models/".len()..];
-                let model_name = after.split(':').next().unwrap_or("").to_string();
-                if !model_name.is_empty() {
-                    return model_name;
-                }
+            if let Some(model_name) = candidate_from_path(path) {
+                return model_name;
             }
             "gemini-unknown".to_string()
         }
-        _ => body
-            .get("model")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown")
-            .to_string(),
+        _ => candidate_from_body(body)
+            .or_else(|| candidate_from_path(path))
+            .unwrap_or_else(|| "unknown".to_string()),
     }
 }
 
@@ -371,7 +411,7 @@ fn detect_source_tag(headers: &HeaderMap) -> String {
         }
     }
 
-    "unknown".to_string()
+    "".to_string()
 }
 
 async fn proxy_handler(
