@@ -510,10 +510,33 @@ td{padding:13px 16px;font-size:12px;border-top:1px solid rgba(42,45,58,.5);white
 .anomaly-recommendation{margin-top:10px;padding:10px 12px;border-radius:8px;background:rgba(88,166,255,.08);border:1px solid rgba(88,166,255,.16);font-size:11px;color:#c9d1d9;line-height:1.55}
 .anomaly-recommendation strong{color:#f0f6fc}
 .severity-badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px}
+.severity-badge.low{background:rgba(88,166,255,.10);color:#8cc2ff}
 .severity-badge.medium{background:rgba(234,179,8,.12);color:#eab308}
 .severity-badge.high{background:rgba(248,81,73,.15);color:#f85149}
 .reliability-empty{color:#6e7681;font-size:13px;padding:12px 0}
 @media(max-width:900px){.reliability-grid{grid-template-columns:1fr}}
+.context-audit-group{margin-top:16px}
+.context-audit-group-title{font-size:13px;font-weight:700;color:#f0f6fc;margin-bottom:10px}
+.context-audit-group-copy{font-size:11px;color:#8b949e;margin-bottom:10px}
+.context-audit-list{display:flex;flex-direction:column;gap:8px}
+.context-audit-card{background:#161922;border:1px solid #2a2d3a;border-radius:10px;padding:14px}
+.context-audit-card.waste{border-left:4px solid rgba(248,81,73,.55)}
+.context-audit-card.opportunity{border-left:4px solid rgba(88,166,255,.6)}
+.context-audit-header{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:8px}
+.context-audit-title{font-size:13px;font-weight:600;color:#f0f6fc}
+.context-audit-badges{display:flex;flex-wrap:wrap;gap:6px}
+.context-audit-badge{display:inline-flex;align-items:center;padding:3px 8px;border-radius:999px;font-size:10px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;border:1px solid transparent}
+.context-audit-badge.category-waste{background:rgba(248,81,73,.12);color:#f87171;border-color:rgba(248,81,73,.22)}
+.context-audit-badge.category-opportunity{background:rgba(88,166,255,.10);color:#8cc2ff;border-color:rgba(88,166,255,.18)}
+.context-audit-badge.confidence-high{background:rgba(34,197,94,.16);color:#7ee787;border-color:rgba(34,197,94,.28)}
+.context-audit-badge.confidence-medium{background:rgba(245,158,11,.10);color:#fbbf24;border-color:rgba(245,158,11,.18)}
+.context-audit-badge.confidence-low{background:rgba(148,160,180,.10);color:#b9c4d6;border-color:rgba(148,160,180,.16)}
+.context-audit-badge.impact-direct{background:rgba(248,81,73,.10);color:#ff938d;border-color:rgba(248,81,73,.18)}
+.context-audit-badge.impact-partial{background:rgba(245,158,11,.10);color:#fbbf24;border-color:rgba(245,158,11,.18)}
+.context-audit-badge.impact-heuristic{background:rgba(167,139,250,.10);color:#c4b5fd;border-color:rgba(167,139,250,.18)}
+.context-audit-meta{display:flex;flex-wrap:wrap;gap:10px;font-size:11px;color:#8b949e}
+.context-audit-most-affected{margin-top:8px;font-size:11px;color:#c9d1d9}
+.context-audit-filter{margin-top:8px;font-size:11px;color:#8b949e;line-height:1.5}
 .attention-section{background:#1a1d27;border:1px solid #2a2d3a;border-radius:14px;padding:22px 24px;margin-bottom:20px}
 .attention-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:14px;margin-top:14px}
 .attention-card{background:#161922;border:1px solid #2a2d3a;border-radius:12px;padding:16px 18px}
@@ -2743,9 +2766,12 @@ def _build_context_audit_section(audit_data):
     score = int(audit_data.get("score", 100) or 100)
     estimated_savings = float(audit_data.get("estimated_savings_usd", 0.0) or 0.0)
     findings = audit_data.get("findings") or []
+    high_confidence_count = int(audit_data.get("high_confidence_count", 0) or 0)
+    waste_findings_count = int(audit_data.get("waste_findings_count", 0) or 0)
+    opportunity_findings_count = int(audit_data.get("opportunity_findings_count", 0) or 0)
 
-    score_tone = "good" if score >= 80 else "warn" if score >= 55 else "bad"
-    score_label = "Clean" if score >= 80 else "Needs work" if score >= 55 else "Wasteful"
+    score_tone = "low" if score >= 80 else "medium" if score >= 55 else "high"
+    score_label = "Clean" if score >= 80 else "Needs work" if score >= 55 else "High attention"
 
     summary_html = f"""<div class="reliability-summary">
   <div class="reliability-card">
@@ -2754,14 +2780,19 @@ def _build_context_audit_section(audit_data):
     <div class="reliability-sub">{score_label} context hygiene</div>
   </div>
   <div class="reliability-card">
-    <div class="reliability-label">Estimated Savings</div>
+    <div class="reliability-label">Likely Recoverable Spend</div>
     <div class="reliability-value">{fmt_cost(estimated_savings)}</div>
-    <div class="reliability-sub">Heuristic recoverable waste in this range</div>
+    <div class="reliability-sub">Heuristic estimate in this range</div>
   </div>
   <div class="reliability-card">
-    <div class="reliability-label">Findings</div>
+    <div class="reliability-label">Audit Findings</div>
     <div class="reliability-value">{len(findings)}</div>
-    <div class="reliability-sub">Top waste patterns detected</div>
+    <div class="reliability-sub">{waste_findings_count} waste signals, {opportunity_findings_count} opportunities</div>
+  </div>
+  <div class="reliability-card">
+    <div class="reliability-label">High-confidence findings</div>
+    <div class="reliability-value">{high_confidence_count}</div>
+    <div class="reliability-sub">Signals with the strongest heuristic backing</div>
   </div>
 </div>"""
 
@@ -2772,37 +2803,80 @@ def _build_context_audit_section(audit_data):
   {_render_empty_state(
       "No obvious context waste",
       "This range looks pretty clean based on current heuristics.",
-      "Action hint: revisit after bigger prompt changes, routing changes, or a week of heavier usage.",
+      "Action hint: this audit uses heuristic patterns and gets sharper as TokenPulse sees more tracked traffic.",
       _pulse_mark_svg(28)
   )}
 </div>"""
 
-    items = []
-    for item in findings[:6]:
+    def _render_finding(item):
         severity = item.get("severity") or "medium"
+        confidence = item.get("confidence") or "low"
+        category = item.get("category") or "opportunity"
+        impact_label = item.get("impact_label") or "heuristic"
         meta_bits = [f'{item.get("requests", 0)} request(s)']
         impact = float(item.get("estimated_cost_impact_usd", 0.0) or 0.0)
         if impact > 0:
-            meta_bits.append(f'{fmt_cost(impact)} impact')
-        items.append(
-            f'<div class="anomaly-item">'
-            f'<div class="anomaly-header">'
-            f'<div class="anomaly-title">{_escape_html(item.get("title") or "Finding")}</div>'
+            meta_bits.append(f'{fmt_cost(impact)} likely impact')
+        model = item.get("top_model")
+        provider = item.get("top_provider")
+        most_affected = ""
+        if model or provider:
+            model_text = _escape_html(model or "unknown model")
+            provider_text = _escape_html(provider or "unknown provider")
+            most_affected = f'<div class="context-audit-most-affected">Most affected: {model_text} via {provider_text}</div>'
+        filter_hint = item.get("filter_hint")
+        filter_html = (
+            f'<div class="context-audit-filter"><strong>Filter hint:</strong> {_escape_html(filter_hint)}</div>'
+            if filter_hint
+            else ""
+        )
+        return (
+            f'<div class="context-audit-card {category}">'
+            f'<div class="context-audit-header">'
+            f'<div class="context-audit-title">{_escape_html(item.get("title") or "Finding")}</div>'
+            f'<div class="context-audit-badges">'
+            f'<span class="context-audit-badge category-{category}">{_escape_html(category)}</span>'
             f'<span class="severity-badge {severity}">{_escape_html(severity)}</span>'
+            f'<span class="context-audit-badge confidence-{confidence}">{_escape_html(confidence)} confidence</span>'
+            f'<span class="context-audit-badge impact-{impact_label}">{_escape_html(impact_label)}</span>'
             f'</div>'
-            f'<div class="anomaly-meta"><span>{_escape_html(" · ".join(meta_bits))}</span></div>'
+            f'</div>'
+            f'<div class="context-audit-meta"><span>{_escape_html(" · ".join(meta_bits))}</span></div>'
+            f'{most_affected}'
             f'<div class="reliability-sub" style="margin-top:8px">{_escape_html(item.get("summary") or "")}</div>'
             f'<div class="anomaly-recommendation"><strong>Recommendation:</strong> {_escape_html(item.get("recommendation") or "")}</div>'
+            f'{filter_html}'
             f'</div>'
         )
 
-    score_banner = f'<div class="attention-card {score_tone}" style="margin-bottom:14px"><div class="attention-head"><div class="attention-title">Context hygiene verdict</div><span class="attention-pill {score_tone}">{score_label}</span></div><div class="attention-body">This panel flags likely prompt waste, model misuse, and cache misses using the request data TokenPulse already tracks.</div><div class="attention-foot">Use it to decide what to preprocess, what to reroute, and what to trim.</div></div>'
+    waste_items = [item for item in findings if (item.get("category") or "") == "waste"]
+    opportunity_items = [item for item in findings if (item.get("category") or "") == "opportunity"]
+
+    groups_html = []
+    if waste_items:
+        groups_html.append(
+            '<div class="context-audit-group">'
+            '<div class="context-audit-group-title">Waste Signals</div>'
+            '<div class="context-audit-group-copy">Traffic that likely burned spend without much value.</div>'
+            f'<div class="context-audit-list">{"".join(_render_finding(item) for item in waste_items[:6])}</div>'
+            '</div>'
+        )
+    if opportunity_items:
+        groups_html.append(
+            '<div class="context-audit-group">'
+            '<div class="context-audit-group-title">Optimization Opportunities</div>'
+            '<div class="context-audit-group-copy">Patterns that may be valid work, but look like candidates for cheaper routing or cleaner preparation.</div>'
+            f'<div class="context-audit-list">{"".join(_render_finding(item) for item in opportunity_items[:6])}</div>'
+            '</div>'
+        )
+
+    score_banner = f'<div class="attention-card {score_tone}" style="margin-bottom:14px"><div class="attention-head"><div class="attention-title">Context hygiene verdict</div><span class="attention-pill {score_tone}">{score_label}</span></div><div class="attention-body">This audit separates likely waste from cheaper-routing opportunities using the request data TokenPulse already tracks.</div><div class="attention-foot">Treat the spend estimate as heuristic. Use the grouped findings to decide what to trim, cache, reroute, or ignore.</div></div>'
 
     return f"""<div class="reliability-section">
   <div class="section-title">Context Audit</div>
   {summary_html}
   {score_banner}
-  <div class="anomaly-list">{''.join(items)}</div>
+  {''.join(groups_html)}
 </div>"""
 
 

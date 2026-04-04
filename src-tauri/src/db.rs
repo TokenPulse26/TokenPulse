@@ -105,10 +105,16 @@ pub struct ReliabilitySnapshot {
 pub struct ContextAuditFinding {
     pub key: String,
     pub title: String,
+    pub category: String,
     pub severity: String,
+    pub confidence: String,
     pub summary: String,
     pub requests: i64,
     pub estimated_cost_impact_usd: f64,
+    pub top_model: Option<String>,
+    pub top_provider: Option<String>,
+    pub filter_hint: Option<String>,
+    pub impact_label: String,
     pub recommendation: String,
 }
 
@@ -117,6 +123,9 @@ pub struct ContextAuditSnapshot {
     pub range: String,
     pub score: i64,
     pub estimated_savings_usd: f64,
+    pub high_confidence_count: i64,
+    pub waste_findings_count: i64,
+    pub opportunity_findings_count: i64,
     pub findings: Vec<ContextAuditFinding>,
 }
 
@@ -172,6 +181,119 @@ fn reliability_recommendation(kind: &str, model: &str) -> (String, Option<String
             None,
         ),
     }
+}
+
+#[derive(Debug)]
+struct TopOccurrence {
+    model: Option<String>,
+    provider: Option<String>,
+    model_count: i64,
+    provider_count: i64,
+}
+
+fn context_audit_score_penalty(severity: &str, confidence: &str, impact_usd: f64, requests: i64) -> f64 {
+    let severity_weight = match severity {
+        "high" => 1.0,
+        "medium" => 0.6,
+        _ => 0.3,
+    };
+    let confidence_weight = match confidence {
+        "high" => 1.0,
+        "medium" => 0.7,
+        _ => 0.45,
+    };
+    let cost_factor = (impact_usd * 4.0).min(20.0);
+    let volume_factor = ((requests as f64) / 4.0).min(10.0);
+    (severity_weight * confidence_weight * (cost_factor + volume_factor)).min(25.0)
+}
+
+fn fetch_top_occurrence(
+    conn: &Connection,
+    filter_clause: &str,
+) -> Result<TopOccurrence> {
+    let model_query = format!(
+        "SELECT model, COUNT(*) as cnt
+         FROM requests {}
+         GROUP BY model
+         ORDER BY cnt DESC, model ASC
+         LIMIT 1",
+        filter_clause
+    );
+    let provider_query = format!(
+        "SELECT provider, COUNT(*) as cnt
+         FROM requests {}
+         GROUP BY provider
+         ORDER BY cnt DESC, provider ASC
+         LIMIT 1",
+        filter_clause
+    );
+
+    let model_result = conn.query_row(&model_query, [], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    });
+    let provider_result = conn.query_row(&provider_query, [], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    });
+
+    let (model, model_count) = match model_result {
+        Ok((model, count)) => (Some(model), count),
+        Err(rusqlite::Error::QueryReturnedNoRows) => (None, 0),
+        Err(e) => return Err(e),
+    };
+    let (provider, provider_count) = match provider_result {
+        Ok((provider, count)) => (Some(provider), count),
+        Err(rusqlite::Error::QueryReturnedNoRows) => (None, 0),
+        Err(e) => return Err(e),
+    };
+
+    Ok(TopOccurrence {
+        model,
+        provider,
+        model_count,
+        provider_count,
+    })
+}
+
+fn filter_hint_for(
+    key: &str,
+    requests: i64,
+    top_model: Option<&str>,
+    top_provider: Option<&str>,
+) -> Option<String> {
+    if requests <= 0 {
+        return None;
+    }
+
+    let route_hint = match (top_model, top_provider) {
+        (Some(model), Some(provider)) => format!(" Most affected: {} via {}.", model, provider),
+        (Some(model), None) => format!(" Most affected model: {}.", model),
+        (None, Some(provider)) => format!(" Most affected provider: {}.", provider),
+        (None, None) => String::new(),
+    };
+
+    Some(match key {
+        "failed_requests" => format!(
+            "Filter recent requests to failed paid calls in this range.{}",
+            route_hint
+        ),
+        "overprompting" => format!(
+            "Filter recent requests to very large prompts with tiny outputs.{}",
+            route_hint
+        ),
+        "cache_underuse" => format!(
+            "Filter recent requests to 4K+ input calls with no cache signal.{}",
+            route_hint
+        ),
+        "premium_small_tasks" => format!(
+            "Filter recent requests to small jobs on premium models.{}",
+            route_hint
+        ),
+        "local_model_opportunity" => format!(
+            "Filter recent requests to sub-500-token API calls.{}",
+            route_hint
+        ),
+        _ => format!("Filter recent requests to matching candidates.{}", route_hint),
+    })
 }
 
 pub fn init_db(path: &str) -> Result<Connection> {
@@ -1418,126 +1540,261 @@ pub fn get_context_audit_snapshot(
     let mut findings: Vec<ContextAuditFinding> = Vec::new();
     let mut estimated_savings = 0.0_f64;
 
-    let overprompt: (i64, f64) = conn.query_row(
+    let overprompt_filter = format!(
+        "{} AND input_tokens > 2000 AND output_tokens < 100",
+        api_where
+    );
+    let overprompt: (i64, f64, i64, i64, i64, i64) = conn.query_row(
         &format!(
-            "SELECT COUNT(*) as cnt, COALESCE(SUM(cost_usd), 0.0) as cost FROM requests {} AND input_tokens > 2000 AND output_tokens < 100",
-            api_where
+            "SELECT
+                COUNT(*) as cnt,
+                COALESCE(SUM(cost_usd), 0.0) as cost,
+                MAX(input_tokens) as max_input_tokens,
+                MIN(output_tokens) as min_output_tokens,
+                SUM(CASE WHEN input_tokens > 4000 AND output_tokens < 80 THEN 1 ELSE 0 END) as strict_count,
+                SUM(CASE WHEN input_tokens > 2500 AND output_tokens < 120 THEN 1 ELSE 0 END) as moderate_count
+             FROM requests {}",
+            overprompt_filter
         ),
         [],
-        |row| Ok((row.get(0)?, row.get(1)?)),
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get::<_, Option<i64>>(2)?.unwrap_or(0),
+                row.get::<_, Option<i64>>(3)?.unwrap_or(0),
+                row.get::<_, Option<i64>>(4)?.unwrap_or(0),
+                row.get::<_, Option<i64>>(5)?.unwrap_or(0),
+            ))
+        },
     )?;
     if overprompt.0 > 0 {
+        let top = fetch_top_occurrence(conn, &overprompt_filter)?;
+        let confidence = if overprompt.4 >= 5 {
+            "high"
+        } else if overprompt.5 > 0 {
+            "medium"
+        } else {
+            "low"
+        };
         estimated_savings += overprompt.1;
         findings.push(ContextAuditFinding {
             key: "overprompting".to_string(),
-            title: "Possible over-prompting".to_string(),
-            severity: if overprompt.0 >= 10 { "high" } else { "medium" }.to_string(),
+            title: "Likely over-prompting".to_string(),
+            category: "waste".to_string(),
+            severity: if overprompt.4 >= 5 {
+                "high"
+            } else if overprompt.0 >= 5 {
+                "medium"
+            } else {
+                "low"
+            }
+            .to_string(),
+            confidence: confidence.to_string(),
             summary: format!(
-                "{} request(s) sent large prompts but produced very small outputs. That's usually context bloat, bad scoping, or a task that should have been preprocessed first.",
+                "{} request(s) used large prompts but returned very small outputs. This is a likely waste signal, but it can also reflect setup-heavy workflows or prompts that should be preprocessed first.",
                 overprompt.0
             ),
             requests: overprompt.0,
             estimated_cost_impact_usd: overprompt.1,
-            recommendation: "Trim input context, preprocess raw files before reasoning, and start fresh execution threads once the task is clear.".to_string(),
+            top_model: top.model.clone(),
+            top_provider: top.provider.clone(),
+            filter_hint: filter_hint_for(
+                "overprompting",
+                overprompt.0,
+                top.model.as_deref(),
+                top.provider.as_deref(),
+            ),
+            impact_label: "partial".to_string(),
+            recommendation: "Trim repeated prompt scaffolding, preprocess raw material before reasoning, and re-check whether these jobs need a fresh large context each time.".to_string(),
         });
     }
 
+    let expensive_small_filter = format!(
+        "{} AND lower(model) IN ('claude-opus-4-6','gpt-4o','gpt-4.1','o1') AND (input_tokens + output_tokens) <= 1200",
+        api_where
+    );
     let expensive_small_work: (i64, f64) = conn.query_row(
         &format!(
-            "SELECT COUNT(*) as cnt, COALESCE(SUM(cost_usd), 0.0) as cost FROM requests {} AND lower(model) IN ('claude-opus-4-6','gpt-4o','gpt-4.1','o1') AND (input_tokens + output_tokens) <= 1200",
-            api_where
+            "SELECT COUNT(*) as cnt, COALESCE(SUM(cost_usd), 0.0) as cost FROM requests {}",
+            expensive_small_filter
         ),
         [],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
     if expensive_small_work.0 > 0 {
+        let top = fetch_top_occurrence(conn, &expensive_small_filter)?;
         let impact = expensive_small_work.1 * 0.5;
         estimated_savings += impact;
         findings.push(ContextAuditFinding {
             key: "premium_small_tasks".to_string(),
-            title: "Premium models handling small tasks".to_string(),
-            severity: if expensive_small_work.0 >= 15 { "high" } else { "medium" }.to_string(),
+            title: "Possible downgrade candidates on premium models".to_string(),
+            category: "opportunity".to_string(),
+            severity: if expensive_small_work.0 >= 18 {
+                "medium"
+            } else {
+                "low"
+            }
+            .to_string(),
+            confidence: if expensive_small_work.0 >= 12 {
+                "medium"
+            } else {
+                "low"
+            }
+            .to_string(),
             summary: format!(
-                "{} small request(s) hit premium models. Some of that is justified, but a chunk of it is probably formatting, extraction, or simple transforms that should route cheaper.",
+                "{} small request(s) hit premium models. Some may be fully justified, but this pattern is a possible routing optimization for formatting, extraction, or simple transforms.",
                 expensive_small_work.0
             ),
             requests: expensive_small_work.0,
             estimated_cost_impact_usd: impact,
-            recommendation: "Reserve premium models for synthesis and judgment. Push extraction, OCR cleanup, formatting, and small transforms to a cheaper lane or local model.".to_string(),
+            top_model: top.model.clone(),
+            top_provider: top.provider.clone(),
+            filter_hint: filter_hint_for(
+                "premium_small_tasks",
+                expensive_small_work.0,
+                top.model.as_deref(),
+                top.provider.as_deref(),
+            ),
+            impact_label: "heuristic".to_string(),
+            recommendation: "Reserve premium models for synthesis and judgment. Test a cheaper route for repetitive transforms before treating this as confirmed waste.".to_string(),
         });
     }
 
+    let low_cache_filter = format!(
+        "{} AND input_tokens >= 4000 AND COALESCE(cached_tokens, 0) = 0",
+        api_where
+    );
     let low_cache_use: (i64, f64) = conn.query_row(
         &format!(
-            "SELECT COUNT(*) as cnt, COALESCE(SUM(cost_usd), 0.0) as cost FROM requests {} AND input_tokens >= 4000 AND COALESCE(cached_tokens, 0) = 0",
-            api_where
+            "SELECT COUNT(*) as cnt, COALESCE(SUM(cost_usd), 0.0) as cost FROM requests {}",
+            low_cache_filter
         ),
         [],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
     if low_cache_use.0 > 0 {
+        let top = fetch_top_occurrence(conn, &low_cache_filter)?;
+        let same_route_dominates =
+            top.model_count * 2 >= low_cache_use.0 && top.provider_count * 2 >= low_cache_use.0;
+        let confidence = if low_cache_use.0 >= 8 && same_route_dominates {
+            "high"
+        } else if low_cache_use.0 >= 4 {
+            "medium"
+        } else {
+            "low"
+        };
         let impact = low_cache_use.1 * 0.35;
         estimated_savings += impact;
         findings.push(ContextAuditFinding {
             key: "cache_underuse".to_string(),
-            title: "Repeated heavy context without cache signal".to_string(),
-            severity: if low_cache_use.0 >= 8 { "high" } else { "medium" }.to_string(),
+            title: "Repeated heavy context without cache benefit".to_string(),
+            category: "waste".to_string(),
+            severity: if low_cache_use.0 >= 8 {
+                "high"
+            } else if low_cache_use.0 >= 4 {
+                "medium"
+            } else {
+                "low"
+            }
+            .to_string(),
+            confidence: confidence.to_string(),
             summary: format!(
-                "{} request(s) carried 4K+ input tokens with zero cached tokens reported. That suggests stable prompt or reference material is being resent without cache benefit.",
+                "{} request(s) carried 4K+ input tokens with no cache signal. That often means stable prompt or reference material is being resent, although some providers and paths may not expose cache stats consistently.",
                 low_cache_use.0
             ),
             requests: low_cache_use.0,
             estimated_cost_impact_usd: impact,
-            recommendation: "Cache stable system prompts, tool definitions, and recurring references where the provider supports it. Reuse prepared context instead of resending full scaffolding every call.".to_string(),
+            top_model: top.model.clone(),
+            top_provider: top.provider.clone(),
+            filter_hint: filter_hint_for(
+                "cache_underuse",
+                low_cache_use.0,
+                top.model.as_deref(),
+                top.provider.as_deref(),
+            ),
+            impact_label: "partial".to_string(),
+            recommendation: "Cache stable system prompts, tool definitions, and recurring references where the provider supports it. If cache reporting is unavailable on this path, treat this as a prompt-hygiene check instead.".to_string(),
         });
     }
 
+    let failed_filter = format!("{} AND COALESCE(error_message, '') != ''", api_where);
     let failed_spend: (i64, f64) = conn.query_row(
         &format!(
-            "SELECT COUNT(*) as cnt, COALESCE(SUM(cost_usd), 0.0) as cost FROM requests {} AND COALESCE(error_message, '') != ''",
-            api_where
+            "SELECT COUNT(*) as cnt, COALESCE(SUM(cost_usd), 0.0) as cost FROM requests {}",
+            failed_filter
         ),
         [],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
     if failed_spend.0 > 0 && failed_spend.1 > 0.0 {
+        let top = fetch_top_occurrence(conn, &failed_filter)?;
         estimated_savings += failed_spend.1;
         findings.push(ContextAuditFinding {
             key: "failed_requests".to_string(),
-            title: "Failures are burning spend".to_string(),
+            title: "Failed paid requests are burning spend".to_string(),
+            category: "waste".to_string(),
             severity: if failed_spend.1 >= 1.0 { "high" } else { "medium" }.to_string(),
+            confidence: "high".to_string(),
             summary: format!(
-                "{} failed request(s) still consumed about ${:.2} in paid traffic. That's reliability waste, not productive work.",
+                "{} failed request(s) still consumed about ${:.2} in paid traffic. This is a direct waste signal rather than a routing guess.",
                 failed_spend.0, failed_spend.1
             ),
             requests: failed_spend.0,
             estimated_cost_impact_usd: failed_spend.1,
-            recommendation: "Add retries carefully, tighten upstream health checks, and route time-sensitive workloads away from unstable providers or models.".to_string(),
+            top_model: top.model.clone(),
+            top_provider: top.provider.clone(),
+            filter_hint: filter_hint_for(
+                "failed_requests",
+                failed_spend.0,
+                top.model.as_deref(),
+                top.provider.as_deref(),
+            ),
+            impact_label: "direct".to_string(),
+            recommendation: "Tighten upstream health checks, add retries only where they reduce paid failures, and route sensitive traffic away from unstable providers or models.".to_string(),
         });
     }
 
+    let small_api_filter = format!("{} AND (input_tokens + output_tokens) < 500", api_where);
     let small_api_local: (i64, f64) = conn.query_row(
         &format!(
-            "SELECT COUNT(*) as cnt, COALESCE(SUM(cost_usd), 0.0) as cost FROM requests {} AND (input_tokens + output_tokens) < 500",
-            api_where
+            "SELECT COUNT(*) as cnt, COALESCE(SUM(cost_usd), 0.0) as cost FROM requests {}",
+            small_api_filter
         ),
         [],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
     if small_api_local.0 >= 10 {
+        let top = fetch_top_occurrence(conn, &small_api_filter)?;
         let impact = small_api_local.1 * 0.4;
         estimated_savings += impact;
         findings.push(ContextAuditFinding {
             key: "local_model_opportunity".to_string(),
-            title: "Local model opportunity".to_string(),
+            title: "Candidate for local or budget routing".to_string(),
+            category: "opportunity".to_string(),
             severity: "low".to_string(),
+            confidence: if small_api_local.0 >= 20 {
+                "medium"
+            } else {
+                "low"
+            }
+            .to_string(),
             summary: format!(
-                "{} small API request(s) fell under 500 total tokens. Many of these could probably run on a local model or budget-tier cloud model without changing the result much.",
+                "{} small API request(s) fell under 500 total tokens. Many may fit a local or budget-tier route, but latency and reliability requirements can still justify paid API usage.",
                 small_api_local.0
             ),
             requests: small_api_local.0,
             estimated_cost_impact_usd: impact,
-            recommendation: "Route lightweight transforms, extraction cleanup, tagging, and simple formatting to a local or budget lane before escalating to premium reasoning.".to_string(),
+            top_model: top.model.clone(),
+            top_provider: top.provider.clone(),
+            filter_hint: filter_hint_for(
+                "local_model_opportunity",
+                small_api_local.0,
+                top.model.as_deref(),
+                top.provider.as_deref(),
+            ),
+            impact_label: "heuristic".to_string(),
+            recommendation: "Route lightweight transforms, extraction cleanup, tagging, and simple formatting to a local or budget lane first, then escalate only when quality or reliability requires it.".to_string(),
         });
     }
 
@@ -1548,22 +1805,38 @@ pub fn get_context_audit_snapshot(
             .then_with(|| b.requests.cmp(&a.requests))
     });
 
-    let mut score = 100_i64;
-    for finding in &findings {
-        score -= match finding.severity.as_str() {
-            "high" => 18,
-            "medium" => 10,
-            _ => 5,
-        };
-    }
-    if score < 0 {
-        score = 0;
-    }
+    let total_penalty: f64 = findings
+        .iter()
+        .map(|finding| {
+            context_audit_score_penalty(
+                &finding.severity,
+                &finding.confidence,
+                finding.estimated_cost_impact_usd,
+                finding.requests,
+            )
+        })
+        .sum();
+    let score = (100.0 - total_penalty).clamp(0.0, 100.0).round() as i64;
+    let high_confidence_count = findings
+        .iter()
+        .filter(|finding| finding.confidence == "high")
+        .count() as i64;
+    let waste_findings_count = findings
+        .iter()
+        .filter(|finding| finding.category == "waste")
+        .count() as i64;
+    let opportunity_findings_count = findings
+        .iter()
+        .filter(|finding| finding.category == "opportunity")
+        .count() as i64;
 
     Ok(ContextAuditSnapshot {
         range: time_range.to_string(),
         score,
         estimated_savings_usd: (estimated_savings * 100.0).round() / 100.0,
+        high_confidence_count,
+        waste_findings_count,
+        opportunity_findings_count,
         findings,
     })
 }
