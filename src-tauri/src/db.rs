@@ -117,6 +117,7 @@ pub struct ContextAuditFinding {
     pub filter_hint: Option<String>,
     pub impact_label: String,
     pub recommendation: String,
+    pub fix_steps: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1636,6 +1637,13 @@ pub fn get_context_audit_snapshot(
             ),
             impact_label: "partial".to_string(),
             recommendation: "Trim repeated prompt scaffolding, preprocess raw material before reasoning, and re-check whether these jobs need a fresh large context each time.".to_string(),
+            fix_steps: vec![
+                "Change compaction mode from safeguard to default in openclaw.json: set agents.defaults.compaction.mode to \"default\"".to_string(),
+                "Enable session pruning to auto-trim old tool results: add agents.defaults.contextPruning with mode \"cache-ttl\" and ttl \"5m\"".to_string(),
+                "Lower bootstrapMaxChars to 10000-15000 to reduce workspace file injection per turn".to_string(),
+                "Reduce heartbeat frequency if agent overhead is driving large-context short-response patterns".to_string(),
+                "Use /compact manually in long conversations to force context summarization".to_string(),
+            ],
         });
     }
 
@@ -1687,6 +1695,11 @@ pub fn get_context_audit_snapshot(
             ),
             impact_label: "heuristic".to_string(),
             recommendation: "Reserve premium models for synthesis and judgment. Test a cheaper route for repetitive transforms before treating this as confirmed waste.".to_string(),
+            fix_steps: vec![
+                "Set up a routing rule to send small/simple requests to a cheaper model like claude-sonnet-4-6 or a local model".to_string(),
+                "In OpenClaw: configure a lower-tier fallback model for sub-agent and lightweight tasks".to_string(),
+                "Review which tasks actually need premium reasoning vs simple extraction or formatting".to_string(),
+            ],
         });
     }
 
@@ -1744,6 +1757,12 @@ pub fn get_context_audit_snapshot(
             ),
             impact_label: "partial".to_string(),
             recommendation: "Cache stable system prompts, tool definitions, and recurring references where the provider supports it. If cache reporting is unavailable on this path, treat this as a prompt-hygiene check instead.".to_string(),
+            fix_steps: vec![
+                "Enable session pruning (contextPruning.mode: \"cache-ttl\") so old tool results get trimmed and cache re-writes are smaller".to_string(),
+                "Keep stable system prompts and tool definitions unchanged between requests so the provider can cache them".to_string(),
+                "Check if your proxy/routing path reports cached_tokens — CLIProxy and some OAuth paths may not surface cache stats".to_string(),
+                "For Anthropic: ensure you are using a path that supports prompt caching (direct API or compatible proxy)".to_string(),
+            ],
         });
     }
 
@@ -1781,6 +1800,12 @@ pub fn get_context_audit_snapshot(
             ),
             impact_label: "direct".to_string(),
             recommendation: "Tighten upstream health checks, add retries only where they reduce paid failures, and route sensitive traffic away from unstable providers or models.".to_string(),
+            fix_steps: vec![
+                "Check Error Monitor for the specific failure types and fix the root cause (wrong endpoint, missing API key, etc.)".to_string(),
+                "Add retry logic with backoff for transient provider errors".to_string(),
+                "Route time-sensitive work away from unstable providers until errors resolve".to_string(),
+                "Verify API keys and endpoint URLs in your proxy configuration".to_string(),
+            ],
         });
     }
 
@@ -1824,6 +1849,12 @@ pub fn get_context_audit_snapshot(
             ),
             impact_label: "heuristic".to_string(),
             recommendation: "Route lightweight transforms, extraction cleanup, tagging, and simple formatting to a local or budget lane first, then escalate only when quality or reliability requires it.".to_string(),
+            fix_steps: vec![
+                "Install a local model via Ollama (e.g., ollama pull qwen3.5:9b) and route small tasks through it".to_string(),
+                "Configure TokenPulse to proxy local model traffic for tracking".to_string(),
+                "In OpenClaw: add a local model as a low-tier fallback for lightweight work".to_string(),
+                "Test local model quality on your actual small-task workload before fully routing".to_string(),
+            ],
         });
     }
 

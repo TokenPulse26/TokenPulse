@@ -5,6 +5,7 @@ import os
 import json
 import math
 import calendar
+import re
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs, quote
 from urllib.request import Request, urlopen
@@ -643,6 +644,10 @@ td{padding:13px 16px;font-size:12px;border-top:1px solid rgba(42,45,58,.5);white
 .context-audit-meta{display:flex;flex-wrap:wrap;gap:10px;font-size:11px;color:#8b949e}
 .context-audit-most-affected{margin-top:8px;font-size:11px;color:#c9d1d9}
 .context-audit-filter{margin-top:8px;font-size:11px;color:#8b949e;line-height:1.5}
+.context-audit-fix-steps details{margin-top:10px}
+.context-audit-fix-steps summary{cursor:pointer;font-size:12px;font-weight:600;color:var(--blue, #58a6ff)}
+.context-audit-fix-steps ol{margin:8px 0 0 18px;font-size:12px;color:var(--text-muted, #94a0b4);line-height:1.7}
+.context-audit-fix-steps code{background:rgba(255,255,255,.06);padding:1px 5px;border-radius:4px;font-size:11px}
 .attention-section{background:#1a1d27;border:1px solid #2a2d3a;border-radius:14px;padding:22px 24px;margin-bottom:20px}
 .attention-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:14px;margin-top:14px}
 .attention-card{background:#161922;border:1px solid #2a2d3a;border-radius:12px;padding:16px 18px}
@@ -921,6 +926,26 @@ def _escape_html(text):
         .replace(">", "&gt;")
         .replace('"', "&quot;")
     )
+
+
+def _highlight_fix_step(step):
+    text = _escape_html(step or "")
+    patterns = [
+        r'openclaw\.json',
+        r'agents\.defaults\.compaction\.mode',
+        r'agents\.defaults\.contextPruning',
+        r'contextPruning\.mode:\s*&quot;cache-ttl&quot;',
+        r'ttl\s*&quot;5m&quot;',
+        r'bootstrapMaxChars',
+        r'10000-15000',
+        r'/compact',
+        r'cached_tokens',
+        r'claude-sonnet-4-6',
+        r'ollama pull qwen3\.5:9b',
+    ]
+    for pattern in patterns:
+        text = re.sub(pattern, lambda m: f'<code>{m.group(0)}</code>', text)
+    return text
 
 
 def _pulse_mark_svg(size=18):
@@ -1908,7 +1933,12 @@ def _fetch_context_audit_data(time_range):
     """Fetch context audit heuristics from the local proxy when available."""
     proxied = _fetch_proxy_json(f'/api/context-audit?range={time_range}')
     if proxied:
-        return proxied.get('context_audit') or {}
+        audit = proxied.get('context_audit') or {}
+        findings = audit.get('findings') or []
+        for finding in findings:
+            fix_steps = finding.get('fix_steps')
+            finding['fix_steps'] = [str(step) for step in fix_steps] if isinstance(fix_steps, list) else []
+        return audit
     return {}
 
 
@@ -3127,6 +3157,21 @@ def _build_context_audit_section(audit_data):
             if filter_hint
             else ""
         )
+        fix_steps = item.get("fix_steps") or []
+        fix_steps_html = ""
+        if fix_steps:
+            fix_items = "".join(
+                f'<li>{_highlight_fix_step(step)}</li>'
+                for step in fix_steps
+            )
+            fix_steps_html = (
+                '<div class="context-audit-fix-steps">'
+                '<details>'
+                '<summary>How to fix this ▸</summary>'
+                f'<ol>{fix_items}</ol>'
+                '</details>'
+                '</div>'
+            )
         return (
             f'<div class="context-audit-card {category}">'
             f'<div class="context-audit-header">'
@@ -3142,6 +3187,7 @@ def _build_context_audit_section(audit_data):
             f'{most_affected}'
             f'<div class="reliability-sub" style="margin-top:8px">{_escape_html(item.get("summary") or "")}</div>'
             f'<div class="anomaly-recommendation"><strong>Recommendation:</strong> {_escape_html(item.get("recommendation") or "")}</div>'
+            f'{fix_steps_html}'
             f'{filter_html}'
             f'</div>'
         )
