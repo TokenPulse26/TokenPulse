@@ -188,7 +188,7 @@ def _model_family(model_name):
 # ---------------------------------------------------------------------------
 
 PAGE_TEMPLATE = Template(r"""<!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-range="$time_range">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -648,6 +648,19 @@ td{padding:13px 16px;font-size:12px;border-top:1px solid rgba(42,45,58,.5);white
 .context-audit-fix-steps summary{cursor:pointer;font-size:12px;font-weight:600;color:var(--blue, #58a6ff)}
 .context-audit-fix-steps ol{margin:8px 0 0 18px;font-size:12px;color:var(--text-muted, #94a0b4);line-height:1.7}
 .context-audit-fix-steps code{background:rgba(255,255,255,.06);padding:1px 5px;border-radius:4px;font-size:11px}
+.context-audit-shell{display:flex;flex-direction:column;gap:16px}
+.context-audit-trigger-card{background:#161922;border:1px solid #2a2d3a;border-radius:10px;padding:22px}
+.context-audit-trigger-copy{font-size:13px;color:#8b949e;line-height:1.6;max-width:680px}
+.context-audit-trigger-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:18px}
+.audit-trigger-btn{display:inline-flex;align-items:center;justify-content:center;gap:10px;min-height:42px;padding:10px 16px;border-radius:10px;border:1px solid rgba(88,166,255,.28);background:linear-gradient(180deg, rgba(88,166,255,.22), rgba(88,166,255,.16));color:#f0f6fc;font-size:13px;font-weight:700;cursor:pointer;box-shadow:0 10px 24px rgba(0,0,0,.18)}
+.audit-trigger-btn:hover{border-color:#58a6ff;background:linear-gradient(180deg, rgba(88,166,255,.28), rgba(88,166,255,.18));color:#f0f6fc}
+.audit-trigger-btn:disabled{cursor:wait;opacity:.9}
+.audit-trigger-spinner{width:14px;height:14px;border-radius:999px;border:2px solid rgba(240,246,252,.24);border-top-color:#f0f6fc;display:none;animation:spin .8s linear infinite}
+.audit-trigger-btn.loading .audit-trigger-spinner{display:inline-block}
+.audit-trigger-btn.loading .audit-trigger-label{opacity:.92}
+.context-audit-trigger-note{font-size:12px;color:#8b949e}
+.context-audit-error{margin-top:14px;padding:12px 14px;border-radius:10px;border:1px solid rgba(248,81,73,.22);background:rgba(248,81,73,.08);font-size:12px;color:#ffb3ad}
+@keyframes spin{to{transform:rotate(360deg)}}
 .attention-section{background:#1a1d27;border:1px solid #2a2d3a;border-radius:14px;padding:22px 24px;margin-bottom:20px}
 .attention-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:14px;margin-top:14px}
 .attention-card{background:#161922;border:1px solid #2a2d3a;border-radius:12px;padding:16px 18px}
@@ -3223,6 +3236,35 @@ def _build_context_audit_section(audit_data):
 </div>"""
 
 
+def _build_context_audit_placeholder_section(time_range):
+    """Build the on-demand Context Audit placeholder."""
+    return f"""<div class="reliability-section reveal reveal-delay-2" id="contextAuditSection" data-default-range="{_escape_html(time_range)}">
+  <div class="section-header">
+    <div class="section-heading">
+      <div class="section-kicker">Optimization</div>
+      <div class="section-title" style="margin-bottom:0">Context Audit</div>
+      <div class="section-subtitle">Analyze your usage patterns for waste and optimization opportunities</div>
+    </div>
+    <button type="button" class="audit-trigger-btn" id="contextAuditTrigger" aria-controls="contextAuditContent">
+      <span class="audit-trigger-spinner" aria-hidden="true"></span>
+      <span class="audit-trigger-label">Run Audit</span>
+    </button>
+  </div>
+  <div class="context-audit-shell" id="contextAuditContent">
+    <div class="context-audit-trigger-card">
+      <div class="context-audit-trigger-copy">Run the audit only when you need it. TokenPulse will analyze the currently selected time range and group likely waste separately from optimization opportunities.</div>
+      <div class="context-audit-trigger-actions">
+        <button type="button" class="audit-trigger-btn" id="contextAuditInlineTrigger" aria-controls="contextAuditContent">
+          <span class="audit-trigger-spinner" aria-hidden="true"></span>
+          <span class="audit-trigger-label">Run Audit</span>
+        </button>
+        <span class="context-audit-trigger-note">No proxy call happens on initial page load.</span>
+      </div>
+    </div>
+  </div>
+</div>"""
+
+
 def _build_reliability_section(reliability_data):
     """Build latency/reliability overview section."""
     if not reliability_data:
@@ -4324,6 +4366,19 @@ function formatCurrencyPrecise(value) {{
   return '$' + num.toLocaleString('en-US', {{ minimumFractionDigits: num < 1 ? 4 : 2, maximumFractionDigits: num < 1 ? 4 : 2 }});
 }}
 
+function escapeHtml(value) {{
+  return String(value == null ? '' : value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}}
+
+function highlightInlineCode(value) {{
+  return escapeHtml(value).replace(/`([^`]+)`/g, '<code>$1</code>');
+}}
+
 function requestBrowserNotifications() {{
   if (!('Notification' in window)) return;
   if (Notification.permission === 'default') {{
@@ -4546,6 +4601,137 @@ function initLoadedState() {{
   document.body.classList.remove('preload');
 }}
 
+function getCurrentTimeRange() {{
+  var auditSection = document.getElementById('contextAuditSection');
+  try {{
+    var params = new URLSearchParams(window.location.search);
+    return params.get('range') || (auditSection && auditSection.getAttribute('data-default-range')) || document.documentElement.getAttribute('data-range') || 'today';
+  }} catch (e) {{
+    return (auditSection && auditSection.getAttribute('data-default-range')) || document.documentElement.getAttribute('data-range') || 'today';
+  }}
+}}
+
+function setAuditButtonsLoading(isLoading) {{
+  ['contextAuditTrigger', 'contextAuditInlineTrigger'].forEach(function(id) {{
+    var btn = document.getElementById(id);
+    if (!btn) return;
+    btn.disabled = !!isLoading;
+    btn.classList.toggle('loading', !!isLoading);
+    var label = btn.querySelector('.audit-trigger-label');
+    if (label) label.textContent = isLoading ? 'Running Audit...' : 'Re-run Audit';
+  }});
+}}
+
+function renderContextAuditFinding(item) {{
+  var severity = escapeHtml(item && item.severity ? item.severity : 'medium');
+  var confidence = escapeHtml(item && item.confidence ? item.confidence : 'low');
+  var category = escapeHtml(item && item.category ? item.category : 'opportunity');
+  var impactLabel = escapeHtml(item && item.impact_label ? item.impact_label : 'heuristic');
+  var metaBits = [escapeHtml(String(Number(item && item.requests || 0)) + ' request(s)')];
+  var impact = Number(item && item.estimated_cost_impact_usd || 0);
+  if (impact > 0) metaBits.push(escapeHtml(formatCurrency(impact) + ' likely impact'));
+  var mostAffected = '';
+  if ((item && item.top_model) || (item && item.top_provider)) {{
+    mostAffected = '<div class="context-audit-most-affected">Most affected: ' + escapeHtml(item.top_model || 'unknown model') + ' via ' + escapeHtml(item.top_provider || 'unknown provider') + '</div>';
+  }}
+  var filterHtml = item && item.filter_hint
+    ? '<div class="context-audit-filter"><strong>Filter hint:</strong> ' + escapeHtml(item.filter_hint) + '</div>'
+    : '';
+  var fixStepsHtml = '';
+  if (item && Array.isArray(item.fix_steps) && item.fix_steps.length) {{
+    fixStepsHtml = '<div class="context-audit-fix-steps"><details><summary>How to fix this ▸</summary><ol>' +
+      item.fix_steps.map(function(step) {{ return '<li>' + highlightInlineCode(step) + '</li>'; }}).join('') +
+      '</ol></details></div>';
+  }}
+  return '' +
+    '<div class="context-audit-card ' + category + '">' +
+      '<div class="context-audit-header">' +
+        '<div class="context-audit-title">' + escapeHtml(item && item.title ? item.title : 'Finding') + '</div>' +
+        '<div class="context-audit-badges">' +
+          '<span class="context-audit-badge category-' + category + '">' + category + '</span>' +
+          '<span class="severity-badge ' + severity + '">' + severity + '</span>' +
+          '<span class="context-audit-badge confidence-' + confidence + '">' + confidence + ' confidence</span>' +
+          '<span class="context-audit-badge impact-' + impactLabel + '">' + impactLabel + '</span>' +
+        '</div>' +
+      '</div>' +
+      '<div class="context-audit-meta"><span>' + metaBits.join(' · ') + '</span></div>' +
+      mostAffected +
+      '<div class="reliability-sub" style="margin-top:8px">' + escapeHtml(item && item.summary ? item.summary : '') + '</div>' +
+      '<div class="anomaly-recommendation"><strong>Recommendation:</strong> ' + escapeHtml(item && item.recommendation ? item.recommendation : '') + '</div>' +
+      fixStepsHtml +
+      filterHtml +
+    '</div>';
+}}
+
+function renderContextAuditGroup(title, copy, items) {{
+  if (!items.length) return '';
+  return '' +
+    '<div class="context-audit-group">' +
+      '<div class="context-audit-group-title">' + escapeHtml(title) + '</div>' +
+      '<div class="context-audit-group-copy">' + escapeHtml(copy) + '</div>' +
+      '<div class="context-audit-list">' + items.slice(0, 6).map(renderContextAuditFinding).join('') + '</div>' +
+    '</div>';
+}}
+
+function renderContextAuditContent(auditData) {{
+  var audit = auditData || {{}};
+  var score = Number(audit.score == null ? 100 : audit.score);
+  var estimatedSavings = Number(audit.estimated_savings_usd || 0);
+  var findings = Array.isArray(audit.findings) ? audit.findings : [];
+  var highConfidenceCount = Number(audit.high_confidence_count || 0);
+  var wasteFindingsCount = Number(audit.waste_findings_count || 0);
+  var opportunityFindingsCount = Number(audit.opportunity_findings_count || 0);
+  var scoreTone = score >= 80 ? 'low' : (score >= 55 ? 'medium' : 'high');
+  var scoreLabel = score >= 80 ? 'Clean' : (score >= 55 ? 'Needs work' : 'High attention');
+  var wasteItems = findings.filter(function(item) {{ return (item && item.category || '') === 'waste'; }});
+  var opportunityItems = findings.filter(function(item) {{ return (item && item.category || '') === 'opportunity'; }});
+
+  var summaryHtml = '' +
+    '<div class="reliability-summary">' +
+      '<div class="reliability-card"><div class="reliability-label">Audit Score</div><div class="reliability-value">' + escapeHtml(String(Math.round(score))) + '/100</div><div class="reliability-sub">' + escapeHtml(scoreLabel) + ' context hygiene</div></div>' +
+      '<div class="reliability-card"><div class="reliability-label">Likely Recoverable Spend</div><div class="reliability-value">' + escapeHtml(formatCurrency(estimatedSavings)) + '</div><div class="reliability-sub">Heuristic estimate in this range</div></div>' +
+      '<div class="reliability-card"><div class="reliability-label">Audit Findings</div><div class="reliability-value">' + escapeHtml(String(findings.length)) + '</div><div class="reliability-sub">' + escapeHtml(String(wasteFindingsCount)) + ' waste signals, ' + escapeHtml(String(opportunityFindingsCount)) + ' opportunities</div></div>' +
+      '<div class="reliability-card"><div class="reliability-label">High-confidence findings</div><div class="reliability-value">' + escapeHtml(String(highConfidenceCount)) + '</div><div class="reliability-sub">Signals with the strongest heuristic backing</div></div>' +
+    '</div>';
+
+  var scoreBanner = '<div class="attention-card ' + scoreTone + '" style="margin-bottom:14px"><div class="attention-head"><div class="attention-title">Context hygiene verdict</div><span class="attention-pill ' + scoreTone + '">' + escapeHtml(scoreLabel) + '</span></div><div class="attention-body">This audit uses the request traces TokenPulse already has. It separates likely waste from cheaper-routing opportunities rather than pretending to know prompt quality with certainty.</div><div class="attention-foot">Treat the spend estimate as heuristic, not an invoice. Use the grouped findings to decide what to trim, cache, reroute, or ignore.</div></div>';
+
+  if (!findings.length) {{
+    return summaryHtml + scoreBanner + '<div class="empty-state-card"><div class="empty-state-inner"><div class="empty-state-icon">' + {json.dumps(_pulse_mark_svg(28))} + '</div><div class="empty-state-title">No obvious context waste</div><div class="empty-state-copy">This range looks pretty clean based on current heuristics.</div><div class="empty-state-hint">Action hint: this audit uses heuristic patterns and gets sharper as TokenPulse sees more tracked traffic.</div></div></div>';
+  }}
+
+  return summaryHtml + scoreBanner +
+    renderContextAuditGroup('Waste Signals', 'Traffic that likely burned spend without much value.', wasteItems) +
+    renderContextAuditGroup('Optimization Opportunities', 'Patterns that may be valid work, but look like candidates for cheaper routing or cleaner preparation.', opportunityItems);
+}}
+
+function runContextAudit() {{
+  var content = document.getElementById('contextAuditContent');
+  if (!content) return;
+  setAuditButtonsLoading(true);
+  content.innerHTML = '<div class="context-audit-trigger-card"><div class="context-audit-trigger-actions"><button type="button" class="audit-trigger-btn loading" disabled><span class="audit-trigger-spinner" aria-hidden="true"></span><span class="audit-trigger-label">Running Audit...</span></button><span class="context-audit-trigger-note">Fetching context audit for the current range.</span></div></div>';
+  fetch('/api/context-audit?range=' + encodeURIComponent(getCurrentTimeRange()))
+    .then(function(r) {{ return r.json(); }})
+    .then(function(payload) {{
+      if (!payload || !payload.ok) throw new Error(payload && payload.error ? payload.error : 'Audit request failed');
+      content.innerHTML = renderContextAuditContent(payload.context_audit || {{}});
+    }})
+    .catch(function(err) {{
+      content.innerHTML = '<div class="context-audit-trigger-card"><div class="context-audit-trigger-copy">Analyze your usage patterns for waste and optimization opportunities</div><div class="context-audit-error">Unable to run context audit: ' + escapeHtml(err && err.message ? err.message : 'unknown error') + '</div></div>';
+    }})
+    .finally(function() {{
+      setAuditButtonsLoading(false);
+    }});
+}}
+
+function initContextAudit() {{
+  ['contextAuditTrigger', 'contextAuditInlineTrigger'].forEach(function(id) {{
+    var btn = document.getElementById(id);
+    if (!btn) return;
+    btn.addEventListener('click', runContextAudit);
+  }});
+}}
+
 // ── Expandable rows ──────────────────────────────────────
 function initExpandableRows() {{
   var rows = document.querySelectorAll('.req-row');
@@ -4742,6 +4928,7 @@ document.addEventListener('DOMContentLoaded', function() {{
   initLoadedState();
   initStickyNav();
   initRangeIndicators();
+  initContextAudit();
   var actLevel = Math.min(10, Math.round(recentCount / 2));
   initTokenFlow(actLevel);
   initActivityFeed(activityDots, recentCount);
@@ -4799,6 +4986,7 @@ def build_page(time_range, page=1):
             last_request_at="—",
             total_requests="0",
             updated_at=now_str,
+            time_range=time_range,
             page_scripts=empty_scripts,
         )
 
@@ -4821,6 +5009,7 @@ def build_page(time_range, page=1):
             last_request_at="—",
             total_requests="0",
             updated_at=now_str,
+            time_range=time_range,
             page_scripts=empty_scripts,
         )
 
@@ -4852,8 +5041,7 @@ def build_page(time_range, page=1):
 
     reliability_data = _fetch_reliability_data(time_range)
     reliability_html = _build_reliability_section(reliability_data)
-    context_audit_data = _fetch_context_audit_data(time_range)
-    context_audit_html = _build_context_audit_section(context_audit_data)
+    context_audit_html = _build_context_audit_placeholder_section(time_range)
     attention_html = _build_attention_section(budgets_status, budget_forecasts, reliability_data, error_data)
 
     opt_data = _fetch_optimizer_data()
@@ -4931,6 +5119,7 @@ def build_page(time_range, page=1):
         last_request_at=last_request_at,
         total_requests=f"{data['total_requests']:,}",
         updated_at=now_str,
+        time_range=time_range,
         page_scripts=page_scripts,
     )
 
