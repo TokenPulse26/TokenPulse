@@ -234,12 +234,26 @@ fn extract_usage(body: &Value, provider: &str) -> (i64, i64, i64, i64) {
                 .unwrap_or(0);
             (input, output, 0, 0)
         }
-        "ollama" => {
-            let input = body
+        "ollama" | "lmstudio" => {
+            // Try Ollama native format first (prompt_eval_count / eval_count)
+            let native_input = body
                 .get("prompt_eval_count")
                 .and_then(|v| v.as_i64())
                 .unwrap_or(0);
-            let output = body.get("eval_count").and_then(|v| v.as_i64()).unwrap_or(0);
+            let native_output = body.get("eval_count").and_then(|v| v.as_i64()).unwrap_or(0);
+            if native_input > 0 || native_output > 0 {
+                return (native_input, native_output, 0, 0);
+            }
+            // Fall through to OpenAI-compatible format (usage.prompt_tokens)
+            let usage = body.get("usage").unwrap_or(&Value::Null);
+            let input = usage
+                .get("prompt_tokens")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let output = usage
+                .get("completion_tokens")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
             (input, output, 0, 0)
         }
         _ => {

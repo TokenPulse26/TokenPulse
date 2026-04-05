@@ -55,6 +55,14 @@
   {"model": "phi3", "provider": "ollama", "input_cost_per_million": 0.0, "output_cost_per_million": 0.0, "context_window": 131072},
   {"model": "gemma2", "provider": "ollama", "input_cost_per_million": 0.0, "output_cost_per_million": 0.0, "context_window": 8192},
   {"model": "qwen2.5", "provider": "ollama", "input_cost_per_million": 0.0, "output_cost_per_million": 0.0, "context_window": 131072},
+  {"model": "qwen3.5:4b", "provider": "ollama", "input_cost_per_million": 0.0, "output_cost_per_million": 0.0, "context_window": 32768},
+  {"model": "qwen3.5:9b", "provider": "ollama", "input_cost_per_million": 0.0, "output_cost_per_million": 0.0, "context_window": 32768},
+  {"model": "vaultbox/qwen3.5-uncensored:9b", "provider": "ollama", "input_cost_per_million": 0.0, "output_cost_per_million": 0.0, "context_window": 32768},
+  {"model": "huihui_ai/qwen3.5-abliterated:9b-Claude", "provider": "ollama", "input_cost_per_million": 0.0, "output_cost_per_million": 0.0, "context_window": 32768},
+  {"model": "huihui_ai/qwen3-vl-abliterated:latest", "provider": "ollama", "input_cost_per_million": 0.0, "output_cost_per_million": 0.0, "context_window": 32768},
+  {"model": "hauhaucs-aggressive", "provider": "ollama", "input_cost_per_million": 0.0, "output_cost_per_million": 0.0, "context_window": 32768},
+  {"model": "gemma4:e4b", "provider": "ollama", "input_cost_per_million": 0.0, "output_cost_per_million": 0.0, "context_window": 32768},
+  {"model": "nomic-embed-text", "provider": "ollama", "input_cost_per_million": 0.0, "output_cost_per_million": 0.0, "context_window": 8192},
   {"model": "codellama", "provider": "ollama", "input_cost_per_million": 0.0, "output_cost_per_million": 0.0, "context_window": 16384},
   {"model": "local", "provider": "lmstudio", "input_cost_per_million": 0.0, "output_cost_per_million": 0.0, "context_window": 0}
 ]
