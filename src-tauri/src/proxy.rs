@@ -79,6 +79,18 @@ fn detect_provider(headers: &HeaderMap, path: &str) -> ProviderInfo {
             base_url: "http://127.0.0.1:8317".to_string(),
         };
     }
+    if path.starts_with("/openrouter/") {
+        return ProviderInfo {
+            name: "openrouter".to_string(),
+            base_url: "https://openrouter.ai".to_string(),
+        };
+    }
+    if path.starts_with("/openai-codex/") {
+        return ProviderInfo {
+            name: "openai-codex".to_string(),
+            base_url: "https://chatgpt.com/backend-api".to_string(),
+        };
+    }
 
     // Check auth header
     if let Some(auth) = headers.get("authorization") {
@@ -316,6 +328,12 @@ fn build_forward_path(provider: &ProviderInfo, original_path: &str) -> String {
         "groq" => original_path.strip_prefix("/groq").unwrap_or(original_path),
         "cliproxy" => original_path
             .strip_prefix("/cliproxy")
+            .unwrap_or(original_path),
+        "openrouter" => original_path
+            .strip_prefix("/openrouter")
+            .unwrap_or(original_path),
+        "openai-codex" => original_path
+            .strip_prefix("/openai-codex")
             .unwrap_or(original_path),
         _ => original_path,
     };
