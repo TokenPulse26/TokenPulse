@@ -38,18 +38,10 @@ MODEL_COSTS = {
     "claude-opus-4-6": {"input": 15.0, "output": 75.0, "tier": "premium"},
     "claude-sonnet-4-6": {"input": 3.0, "output": 15.0, "tier": "mid"},
     "claude-haiku-3-5": {"input": 0.80, "output": 4.0, "tier": "budget"},
-    "gpt-4o": {"input": 2.50, "output": 10.0, "tier": "mid"},
-    "gpt-4o-mini": {"input": 0.15, "output": 0.60, "tier": "budget"},
-    "gpt-4.1": {"input": 2.0, "output": 8.0, "tier": "mid"},
-    "gpt-4.1-mini": {"input": 0.40, "output": 1.60, "tier": "budget"},
-    "gpt-4.1-nano": {"input": 0.10, "output": 0.40, "tier": "budget"},
 }
 DOWNGRADE_MAP = {
     "claude-opus-4-6": "claude-sonnet-4-6",
     "claude-sonnet-4-6": "claude-haiku-3-5",
-    "gpt-4o": "gpt-4o-mini",
-    "gpt-4.1": "gpt-4.1-mini",
-    "gpt-4.1-mini": "gpt-4.1-nano",
 }
 
 # Project tag colors for the "By Project" breakdown
@@ -60,12 +52,14 @@ PROJECT_COLORS = [
 
 PROVIDER_COLORS = {
     "openai": "#10a37f",
+    "openai-codex": "#10a37f",
     "anthropic": "#d4a574",
     "cliproxy": "#d4a574",
+    "openrouter": "#6366f1",
     "google": "#4285f4",
-    "mistral": "#ff7000",
     "groq": "#f55036",
-    "ollama": "#ffffff",
+    "mistral": "#ff7000",
+    "ollama": "#94a3b8",
     "lmstudio": "#8b5cf6",
 }
 
@@ -78,6 +72,7 @@ RANGE_LABELS = {
 
 UNKNOWN_MODEL_VALUES = {"", "unknown", "unknown model", "unidentified"}
 UNKNOWN_SOURCE_VALUES = {"", "unknown", "unknown source", "unknown project", "unattributed"}
+UNKNOWN_PROVIDER_VALUES = {"", "unknown", "unidentified"}
 HTTP_ERROR_EXPLANATIONS = {
     401: "Authentication failed or the API key was missing.",
     404: "Endpoint not found or the API path was wrong.",
@@ -128,31 +123,15 @@ def _display_model_name(model, provider=None, error_message=None, success_count=
 
 
 def _source_fallback_label(provider, provider_type, model=None):
-    provider_key = (provider or "").strip().lower()
-    provider_type = (provider_type or "").strip().lower()
-    if provider_type == "subscription" or provider_key == "cliproxy":
-        return "OpenClaw / CLIProxy"
-    if provider_type == "local":
-        if provider_key == "lmstudio":
-            return "LM Studio local"
-        if provider_key == "ollama":
-            return "Ollama local"
-        return "Local model lane"
-    if provider_key == "openai":
-        return "OpenAI API"
-    if provider_key == "anthropic":
-        return "Anthropic API"
-    if provider_key == "google":
-        return "Google API"
-    if provider_key == "groq":
-        return "Groq API"
-    if provider_key == "mistral":
-        return "Mistral API"
-    if provider:
-        return f"{provider.title()} API"
-    if model and not _is_unknownish(model):
-        return f"{model} traffic"
-    return "Unattributed traffic"
+    provider_label = (provider or "").strip()
+    model_label = "" if _is_unknownish(model) else (model or "").strip()
+    if provider_label and model_label:
+        return f"{provider_label} · {model_label}"
+    if provider_label:
+        return provider_label
+    if model_label:
+        return model_label
+    return "Other"
 
 
 def _normalize_source_label(source_tag, provider=None, provider_type=None, model=None):
@@ -181,6 +160,84 @@ def _model_family(model_name):
         if model.startswith(prefix):
             return prefix
     return model.split("-", 1)[0]
+
+
+def _is_unknown_provider(value):
+    return (value or "").strip().lower() in UNKNOWN_PROVIDER_VALUES
+
+
+def _normalize_model_rows(rows):
+    normalized = []
+    other = None
+    other_providers = set()
+    for row in rows or []:
+        cnt = int(row.get("cnt") or row.get("total_requests") or 0)
+        if cnt <= 0:
+            continue
+        provider = (row.get("provider") or "").strip()
+        model = (row.get("model") or "").strip()
+        if _is_unknownish(model):
+            if other is None:
+                other = {
+                    "provider": "mixed",
+                    "model": "Other",
+                    "cnt": 0,
+                    "inp": 0,
+                    "outp": 0,
+                    "cost": 0.0,
+                    "ptype": row.get("ptype", "api"),
+                    "success_cnt": 0,
+                    "sample_error": "",
+                    "last_used": None,
+                    "is_other": True,
+                }
+            other["cnt"] += cnt
+            other["inp"] += int(row.get("inp") or 0)
+            other["outp"] += int(row.get("outp") or 0)
+            other["cost"] += float(row.get("cost") or 0.0)
+            other["success_cnt"] += int(row.get("success_cnt") or 0)
+            row_last_used = row.get("last_used")
+            if row_last_used and (other["last_used"] is None or row_last_used > other["last_used"]):
+                other["last_used"] = row_last_used
+            if row.get("sample_error") and not other["sample_error"]:
+                other["sample_error"] = row.get("sample_error")
+            if provider and not _is_unknown_provider(provider):
+                other_providers.add(provider.lower())
+            continue
+        item = dict(row)
+        item["provider"] = provider or "unknown"
+        item["model"] = model
+        item["is_other"] = False
+        normalized.append(item)
+
+    if other is not None and other["cnt"] > 0:
+        if len(other_providers) == 1:
+            other["provider"] = next(iter(other_providers))
+        normalized.append(other)
+
+    normalized.sort(
+        key=lambda item: (
+            1 if item.get("is_other") else 0,
+            -(item.get("cnt") or 0),
+            -((item.get("inp") or 0) + (item.get("outp") or 0)),
+        )
+    )
+    return normalized
+
+
+def _active_model_count(rows):
+    return sum(1 for row in (rows or []) if (row.get("cnt") or 0) > 0)
+
+
+def _has_reliability_issues(reliability_data):
+    if not reliability_data:
+        return False
+    summary = reliability_data.get("summary") or {}
+    return bool(
+        (reliability_data.get("anomalies") or [])
+        or (summary.get("failed_requests") or 0) > 0
+        or (summary.get("slow_requests") or 0) > 0
+    )
 
 # ---------------------------------------------------------------------------
 # Page Template — uses string.Template for the outer skeleton only.
@@ -728,8 +785,34 @@ td{padding:13px 16px;font-size:12px;border-top:1px solid rgba(42,45,58,.5);white
 .budget-manage-row{padding:12px 14px;border-radius:10px}
 .budget-history{margin-top:18px}
 .forecast-grid{margin-top:0}
+.tier-one{display:flex;flex-direction:column;gap:20px;margin-bottom:24px}
+.tier-two,.tier-three{display:flex;flex-direction:column;gap:16px;margin-bottom:24px}
+.provider-summary-panel{padding:24px}
+.provider-model-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px}
+.provider-model-card{background:linear-gradient(180deg, rgba(17,21,29,.98), rgba(22,28,41,.94));border:1px solid rgba(88,166,255,.12);border-radius:16px;padding:18px;box-shadow:0 12px 30px rgba(0,0,0,.16)}
+.provider-model-top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:16px}
+.provider-model-name{font-size:16px;font-weight:760;color:var(--title);letter-spacing:-.02em}
+.provider-model-meta{margin-top:8px}
+.provider-model-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.provider-model-label{display:block;font-size:10px;font-weight:700;letter-spacing:.7px;text-transform:uppercase;color:var(--text-soft);margin-bottom:5px}
+.provider-model-stats strong{font-size:13px;color:var(--text)}
+.collapsible-section{background:linear-gradient(180deg, rgba(23,30,44,.98), rgba(19,25,37,.98));border:1px solid var(--border);border-radius:18px;box-shadow:0 10px 26px rgba(0,0,0,.18);overflow:hidden}
+.collapsible-header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:20px 22px}
+.collapsible-trigger{flex:1;display:flex;align-items:flex-start;justify-content:space-between;gap:16px;border:none;background:transparent;color:inherit;cursor:pointer;text-align:left;padding:0}
+.collapsible-heading{display:flex;flex-direction:column;gap:6px;min-width:0}
+.collapsible-title-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.collapsible-summary{font-size:13px;color:var(--text-muted)}
+.collapsible-actions{display:flex;align-items:center;gap:10px;flex-shrink:0}
+.collapsible-chevron{display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;border-radius:999px;border:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.03);color:var(--text-muted);transition:transform .2s ease, border-color .2s ease, color .2s ease}
+.collapsible-section[data-collapsed="false"] .collapsible-chevron{transform:rotate(180deg);color:var(--title);border-color:rgba(88,166,255,.24)}
+.collapsible-body{padding:0 22px 22px}
+.collapsible-section[data-collapsed="true"] .collapsible-body{display:none}
+.inline-action-btn{display:inline-flex;align-items:center;gap:8px;min-height:36px;padding:7px 12px;border-radius:10px;border:1px solid rgba(88,166,255,.2);background:rgba(88,166,255,.08);color:var(--text);font-size:12px;font-weight:700}
+.inline-action-btn:hover{border-color:#58a6ff;color:#f0f6fc}
+.bottom-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(320px,.92fr);gap:18px}
 @media(max-width:1080px){.primary-grid,.secondary-grid{grid-template-columns:1fr}.attention-summary,.budget-overview{grid-template-columns:repeat(2,minmax(0,1fr))}.budget-form{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@media(max-width:700px){.attention-summary,.budget-overview,.budget-form{grid-template-columns:1fr}.budget-summary-row,.budget-supporting,.section-header{align-items:flex-start;flex-direction:column}.budget-form-group.span-2{grid-column:auto}}
+@media(max-width:900px){.provider-model-grid,.bottom-grid{grid-template-columns:1fr}.provider-model-stats{grid-template-columns:1fr 1fr 1fr}}
+@media(max-width:700px){.attention-summary,.budget-overview,.budget-form,.provider-model-stats{grid-template-columns:1fr}.budget-summary-row,.budget-supporting,.section-header,.collapsible-header,.collapsible-trigger{align-items:flex-start;flex-direction:column}.budget-form-group.span-2{grid-column:auto}.collapsible-actions{width:100%;justify-content:space-between}}
 .scroll-top{position:fixed;right:22px;bottom:74px;width:42px;height:42px;border:none;border-radius:999px;background:linear-gradient(135deg, rgba(34,197,94,.92), rgba(88,166,255,.78));color:#081016;box-shadow:0 14px 30px rgba(0,0,0,.28);cursor:pointer;display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transform:translateY(10px);z-index:120}
 .scroll-top.visible{opacity:1;pointer-events:auto;transform:translateY(0)}
 </style>
@@ -1105,12 +1188,19 @@ def _fetch_data(time_range):
     api_cost = 0
     sub_tokens = 0
     local_tokens = 0
+    paid_request_count = 0
     try:
         c.execute(
             f"SELECT COALESCE(SUM(cost_usd), 0) as v FROM requests "
             f"WHERE COALESCE(provider_type, 'api') = 'api'{and_clause}"
         )
         api_cost = c.fetchone()["v"] or 0
+        c.execute(
+            f"SELECT COUNT(*) as v FROM requests "
+            f"WHERE COALESCE(provider_type, 'api') = 'api' "
+            f"AND COALESCE(cost_usd, 0) > 0{and_clause}"
+        )
+        paid_request_count = c.fetchone()["v"] or 0
 
         c.execute(
             f"SELECT COALESCE(SUM(input_tokens + output_tokens), 0) as v "
@@ -1128,6 +1218,10 @@ def _fetch_data(time_range):
             f"SELECT COALESCE(SUM(cost_usd), 0) as v FROM requests{where}"
         )
         api_cost = c.fetchone()["v"] or 0
+        c.execute(
+            f"SELECT COUNT(*) as v FROM requests{_append_sql_condition(where, 'COALESCE(cost_usd, 0) > 0')}"
+        )
+        paid_request_count = c.fetchone()["v"] or 0
 
     # Daily chart data
     days = _chart_days(time_range)
@@ -1137,7 +1231,8 @@ def _fetch_data(time_range):
         f"COALESCE(SUM(cost_usd), 0) as cost "
         f"FROM requests "
         f"WHERE timestamp >= datetime('now', '-{days} days') "
-        f"GROUP BY day, prov ORDER BY day"
+        f"GROUP BY day, prov HAVING COALESCE(SUM(cost_usd), 0) > 0 "
+        f"ORDER BY day"
     )
     daily_raw = [dict(r) for r in c.fetchall()]
 
@@ -1150,10 +1245,11 @@ def _fetch_data(time_range):
             f"COALESCE(SUM(cost_usd), 0) as cost, "
             f"COALESCE(provider_type, 'api') as ptype, "
             f"SUM(CASE WHEN COALESCE(error_message, '') = '' THEN 1 ELSE 0 END) as success_cnt, "
-            f"MAX(COALESCE(error_message, '')) as sample_error "
+            f"MAX(COALESCE(error_message, '')) as sample_error, "
+            f"MAX(timestamp) as last_used "
             f"FROM requests{where} "
             f"GROUP BY model, provider "
-            f"ORDER BY (inp + outp) DESC LIMIT 15"
+            f"ORDER BY cnt DESC, (inp + outp) DESC"
         )
         models = [dict(r) for r in c.fetchall()]
     except Exception:
@@ -1164,12 +1260,15 @@ def _fetch_data(time_range):
             f"COALESCE(SUM(cost_usd), 0) as cost, "
             f"'api' as ptype, "
             f"SUM(CASE WHEN COALESCE(error_message, '') = '' THEN 1 ELSE 0 END) as success_cnt, "
-            f"MAX(COALESCE(error_message, '')) as sample_error "
+            f"MAX(COALESCE(error_message, '')) as sample_error, "
+            f"MAX(timestamp) as last_used "
             f"FROM requests{where} "
             f"GROUP BY model, provider "
-            f"ORDER BY (inp + outp) DESC LIMIT 15"
+            f"ORDER BY cnt DESC, (inp + outp) DESC"
         )
         models = [dict(r) for r in c.fetchall()]
+
+    models = _normalize_model_rows(models)
 
     # Recent requests with extended columns
     base_cols = (
@@ -1403,10 +1502,13 @@ def _fetch_data(time_range):
         "total_requests": total_requests,
         "total_tokens": total_tokens,
         "api_cost": api_cost,
+        "paid_request_count": paid_request_count,
+        "avg_cost_per_request": (api_cost / paid_request_count) if paid_request_count else 0.0,
         "sub_tokens": sub_tokens,
         "local_tokens": local_tokens,
         "daily_raw": daily_raw,
         "models": models,
+        "active_model_count": _active_model_count(models),
         "requests": requests_rows,
         "chart_days": days,
         "activity_60s": activity_60s,
@@ -2350,6 +2452,62 @@ def _format_budget_alert_time(ts):
         return ts
 
 
+def _build_collapsible_section(section_id, kicker, title, subtitle, summary, content_html,
+                               default_collapsed=True, extra_actions="", extra_class=""):
+    collapsed_attr = "true" if default_collapsed else "false"
+    collapsed_class = " is-collapsible is-default-collapsed" if default_collapsed else " is-collapsible"
+    class_name = f"collapsible-section{collapsed_class} {extra_class}".strip()
+    return f"""<section class="{class_name}" id="{_escape_html(section_id)}" data-collapsible-id="{_escape_html(section_id)}" data-default-collapsed="{collapsed_attr}">
+  <div class="collapsible-header">
+    <button type="button" class="collapsible-trigger" data-collapsible-trigger aria-expanded="false" aria-controls="{_escape_html(section_id)}-body">
+      <div class="collapsible-heading">
+        <div class="section-kicker">{_escape_html(kicker)}</div>
+        <div class="collapsible-title-row">
+          <div class="section-title" style="margin-bottom:0">{_escape_html(title)}</div>
+          <div class="collapsible-summary" id="{_escape_html(section_id)}-summary">{summary}</div>
+        </div>
+        <div class="section-subtitle">{_escape_html(subtitle)}</div>
+      </div>
+      <span class="collapsible-chevron" aria-hidden="true">&#9662;</span>
+    </button>
+    <div class="collapsible-actions">
+      {extra_actions}
+    </div>
+  </div>
+  <div class="collapsible-body" id="{_escape_html(section_id)}-body">
+    {content_html}
+  </div>
+</section>"""
+
+
+def _budget_summary_text(budgets):
+    monthly = [item for item in (budgets or []) if (item.get("period") or "").lower() == "monthly"]
+    if not monthly:
+        return "No monthly budget set"
+    used = sum(float(item.get("current_spend") or 0.0) for item in monthly)
+    threshold = sum(float(item.get("threshold_usd") or 0.0) for item in monthly)
+    pct = (used / threshold * 100.0) if threshold > 0 else 0.0
+    return f"Monthly budget: {fmt_cost(used)} used of {fmt_cost(threshold)} ({pct:.0f}%)"
+
+
+def _attention_summary_text(reliability_data, error_data, budget_forecasts):
+    issues = 0
+    issues += sum(1 for item in (budget_forecasts or []) if item.get("is_over"))
+    issues += sum(
+        1 for item in (budget_forecasts or [])
+        if not item.get("is_over") and (
+            ((item.get("current_spend", 0.0) / item.get("threshold_usd", 1.0)) * 100.0) >= 75.0
+            if item.get("threshold_usd", 0.0) else False
+        )
+    )
+    issues += min(3, len((reliability_data or {}).get("anomalies") or []))
+    if (error_data or {}).get("total_errors", 0) > 0:
+        issues += 1
+    if issues <= 0:
+        return "All clear"
+    return f"{issues} item{'s' if issues != 1 else ''} need attention"
+
+
 def _build_budget_section(budgets, all_budgets, alert_history):
     """Build the budget status section with progress bars."""
     if not budgets:
@@ -2580,9 +2738,226 @@ def _build_budget_section(budgets, all_budgets, alert_history):
 
 def _build_optimizer_section(opt_data):
     """Build cost optimization recommendation cards."""
+    recommendations = _optimizer_recommendations(opt_data)
+    if not opt_data:
+        return ""
+    if not recommendations:
+        return f"""<div class="optimizer-section">
+  {_render_empty_state(
+      "Looking good",
+      "No optimization opportunities found. Current usage looks efficient across the models and providers TokenPulse can evaluate.",
+      "Action hint: revisit this panel after larger prompt, model, or routing changes.",
+      '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M5 13l4 4L19 7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+  )}
+</div>"""
+
+    cards = []
+    for rec in recommendations:
+        savings_html = ""
+        if rec.get("savings_str"):
+            savings_html = f'<span class="optimizer-savings">Save {rec["savings_str"]}</span>'
+        cards.append(
+            f'<div class="optimizer-card">'
+            f'<div class="optimizer-card-header">'
+            f'<span class="optimizer-icon">{rec["icon"]}</span>'
+            f'<span class="optimizer-title">{_escape_html(rec["title"])}</span>'
+            f'{savings_html}'
+            f'</div>'
+            f'<div class="optimizer-desc">{rec["desc"]}</div>'
+            f'</div>'
+        )
+
+    cards_html = "\n".join(cards)
+    return f"""<div class="optimizer-section loading-surface reveal reveal-delay-2">
+  <div class="optimizer-grid">
+    {cards_html}
+  </div>
+</div>"""
+
+
+def _optimizer_summary_text(opt_data):
+    recommendations = _optimizer_recommendations(opt_data)
+    potential_savings = sum(float(item.get("savings") or 0.0) for item in recommendations)
+    if potential_savings > 0:
+        return f"Potential savings: {fmt_cost(potential_savings)}"
+    if recommendations:
+        return f"{len(recommendations)} optimization opportunit{'y' if len(recommendations) == 1 else 'ies'}"
+    return "No obvious savings found"
+
+
+def _context_audit_summary_text(audit_data=None):
+    if audit_data:
+        score = int(audit_data.get("score", 100) or 100)
+        return f"Audit score: {score}/100"
+    return "Run audit to score this range"
+
+
+def _reliability_summary_text(reliability_data):
+    summary = (reliability_data or {}).get("summary") or {}
+    anomalies = (reliability_data or {}).get("anomalies") or []
+    if not _has_reliability_issues(reliability_data):
+        return "No current reliability issues"
+    return (
+        f"Success {summary.get('success_rate_pct', 100.0):.1f}%"
+        f" · {len(anomalies)} anomal{'y' if len(anomalies) == 1 else 'ies'}"
+    )
+
+
+def _insights_summary_text(insights_html):
+    return "Generated insights available" if insights_html else "No additional insights"
+
+
+def _build_stats_cards(data):
+    trend = data.get("trend", {})
+    sparklines = data.get("sparklines", {})
+
+    def spark_vals(key):
+        return [v for _, v in sparklines.get(key, [])]
+
+    spend_spark = _sparkline_svg(spark_vals("spend_days"), "#22c55e")
+    req_spark = _sparkline_svg(spark_vals("req_days"), "#58a6ff")
+    spend_trend = _trend_html(data["api_cost"], trend.get("api_cost_prev"))
+    req_trend = _trend_html(data["total_requests"], trend.get("total_requests_prev"))
+    active_models = data.get("active_model_count", 0)
+    avg_cost = data.get("avg_cost_per_request", 0.0)
+
+    cards = []
+    if data.get("api_cost", 0.0) > 0:
+        cards.append(f"""<div class="stat-card loading-surface reveal reveal-delay-1">
+    <div class="stat-label">Total Spend</div>
+    <div class="stat-value clr-green" data-countup="{data['api_cost']:.4f}" data-prefix="$" data-decimals="2">{fmt_cost(data['api_cost'])}</div>
+    <div class="stat-sub">{data.get('paid_request_count', 0):,} paid request{'s' if data.get('paid_request_count', 0) != 1 else ''}</div>
+    {spend_trend}
+    {spend_spark}
+  </div>""")
+    cards.append(f"""<div class="stat-card loading-surface reveal reveal-delay-2">
+    <div class="stat-label">Total Requests</div>
+    <div class="stat-value" data-countup="{float(data['total_requests'])}">{data['total_requests']:,}</div>
+    <div class="stat-sub">{fmt_tokens(data['total_tokens'])} total tokens</div>
+    {req_trend}
+    {req_spark}
+  </div>""")
+    if avg_cost > 0:
+        cards.append(f"""<div class="stat-card loading-surface reveal reveal-delay-3">
+    <div class="stat-label">Avg Cost / Request</div>
+    <div class="stat-value clr-blue" data-countup="{avg_cost:.6f}" data-prefix="$" data-decimals="4">{fmt_cost(avg_cost)}</div>
+    <div class="stat-sub">Average across billable requests</div>
+  </div>""")
+    if active_models > 0:
+        cards.append(f"""<div class="stat-card loading-surface reveal reveal-delay-4">
+    <div class="stat-label">Active Models</div>
+    <div class="stat-value clr-purple" data-countup="{float(active_models)}">{active_models:,}</div>
+    <div class="stat-sub">Provider-model lanes with requests in range</div>
+  </div>""")
+    return '<div class="stats">' + "".join(cards) + "</div>"
+
+
+def _build_model_breakdown(data):
+    models = data["models"]
+    if not models:
+        return (
+            '<div class="chart-empty">'
+            + _render_empty_state(
+                "No model activity yet",
+                "Provider and model cards appear once TokenPulse sees active traffic in this range.",
+                "Action hint: send a request through the proxy to populate the provider and model summary.",
+                _pulse_mark_svg(28),
+            )
+            + '</div>'
+        )
+
+    cards = []
+    for index, item in enumerate(models):
+        provider = item.get("provider") or "unknown"
+        model = item.get("model") or "Other"
+        request_count = item.get("cnt") or 0
+        if request_count <= 0:
+            continue
+        tokens = int(item.get("inp") or 0) + int(item.get("outp") or 0)
+        last_used = relative_time(item.get("last_used", "")) if item.get("last_used") else "—"
+        ptype = item.get("ptype", "api")
+        if ptype == "subscription":
+            cost_html = '<span class="model-cost" style="color:#58a6ff">included</span>'
+        elif ptype == "local":
+            cost_html = '<span class="model-cost" style="color:#94a3b8">free</span>'
+        else:
+            cost_html = f'<span class="model-cost clr-green">{fmt_cost(item.get("cost", 0.0))}</span>'
+        cards.append(
+            f'<article class="provider-model-card loading-surface reveal reveal-delay-{1 + (index % 4)}">'
+            f'<div class="provider-model-top">'
+            f'<div>'
+            f'<div class="provider-model-name" title="{_escape_html(model)}">{_escape_html(model)}</div>'
+            f'<div class="provider-model-meta">{provider_badge_html(provider)}</div>'
+            f'</div>'
+            f'{cost_html}'
+            f'</div>'
+            f'<div class="provider-model-stats">'
+            f'<div><span class="provider-model-label">Requests</span><strong>{request_count:,}</strong></div>'
+            f'<div><span class="provider-model-label">Tokens</span><strong>{fmt_compact_number(tokens)}</strong></div>'
+            f'<div><span class="provider-model-label">Last used</span><strong>{_escape_html(last_used)}</strong></div>'
+            f'</div>'
+            f'</article>'
+        )
+
+    if not cards:
+        return (
+            '<div class="chart-empty">'
+            + _render_empty_state(
+                "No active model lanes",
+                "Everything in this range filtered out because there were no active requests to display.",
+                "Action hint: change the range or wait for more traffic.",
+                _pulse_mark_svg(28),
+            )
+            + '</div>'
+        )
+
+    return '<div class="provider-model-grid">' + "".join(cards) + "</div>"
+
+
+def _build_optimizer_section(opt_data):
+    """Build cost optimization recommendation cards."""
+    recommendations = _optimizer_recommendations(opt_data)
     if not opt_data:
         return ""
 
+    if not recommendations:
+        return f"""<div class="optimizer-section">
+  {_render_empty_state(
+      "Looking good",
+      "No optimization opportunities found. Current usage looks efficient across the models and providers TokenPulse can evaluate.",
+      "Action hint: revisit this panel after larger prompt, model, or routing changes.",
+      '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M5 13l4 4L19 7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+  )}
+</div>"""
+
+    # Sort by savings desc
+    recommendations.sort(key=lambda x: x["savings"], reverse=True)
+
+    cards = []
+    for rec in recommendations:
+        savings_html = ""
+        if rec.get("savings_str"):
+            savings_html = f'<span class="optimizer-savings">Save {rec["savings_str"]}</span>'
+        cards.append(
+            f'<div class="optimizer-card">'
+            f'<div class="optimizer-card-header">'
+            f'<span class="optimizer-icon">{rec["icon"]}</span>'
+            f'<span class="optimizer-title">{_escape_html(rec["title"])}</span>'
+            f'{savings_html}'
+            f'</div>'
+            f'<div class="optimizer-desc">{rec["desc"]}</div>'
+            f'</div>'
+        )
+
+    cards_html = "\n".join(cards)
+    return f"""<div class="optimizer-section loading-surface reveal reveal-delay-2">
+  <div class="optimizer-grid">
+    {cards_html}
+  </div>
+</div>"""
+
+
+def _optimizer_recommendations(opt_data):
     recommendations = []
 
     # 1. Model downgrade opportunities
@@ -2739,43 +3114,7 @@ def _build_optimizer_section(opt_data):
             "savings_str": None,
         })
 
-    if not recommendations:
-        return f"""<div class="optimizer-section">
-  <div class="section-title">Cost Optimizer</div>
-  {_render_empty_state(
-      "Looking good",
-      "No optimization opportunities found. Current usage looks efficient across the models and providers TokenPulse can evaluate.",
-      "Action hint: revisit this panel after larger prompt, model, or routing changes.",
-      '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M5 13l4 4L19 7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
-  )}
-</div>"""
-
-    # Sort by savings desc
-    recommendations.sort(key=lambda x: x["savings"], reverse=True)
-
-    cards = []
-    for rec in recommendations:
-        savings_html = ""
-        if rec.get("savings_str"):
-            savings_html = f'<span class="optimizer-savings">Save {rec["savings_str"]}</span>'
-        cards.append(
-            f'<div class="optimizer-card">'
-            f'<div class="optimizer-card-header">'
-            f'<span class="optimizer-icon">{rec["icon"]}</span>'
-            f'<span class="optimizer-title">{_escape_html(rec["title"])}</span>'
-            f'{savings_html}'
-            f'</div>'
-            f'<div class="optimizer-desc">{rec["desc"]}</div>'
-            f'</div>'
-        )
-
-    cards_html = "\n".join(cards)
-    return f"""<div class="optimizer-section loading-surface reveal reveal-delay-2">
-  <div class="section-title">Cost Optimizer</div>
-  <div class="optimizer-grid">
-    {cards_html}
-  </div>
-</div>"""
+    return recommendations
 
 
 def _build_project_section(projects):
@@ -3238,18 +3577,7 @@ def _build_context_audit_section(audit_data):
 
 def _build_context_audit_placeholder_section(time_range):
     """Build the on-demand Context Audit placeholder."""
-    return f"""<div class="reliability-section reveal reveal-delay-2" id="contextAuditSection" data-default-range="{_escape_html(time_range)}">
-  <div class="section-header">
-    <div class="section-heading">
-      <div class="section-kicker">Optimization</div>
-      <div class="section-title" style="margin-bottom:0">Context Audit</div>
-      <div class="section-subtitle">Analyze your usage patterns for waste and optimization opportunities</div>
-    </div>
-    <button type="button" class="audit-trigger-btn" id="contextAuditTrigger" aria-controls="contextAuditContent">
-      <span class="audit-trigger-spinner" aria-hidden="true"></span>
-      <span class="audit-trigger-label">Run Audit</span>
-    </button>
-  </div>
+    return f"""<div class="reliability-section reveal reveal-delay-2" data-default-range="{_escape_html(time_range)}">
   <div class="context-audit-shell" id="contextAuditContent">
     <div class="context-audit-trigger-card">
       <div class="context-audit-trigger-copy">Run the audit only when you need it. TokenPulse will analyze the currently selected time range and group likely waste separately from optimization opportunities.</div>
@@ -3552,55 +3880,6 @@ def _build_error_section(error_data, time_range):
 </div>"""
 
 
-def _build_stats_cards(data):
-    trend = data.get("trend", {})
-    sparklines = data.get("sparklines", {})
-
-    def spark_vals(key):
-        return [v for _, v in sparklines.get(key, [])]
-
-    spend_spark = _sparkline_svg(spark_vals("spend_days"), "#22c55e")
-    sub_spark = _sparkline_svg(spark_vals("sub_days"), "#58a6ff")
-    local_spark = _sparkline_svg(spark_vals("local_days"), "#a78bfa")
-    req_spark = _sparkline_svg(spark_vals("req_days"), "#c9d1d9")
-
-    api_trend = _trend_html(data["api_cost"], trend.get("api_cost_prev"))
-    sub_trend = _trend_html(data["sub_tokens"], trend.get("sub_tokens_prev"))
-    local_trend = _trend_html(data["local_tokens"], trend.get("local_tokens_prev"))
-    req_trend = _trend_html(data["total_requests"], trend.get("total_requests_prev"))
-
-    return f"""<div class="stats">
-  <div class="stat-card loading-surface reveal reveal-delay-1">
-    <div class="stat-label">API Spend</div>
-    <div class="stat-value clr-green" data-countup="{data['api_cost']:.4f}" data-prefix="$" data-decimals="2">{fmt_cost(data['api_cost'])}</div>
-    <div class="stat-sub">paid API calls</div>
-    {api_trend}
-    {spend_spark}
-  </div>
-  <div class="stat-card loading-surface reveal reveal-delay-2">
-    <div class="stat-label">Subscription Usage</div>
-    <div class="stat-value clr-blue" data-countup="{float(data['sub_tokens'])}" data-format="compact">{fmt_tokens(data['sub_tokens'])}</div>
-    <div class="stat-sub">tokens &middot; included in plan</div>
-    {sub_trend}
-    {sub_spark}
-  </div>
-  <div class="stat-card loading-surface reveal reveal-delay-3">
-    <div class="stat-label">Local Usage</div>
-    <div class="stat-value clr-purple" data-countup="{float(data['local_tokens'])}" data-format="compact">{fmt_tokens(data['local_tokens'])}</div>
-    <div class="stat-sub">tokens &middot; free</div>
-    {local_trend}
-    {local_spark}
-  </div>
-  <div class="stat-card loading-surface reveal reveal-delay-4">
-    <div class="stat-label">Total Requests</div>
-    <div class="stat-value" data-countup="{float(data['total_requests'])}">{data['total_requests']:,}</div>
-    <div class="stat-sub">{fmt_tokens(data['total_tokens'])} total tokens</div>
-    {req_trend}
-    {req_spark}
-  </div>
-</div>"""
-
-
 def _build_svg_spend_chart(data):
     """Build a stacked area SVG spend chart."""
     daily_raw = data["daily_raw"]
@@ -3832,84 +4111,6 @@ def _build_svg_spend_chart(data):
         + tooltip_html
         + "</div>"
     )
-
-
-def _build_model_breakdown(data):
-    models = data["models"]
-    if not models:
-        return (
-            '<div class="chart-empty">'
-            + _render_empty_state(
-                "No model activity yet",
-                "Model usage cards appear once TokenPulse sees identifiable successful model traffic in this range.",
-                "Action hint: send a request through the proxy to populate provider and model breakdowns.",
-                _pulse_mark_svg(28),
-            )
-            + '</div>'
-        )
-
-    max_tok = max((m["inp"] + m["outp"] for m in models), default=1)
-    if max_tok == 0:
-        max_tok = 1
-
-    items = []
-    for m in models:
-        success_cnt = m.get("success_cnt", 0) or 0
-        if _is_unknownish(m.get("model")) and success_cnt == 0:
-            continue
-        model_name = _display_model_name(
-            m.get("model"),
-            m.get("provider"),
-            m.get("sample_error"),
-            success_count=success_cnt,
-        )
-        prov = m["provider"] or "unknown"
-        ptype = m.get("ptype", "api")
-        tok = m["inp"] + m["outp"]
-        bar_w = int((tok / max_tok) * 100)
-
-        if ptype == "subscription":
-            cost_html = '<span class="model-cost" style="color:#58a6ff">included</span>'
-            bar_color = "#58a6ff"
-        elif ptype == "local":
-            cost_html = '<span class="model-cost" style="color:#a78bfa">free</span>'
-            bar_color = "#a78bfa"
-        else:
-            cost_html = f'<span class="model-cost clr-green">{fmt_cost(m["cost"])}</span>'
-            bar_color = "#22c55e"
-
-        items.append(
-            f'<div class="model-item loading-surface reveal reveal-delay-1">'
-            f'<div class="model-row">'
-            f'<div>'
-            f'<div class="model-name" title="{_escape_html(model_name)}">{_escape_html(model_name)}</div>'
-            f'<div class="model-meta">'
-            f"{provider_badge_html(prov)} "
-            f"<span>{m['cnt']} reqs</span> "
-            f"<span title=\"{fmt_tokens(tok)} tokens\">{fmt_compact_number(tok)} tokens</span>"
-            f"</div>"
-            f"</div>"
-            f"{cost_html}"
-            f"</div>"
-            f'<div class="usage-bar-bg">'
-            f'<div class="usage-bar-fill" style="width:{bar_w}%;background:{bar_color};color:{bar_color}"></div>'
-            f"</div>"
-            f"</div>"
-        )
-
-    if not items:
-        return (
-            '<div class="chart-empty">'
-            + _render_empty_state(
-                "No identifiable model traffic yet",
-                "Tracked requests exist, but the current range is dominated by failures without reliable model metadata.",
-                "Action hint: check Error Monitor for unidentified failed requests.",
-                _pulse_mark_svg(28),
-            )
-            + '</div>'
-        )
-
-    return '<div class="model-list">' + "\n".join(items) + "</div>"
 
 
 def _build_heatmap(data):
@@ -4427,6 +4628,27 @@ function initRangeIndicators() {{
   }});
 }}
 
+function initCollapsibleSections() {{
+  document.querySelectorAll('[data-collapsible-id]').forEach(function(section) {{
+    var id = section.getAttribute('data-collapsible-id');
+    var trigger = section.querySelector('[data-collapsible-trigger]');
+    if (!id || !trigger) return;
+    var storageKey = 'tp:collapse:' + id;
+    var defaultCollapsed = section.getAttribute('data-default-collapsed') === 'true';
+    var stored = null;
+    try {{ stored = window.localStorage.getItem(storageKey); }} catch (e) {{}}
+    var collapsed = stored == null ? defaultCollapsed : stored === 'true';
+    section.setAttribute('data-collapsed', collapsed ? 'true' : 'false');
+    trigger.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    trigger.addEventListener('click', function() {{
+      var next = section.getAttribute('data-collapsed') !== 'true';
+      section.setAttribute('data-collapsed', next ? 'true' : 'false');
+      trigger.setAttribute('aria-expanded', next ? 'false' : 'true');
+      try {{ window.localStorage.setItem(storageKey, next ? 'true' : 'false'); }} catch (e) {{}}
+    }});
+  }});
+}}
+
 function initCountups() {{
   document.querySelectorAll('[data-countup]').forEach(function(el) {{
     var target = Number(el.getAttribute('data-countup') || '0');
@@ -4603,11 +4825,12 @@ function initLoadedState() {{
 
 function getCurrentTimeRange() {{
   var auditSection = document.getElementById('contextAuditSection');
+  var auditRangeSource = document.querySelector('#contextAuditSection [data-default-range]');
   try {{
     var params = new URLSearchParams(window.location.search);
-    return params.get('range') || (auditSection && auditSection.getAttribute('data-default-range')) || document.documentElement.getAttribute('data-range') || 'today';
+    return params.get('range') || (auditRangeSource && auditRangeSource.getAttribute('data-default-range')) || (auditSection && auditSection.getAttribute('data-default-range')) || document.documentElement.getAttribute('data-range') || 'today';
   }} catch (e) {{
-    return (auditSection && auditSection.getAttribute('data-default-range')) || document.documentElement.getAttribute('data-range') || 'today';
+    return (auditRangeSource && auditRangeSource.getAttribute('data-default-range')) || (auditSection && auditSection.getAttribute('data-default-range')) || document.documentElement.getAttribute('data-range') || 'today';
   }}
 }}
 
@@ -4620,6 +4843,11 @@ function setAuditButtonsLoading(isLoading) {{
     var label = btn.querySelector('.audit-trigger-label');
     if (label) label.textContent = isLoading ? 'Running Audit...' : 'Re-run Audit';
   }});
+}}
+
+function setContextAuditSummary(text) {{
+  var summary = document.getElementById('contextAuditSection-summary');
+  if (summary) summary.textContent = text;
 }}
 
 function renderContextAuditFinding(item) {{
@@ -4709,15 +4937,19 @@ function runContextAudit() {{
   var content = document.getElementById('contextAuditContent');
   if (!content) return;
   setAuditButtonsLoading(true);
+  setContextAuditSummary('Running audit...');
   content.innerHTML = '<div class="context-audit-trigger-card"><div class="context-audit-trigger-actions"><button type="button" class="audit-trigger-btn loading" disabled><span class="audit-trigger-spinner" aria-hidden="true"></span><span class="audit-trigger-label">Running Audit...</span></button><span class="context-audit-trigger-note">Fetching context audit for the current range.</span></div></div>';
   fetch('/api/context-audit?range=' + encodeURIComponent(getCurrentTimeRange()))
     .then(function(r) {{ return r.json(); }})
     .then(function(payload) {{
       if (!payload || !payload.ok) throw new Error(payload && payload.error ? payload.error : 'Audit request failed');
-      content.innerHTML = renderContextAuditContent(payload.context_audit || {{}});
+      var audit = payload.context_audit || {{}};
+      content.innerHTML = renderContextAuditContent(audit);
+      setContextAuditSummary('Audit score: ' + String(Math.round(Number(audit.score == null ? 100 : audit.score))) + '/100');
     }})
     .catch(function(err) {{
       content.innerHTML = '<div class="context-audit-trigger-card"><div class="context-audit-trigger-copy">Analyze your usage patterns for waste and optimization opportunities</div><div class="context-audit-error">Unable to run context audit: ' + escapeHtml(err && err.message ? err.message : 'unknown error') + '</div></div>';
+      setContextAuditSummary('Run audit to score this range');
     }})
     .finally(function() {{
       setAuditButtonsLoading(false);
@@ -4928,6 +5160,7 @@ document.addEventListener('DOMContentLoaded', function() {{
   initLoadedState();
   initStickyNav();
   initRangeIndicators();
+  initCollapsibleSections();
   initContextAudit();
   var actLevel = Math.min(10, Math.round(recentCount / 2));
   initTokenFlow(actLevel);
@@ -5016,7 +5249,6 @@ def build_page(time_range, page=1):
     data["time_range"] = time_range
 
     last_request_at = fmt_timestamp_full(data["requests"][0]["timestamp"]) if data.get("requests") else "—"
-    activity_section = _build_activity_section(data)
 
     stats_html = _build_stats_cards(data)
     spend_chart = _build_svg_spend_chart(data)
@@ -5047,62 +5279,120 @@ def build_page(time_range, page=1):
     opt_data = _fetch_optimizer_data()
     optimizer_html = _build_optimizer_section(opt_data)
 
-    projects = _fetch_project_breakdown()
-    project_html = _build_project_section(projects)
-
     # Insights (now with forecast and error data)
     insights_html = _build_insights(data, forecast=forecast, error_data=error_data, reliability_data=reliability_data)
+    error_html = _build_error_section(error_data, time_range) if (error_data or {}).get("total_errors", 0) > 0 else ""
+    reliability_panel = ""
+    if _has_reliability_issues(reliability_data):
+        reliability_panel = _build_collapsible_section(
+            "reliabilitySection",
+            "Health",
+            "Reliability & Latency",
+            "Only expanded when there is something worth investigating.",
+            _reliability_summary_text(reliability_data),
+            reliability_html,
+            default_collapsed=True,
+        )
+    insights_panel = ""
+    if insights_html:
+        insights_panel = _build_collapsible_section(
+            "insightsSection",
+            "Signals",
+            "Insights",
+            "Auto-generated observations for this range.",
+            _insights_summary_text(insights_html),
+            insights_html,
+            default_collapsed=True,
+        )
+    tier_two = [
+        _build_collapsible_section(
+            "budgetForecastSection",
+            "Spend control",
+            "Budget & Forecast",
+            "Budget pressure and month-end pacing stay out of the way until you need them.",
+            _budget_summary_text(budgets_status),
+            f'<div class="primary-grid">{budget_html}{forecast_html}</div>',
+            default_collapsed=True,
+        ),
+        _build_collapsible_section(
+            "attentionSection",
+            "Priority view",
+            "Attention Center",
+            "Decision-first rollup of budget pressure, failures, and reliability drift.",
+            _attention_summary_text(reliability_data, error_data, budget_forecasts),
+            attention_html,
+            default_collapsed=True,
+        ),
+        _build_collapsible_section(
+            "optimizerSection",
+            "Optimization",
+            "Cost Optimizer",
+            "Routing and prompt opportunities that may reduce spend.",
+            _optimizer_summary_text(opt_data),
+            optimizer_html,
+            default_collapsed=True,
+        ),
+        _build_collapsible_section(
+            "contextAuditSection",
+            "Optimization",
+            "Context Audit",
+            "On-demand audit for waste and routing opportunities.",
+            _context_audit_summary_text(),
+            context_audit_html,
+            default_collapsed=True,
+            extra_actions=(
+                '<button type="button" class="audit-trigger-btn" id="contextAuditTrigger" aria-controls="contextAuditContent">'
+                '<span class="audit-trigger-spinner" aria-hidden="true"></span>'
+                '<span class="audit-trigger-label">Run Audit</span>'
+                '</button>'
+            ),
+        ),
+    ]
+    tier_three = []
+    if error_html:
+        tier_three.append(error_html)
+    tier_three.append(
+        f'<div class="bottom-grid"><div>{heatmap_html}</div><div>{insights_panel or ""}</div></div>'
+        if insights_panel else heatmap_html
+    )
+    if reliability_panel:
+        tier_three.append(reliability_panel)
 
-    body = f"""{activity_section}
-
-{stats_html}
-
-  {attention_html}
-
-  <div class="primary-grid">
-    {budget_html}
-    {forecast_html}
-  </div>
-
-  <div class="secondary-grid">
-    {optimizer_html}
-    {reliability_html}
-  </div>
-
-  {context_audit_html}
-
-  {project_html}
-
-  <!-- Charts -->
-  <div class="charts-row">
-    <div class="chart-panel loading-surface reveal reveal-delay-2">
-      <div class="chart-title">Daily Spend</div>
-      {spend_chart}
+    body = f"""<div class="tier-one">
+  {stats_html}
+  <div class="chart-panel provider-summary-panel loading-surface reveal reveal-delay-2">
+    <div class="section-head compact">
+      <div>
+        <div class="section-kicker">Active lanes</div>
+        <div class="section-title">Provider / Model Summary</div>
+        <div class="section-copy">Only active provider-model combinations appear here. Unknown and unidentified traffic is folded into a single Other row.</div>
+      </div>
     </div>
-    <div class="chart-panel loading-surface reveal reveal-delay-3">
-      <div class="chart-title">Model Breakdown</div>
-      {model_breakdown}
-    </div>
+    {model_breakdown}
   </div>
-
-  <!-- Error Monitor -->
-  {error_html}
-
-  <!-- Heatmap + Insights side by side -->
-  <div class="charts-row">
-    <div style="flex:1;min-width:0">
-      {heatmap_html}
+  <div class="chart-panel loading-surface reveal reveal-delay-3">
+    <div class="section-head compact">
+      <div>
+        <div class="section-kicker">Spend</div>
+        <div class="section-title">Daily Spend</div>
+        <div class="section-copy">Billable provider spend over the selected window.</div>
+      </div>
     </div>
-    <div style="flex:1;min-width:0">
-      {insights_html}
-    </div>
+    {spend_chart}
   </div>
+</div>
 
-  <!-- Recent Requests -->
+<div class="tier-two">
+  {''.join(tier_two)}
+</div>
+
+<div class="tier-three">
+  {''.join(tier_three)}
   <div class="table-section">
     <div class="section-title">Recent Requests</div>
     {requests_table}
-  </div>"""
+  </div>
+</div>"""
 
     page_scripts = _build_page_scripts(data)
 
