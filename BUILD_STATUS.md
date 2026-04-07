@@ -1,214 +1,89 @@
 # TokenPulse — Build Status
 
-**Last updated:** 2026-03-23
-**Current phase:** Phase 2 COMPLETE ✅
+**Last updated:** 2026-04-06
+**Current architecture:** Rust proxy (port 4100) + Python web dashboard (port 4200)
+**Services:** Both run as launchd services (com.tokenpulse.proxy, com.tokenpulse.dashboard)
 
 ---
 
-## What's Built (Phase 2 — DONE)
+## What's Built and Working
 
-All code committed at: `f213fc9 Phase 2: provider routing, streaming, pricing auto-update, live dashboard`
+### Core Proxy (Rust — src-tauri/)
+- Axum-based HTTP proxy on port 4100, binds to 127.0.0.1
+- Provider routing: OpenAI, Anthropic, Google, Ollama, LM Studio, Mistral, Groq, CLIProxy, OpenRouter, OpenAI-Codex
+- Streaming SSE handling with per-provider usage extraction (Anthropic, OpenAI, Responses API)
+- Non-streaming request capture with full token/cost tracking
+- SQLite local database for all request records
+- Internal API endpoints: /api/stats, /api/requests, /api/reliability, /api/notifications, /api/budgets, /api/budget-forecasts, /api/context-audit
+- CORS restricted to localhost origins
+- Pricing auto-update from LiteLLM on startup
+- Source tag detection (Cursor, VSCode, OpenClaw, Python SDK, Node SDK)
 
-### Phase 1 files (still in place):
-- `src-tauri/src/db.rs` — SQLite layer + new: upsert_pricing, set_setting, get_price_for_model
-- `src-tauri/src/proxy.rs` — Axum proxy; all providers routed; streaming SSE forwarding; DB-aware cost calc
-- `src-tauri/src/pricing.rs` — Cost engine + parse_litellm_json + calculate_cost_with_db
-- `src-tauri/src/lib.rs` — Tauri commands + spawn_pricing_update background task on startup
-- `src-tauri/pricing.json` — Bundled fallback pricing
-- `src/App.jsx` — Live dashboard with Recharts bar chart + model breakdown
+### Web Dashboard (Python — web-dashboard.py)
+- Full analytics dashboard served on port 4200
+- Threaded HTTP server (ThreadingHTTPServer)
+- Sections: Overview, Activity, Models, Providers, Reliability, Budgets, Context Audit, Cost Optimizer
+- Time range filtering (Today, 7 Days, 30 Days, All)
+- Budget management (create, edit, delete budgets with alerts)
+- CSV export for request history
+- Dark theme, responsive layout
 
-### Phase 2 additions:
-- **Mistral** (`/mistral/` → `https://api.mistral.ai`) and **Groq** (`/groq/` → `https://api.groq.com`) routing
-- All 7 providers routed: OpenAI, Anthropic, Google, Ollama, LM Studio, Mistral, Groq
-- Streaming SSE: chunks forwarded in real-time; usage extracted from final chunk; written to DB after stream completes
-- Pricing auto-update: on launch, fetches LiteLLM JSON from GitHub, upserts into DB (skips is_custom=1 rows)
-- React dashboard: Recharts 7-day daily spend bar chart, model breakdown panel (30 days), real-time polling every 2s
-
-### Compile status: ✅ PASSES (`cargo check` clean)
-
----
-
-## What's NOT Built Yet
-
-### Phase 3 — Time Range Selectors + Polish
-- [ ] Time range selectors (Today / 7 Days / 30 Days / Month) in dashboard
-- [ ] Streaming indicator in request table (badge showing in-flight streams)
-
-### Phase 4 — Setup UX
-- [ ] Welcome/onboarding screen
-- [ ] Setup screen with tool selector (Cursor, Python SDK, shell, etc.)
-- [ ] Copy-to-clipboard env variable buttons
-- [ ] Test proxy button
-- [ ] Empty state design
-
-### Phase 5 — System Tray + Polish
-- [ ] System tray integration (Tauri plugin)
-- [ ] Launch at login
-- [ ] Settings screen (port config, pricing overrides, data retention)
-- [ ] CSV export
-
-### Phase 6 — Release Prep
-- [ ] Auto-update (Tauri updater + GitHub Releases)
-- [ ] macOS code signing
-- [ ] Windows and Linux build testing
-- [ ] Performance profiling
+### Infrastructure
+- Both services managed by launchd (auto-start on boot)
+- Database: ~/Library/Application Support/com.tokenpulse.desktop/tokenpulse.db
+- Domain: tokenpulse.to (purchased 2026-03-23)
 
 ---
 
-## How to Resume Building
+## Known Issues Being Fixed
 
-### To run the app:
+- Dashboard needs to bind to localhost only (currently binds all interfaces)
+- /api/health route falls through to forward proxy
+- Stale pricing data for some newer model families
+- Some dashboard sections don't honor time range filter consistently
+
+---
+
+## Not Built Yet (Deferred)
+
+- Landing page for tokenpulse.to
+- One-command install script
+- Provider registry (configurable providers)
+- Verification system (test routing)
+- Getting started guide for external users
+- Public GitHub release
+
+---
+
+## How to Run
+
+### Both services (already configured as launchd):
+Services auto-start. Check status:
 ```bash
+launchctl list | grep tokenpulse
+```
+
+### Manual (if needed):
+```bash
+# Proxy
 cd /Users/openclaw/.openclaw/workspace/projects/tokenpulse
-source "$HOME/.cargo/env"
-npm run tauri dev
+./src-tauri/target/release/tokenpulse
+
+# Dashboard
+python3 web-dashboard.py
 ```
 
-### To compile-check only (faster):
+### Compile proxy:
 ```bash
-cd /Users/openclaw/.openclaw/workspace/projects/tokenpulse/src-tauri
-source "$HOME/.cargo/env"
-cargo check
-```
-
-### Next Claude Code prompt: Phase 2 (Provider Coverage + Streaming)
-
-Hand this to Claude Code:
-
-```
-Continue building TokenPulse. Phase 1 (proxy server, SQLite, pricing, React dashboard) is complete and compiling.
-
-PROJECT: /Users/openclaw/.openclaw/workspace/projects/tokenpulse
-BUILD STATUS: /Users/openclaw/.openclaw/workspace/projects/tokenpulse/BUILD_STATUS.md
-FULL MVP SPEC: /Users/openclaw/.openclaw/workspace/research/api-tokenizer-mvp-plan.md
-
-PHASE 2 TASKS:
-
-1. Improve provider detection and routing in src-tauri/src/proxy.rs:
-   - Ensure Anthropic requests (Authorization: Bearer sk-ant-*) route to https://api.anthropic.com and responses parse usage.input_tokens / usage.output_tokens
-   - Ensure Google requests (Authorization: Bearer AIza*) route to https://generativelanguage.googleapis.com and parse usageMetadata.promptTokenCount / usageMetadata.candidatesTokenCount  
-   - Ensure Ollama (localhost:11434) and LM Studio (localhost:1234) are handled via OpenAI-compat format (prompt_tokens/completion_tokens)
-   - Mistral (api.mistral.ai) and Groq (api.groq.com) routing
-
-2. Implement proper streaming (SSE) handling:
-   - For streaming requests, forward SSE chunks to the client in real time as they arrive
-   - For OpenAI streaming, inject stream_options: {"include_usage": true} into the request body so the final chunk includes usage data
-   - Buffer chunks to find the final [DONE] chunk and extract usage from it
-   - Write to SQLite only after stream is complete (mark is_complete=1, is_streaming=1)
-   - If stream interrupted before final chunk, write partial record with is_complete=0
-
-3. Add pricing auto-update on app launch:
-   - On startup, spawn a background task that fetches https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json
-   - Parse it and upsert into the pricing table (skip rows where is_custom=1)
-   - Non-blocking — don't delay app startup
-   - Store last_updated timestamp in settings table
-
-4. Wire the React dashboard to real SQLite data:
-   - Replace any mock/static data in App.jsx with real Tauri invoke() calls
-   - get_recent_requests(50) for the table, polled every 2 seconds
-   - get_daily_stats(7) for the summary stats
-   - Show "No requests yet" empty state if table is empty
-
-After all changes: run `source $HOME/.cargo/env && cargo check` in src-tauri/ and fix any errors. Then commit: "Phase 2: provider coverage, streaming, pricing auto-update, live dashboard data"
-
-When completely finished: openclaw system event --text "TokenPulse Phase 2 complete: provider routing, streaming, pricing auto-update, live dashboard" --mode now
+cd src-tauri && source $HOME/.cargo/env && cargo build --release
 ```
 
 ---
 
-## Future Feature Ideas (Post-Launch)
+## Key Design Decisions
 
-### 🐛 CRITICAL BUGS FOUND (2026-03-24 overnight)
-TokenPulse proxy was deployed into OpenClaw's request path and broke both routes:
-
-**Bug 1: Header stripping**
-- TokenPulse strips the `Authorization: Bearer` header when forwarding requests
-- cliproxy at 8317 received requests without auth → returned 401
-- Root cause: proxy.rs request forwarding logic doesn't pass all original headers through to the upstream
-
-**Bug 2: Outbound HTTPS connections fail**
-- TokenPulse couldn't make outbound connections to `api.anthropic.com`
-- Requests hung until timeout (curl returned 000)
-- Root cause: likely reqwest TLS/certificate issue in the release build, or the proxy isn't forwarding to external HTTPS endpoints correctly
-
-**Bug 3: No logging**
-- tokenpulse.log was empty — silent failures
-- Need to add proper error logging to proxy.rs (eprintln at minimum, structured logging preferred)
-
-**Resolution:** Ryan bypassed TokenPulse by pointing config directly at cliproxy (8317) and Anthropic API. OpenClaw is stable. TokenPulse proxy still running on 4100 but not in the request path.
-
-**Fix plan:**
-1. Fix header passthrough in proxy.rs — MUST forward ALL original headers (Authorization, x-api-key, Content-Type, etc.)
-2. Fix outbound HTTPS — test reqwest with TLS to external APIs
-3. Add proper error logging throughout proxy.rs
-4. Test the full chain locally with curl BEFORE reconnecting to OpenClaw
-5. Only reconnect to OpenClaw after verified working
-
-### ARCHITECTURE PIVOT: Web-First Dashboard (CRITICAL — Next Session)
-- Key insight: Target users (OpenClaw, Mac Mini, Mac Studio, DGX Spark) run HEADLESS servers
-- Desktop GUI (Tauri) is wrong primary interface for headless machines
-- Web dashboard should be the PRIMARY interface, not optional
-- Architecture: Rust proxy + SQLite + embedded web server (served on port 4200)
-- Accessible from any device on the network — phone, laptop, desktop
-- Tauri desktop app becomes optional/secondary for users who want native
-- Current quick Python web dashboard at web-dashboard.py proves the concept
-- Need to build a proper React-based web dashboard served by the Rust backend
-- This simplifies the product AND better serves the actual audience
-
-### OpenClaw Native Integration (v1.1 — HIGH PRIORITY)
-- Auto-setup: OpenClaw plugin that configures proxy base URLs automatically
-- OpenClaw already has all the user's API keys — TokenPulse can pull them and register without manual setup
-- Makes OpenClaw users the natural first beta audience
-- Setup flow becomes: install TokenPulse → tell OpenClaw to connect → done
-- This is a major differentiator vs. competitors that require manual config
-
-### Live Token Visualizer (v1.1)
-- Real-time activity indicator in system tray (pulses when a request is in flight)
-- "Live" panel in dashboard showing current active request, which model, token counter ticking up during streaming
-- Token velocity graph (tokens/second) animated during inference
-- Great demo moment — watch your AI "think" in real time
-- Implementation: Tauri events or WebSocket from proxy to frontend (proxy emits events per-chunk during streaming)
-- Would make an excellent Product Hunt demo GIF
-
-### Web Dashboard / Mobile Access (v1.1)
-- Serve a lightweight read-only web dashboard on localhost:4200 alongside the proxy
-- Accessible from any device on the same network (phone, tablet) — open browser, see dashboard
-- No account, no cloud — fully local
-- Perfect for checking overnight cron job activity
-- Great for OpenClaw users who want to see AI activity from another device
-
-### Image & Video Generation Tracking (v1.2+ idea)
-- Ryan suggested tracking image/video generation APIs alongside LLM token tracking
-- Examples: Replicate, fal.ai, RunwayML, Seedance 2.0 (video), Stable Diffusion APIs, Imagen
-- Pricing model is different — per image, per second of video, or per compute unit (not tokens)
-- Schema would need a `cost_unit` field (tokens / images / seconds / compute_units)
-- Proxy architecture handles this the same way — intercept request, parse response, calculate cost
-- Good v1.2 feature once core LLM tracking is solid
-
----
-
-## Key Design Decisions (reference)
-
-- **Proxy port:** 4100 (configurable later)
-- **Local DB path:** `~/Library/Application Support/com.tokenpulse.app/tokenpulse.db` (macOS)
-- **Pricing source:** LiteLLM `model_prices_and_context_window.json` on GitHub
-- **Streaming:** OpenAI requires `stream_options: {include_usage: true}` injected
-- **Free tier limit:** 2 cloud providers (implement in Phase 5 with freemium gate)
-- **Tech stack:** Tauri 2.x + Axum + rusqlite (bundled) + React + Recharts
-
----
-
-## Revenue Model (reference)
-
-- Free: unlimited local models, 1 cloud provider, 30 days history
-- Pro: $9/month or $79/year — unlimited everything + budget alerts + CSV export
-- Launch lifetime deal: $89
-
-## Business Context
-
-- Product name: **TokenPulse**
-- Domain: **tokenpulse.to** (purchased 2026-03-23)
-- Target: developers and AI power users running hybrid cloud+local model setups
-- Gap: no existing tool tracks both cloud and local in one simple non-developer-friendly dashboard
-- MVP spec: /Users/openclaw/.openclaw/workspace/research/api-tokenizer-mvp-plan.md
-- Market research: /Users/openclaw/.openclaw/workspace/research/api-tokenizer-dashboard-market-research.md
+- **Proxy port:** 4100
+- **Dashboard port:** 4200
+- **Architecture:** Rust proxy handles all traffic forwarding + data capture. Python dashboard is read-only analytics UI that queries the same SQLite DB.
+- **Local DB path:** ~/Library/Application Support/com.tokenpulse.desktop/tokenpulse.db
+- **Pricing source:** LiteLLM model_prices_and_context_window.json (auto-fetched on startup)

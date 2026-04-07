@@ -5421,6 +5421,7 @@ def build_page(time_range, page=1):
 def _json_response(handler, status, data):
     body = json.dumps(data).encode("utf-8")
     handler.send_response(status)
+    handler.send_header("Access-Control-Allow-Origin", "http://127.0.0.1:4200")
     handler.send_header("Content-Type", "application/json")
     handler.send_header("Content-Length", str(len(body)))
     handler.end_headers()
@@ -5655,6 +5656,62 @@ class DashboardHandler(BaseHTTPRequestHandler):
             _json_response(self, 200, {"ok": True, "context_audit": _fetch_context_audit_data(time_range)})
             return
 
+        if path == "/api/stats":
+            params = parse_qs(parsed.query)
+            time_range = (params.get("range") or ["today"])[0]
+            data = _fetch_data(time_range)
+            _json_response(self, 200, {
+                "ok": True,
+                "range": time_range,
+                "total_requests": data.get("total_requests", 0),
+                "total_tokens": data.get("total_tokens", 0),
+                "api_cost": data.get("api_cost", 0.0),
+                "paid_request_count": data.get("paid_request_count", 0),
+                "avg_cost_per_request": data.get("avg_cost_per_request", 0.0),
+                "sub_tokens": data.get("sub_tokens", 0),
+                "local_tokens": data.get("local_tokens", 0),
+                "models": data.get("models", []),
+                "activity_requests_last_hour": data.get("activity_requests_last_hour", 0),
+                "activity_busiest_window": data.get("activity_busiest_window", 0),
+                "activity_last_request_at": data.get("activity_last_request_at"),
+            })
+            return
+
+        if path == "/api/requests":
+            params = parse_qs(parsed.query)
+            time_range = (params.get("range") or ["today"])[0]
+            try:
+                limit = int((params.get("limit") or ["50"])[0] or 50)
+            except (TypeError, ValueError):
+                limit = 50
+            limit = max(1, min(limit, 200))
+            data = _fetch_data(time_range)
+            _json_response(self, 200, {
+                "ok": True,
+                "range": time_range,
+                "count": min(len(data.get("requests", [])), limit),
+                "requests": (data.get("requests", [])[:limit]),
+            })
+            return
+
+        if path == "/api/reliability":
+            params = parse_qs(parsed.query)
+            time_range = (params.get("range") or ["today"])[0]
+            _json_response(self, 200, {"ok": True, "reliability": _fetch_reliability_data(time_range)})
+            return
+
+        if path == "/api/projects":
+            _json_response(self, 200, {"ok": True, "projects": _fetch_project_breakdown()})
+            return
+
+        if path == "/api/forecast":
+            _json_response(self, 200, {"ok": True, "forecast": _fetch_forecast_data()})
+            return
+
+        if path == "/api/optimizer":
+            _json_response(self, 200, {"ok": True, "optimizer": _fetch_optimizer_data()})
+            return
+
         # CSV export endpoint
         if path == "/export/csv":
             params = parse_qs(parsed.query)
@@ -5766,6 +5823,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_OPTIONS(self):
         self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "http://127.0.0.1:4200")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
@@ -5784,7 +5842,7 @@ if __name__ == "__main__":
 
     for attempt in range(MAX_RETRIES):
         try:
-            server = ThreadingHTTPServer(("", PORT), DashboardHandler)
+            server = ThreadingHTTPServer(("127.0.0.1", PORT), DashboardHandler)
             break
         except OSError as e:
             if attempt < MAX_RETRIES - 1:
@@ -5796,6 +5854,6 @@ if __name__ == "__main__":
                       flush=True)
                 raise
     print(f"TokenPulse Web Dashboard v{VERSION}", flush=True)
-    print(f"  -> http://0.0.0.0:{PORT}", flush=True)
+    print(f"  -> http://127.0.0.1:{PORT}", flush=True)
     print(f"  -> Database: {DB_PATH}", flush=True)
     server.serve_forever()

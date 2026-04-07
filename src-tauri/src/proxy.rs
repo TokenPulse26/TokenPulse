@@ -308,6 +308,68 @@ fn is_streaming_request(body: &Value) -> bool {
         .unwrap_or(false)
 }
 
+/// Detect whether a request path targets an OpenAI-style **Responses API**
+/// (as opposed to Chat Completions). Responses API endpoints accept a
+/// completely different request shape and reject `stream_options`.
+///
+/// Examples that should return `true`:
+///   - `/openai-codex/codex/responses`  (ChatGPT Plus Codex OAuth backend)
+///   - `/openai/v1/responses`           (OpenAI standard Responses API)
+///   - `/azure-openai/.../responses`    (Azure OpenAI Responses)
+///
+/// Examples that should return `false`:
+///   - `/openai/v1/chat/completions`
+///   - `/cliproxy/v1/chat/completions`
+///   - `/anthropic/v1/messages`
+fn is_responses_api_path(path: &str) -> bool {
+    // Match `/responses` as a path segment, optionally followed by query/extra
+    // segments. We deliberately use a substring check on `/responses` rather
+    // than checking the suffix, so future variants like `/responses/<id>` are
+    // also caught. The leading slash guards against false positives like
+    // `/foo-responses-bar`.
+    path.contains("/responses")
+}
+
+/// Extract usage from a single SSE event JSON object emitted by an OpenAI
+/// Responses API stream. The Responses API ships token counts in the
+/// terminal `response.completed` event under `response.usage` with field
+/// names `input_tokens` / `output_tokens` (not `prompt_tokens` /
+/// `completion_tokens` like Chat Completions).
+///
+/// Returns `(input, output, cached, reasoning)` if usage was found in this
+/// event, otherwise `None`.
+fn extract_responses_api_usage(event: &Value) -> Option<(i64, i64, i64, i64)> {
+    // The usage block lives at event.response.usage. Some intermediate events
+    // (response.created, response.in_progress) include `response.usage = null`,
+    // so we only return Some when we actually find numeric tokens.
+    let usage = event.get("response").and_then(|r| r.get("usage"))?;
+    if usage.is_null() {
+        return None;
+    }
+    let input = usage
+        .get("input_tokens")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let output = usage
+        .get("output_tokens")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let cached = usage
+        .get("input_tokens_details")
+        .and_then(|d| d.get("cached_tokens"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let reasoning = usage
+        .get("output_tokens_details")
+        .and_then(|d| d.get("reasoning_tokens"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    if input == 0 && output == 0 {
+        return None;
+    }
+    Some((input, output, cached, reasoning))
+}
+
 fn build_forward_path(provider: &ProviderInfo, original_path: &str) -> String {
     let stripped = match provider.name.as_str() {
         "anthropic" => original_path
@@ -471,7 +533,7 @@ async fn proxy_handler(
     }
 
     // ── Health check endpoint ─────────────────────────────────────────
-    if (path == "/" || path == "/health") && parts.method == Method::GET {
+    if (path == "/" || path == "/health" || path == "/api/health") && parts.method == Method::GET {
         let count: i64 = if let Ok(conn) = state.db.lock() {
             conn.query_row("SELECT COUNT(*) FROM requests", [], |row| row.get(0))
                 .unwrap_or(0)
@@ -819,8 +881,30 @@ async fn proxy_handler(
         parts.method, path, target_url, provider.name, model, is_streaming
     );
 
-    // Inject stream_options for OpenAI-compatible streaming requests (all except Anthropic, Google, Ollama)
-    if is_streaming && !matches!(provider.name.as_str(), "anthropic" | "google" | "ollama") {
+    // Inject `stream_options: {include_usage: true}` for OpenAI-compatible
+    // **Chat Completions** streaming requests so the in-stream usage block is
+    // emitted by the upstream and we can read it for accounting.
+    //
+    // Gating rules:
+    //   1. Skip non-OpenAI-shaped providers entirely. They never accepted
+    //      stream_options (anthropic uses message_delta events; google uses
+    //      usageMetadata; ollama emits prompt_eval_count/eval_count natively).
+    //   2. Skip OpenAI Responses API endpoints. The Responses API ships usage
+    //      in the terminal `response.completed` event natively and rejects
+    //      `stream_options` with HTTP 400. The most painful instance of this
+    //      is the ChatGPT Plus Codex OAuth backend at
+    //      `chatgpt.com/backend-api/codex/responses`.
+    //
+    // The path-shape check (`is_responses_api_path`) is the durable guard:
+    // any future Responses API variant (Azure, openai/v1/responses, etc.) is
+    // automatically excluded without having to add it to a hand-maintained
+    // provider name list.
+    let is_responses_api = is_responses_api_path(&path);
+    let provider_excluded = matches!(
+        provider.name.as_str(),
+        "anthropic" | "google" | "ollama"
+    );
+    if is_streaming && !provider_excluded && !is_responses_api {
         if let Some(obj) = body_json.as_object_mut() {
             obj.insert(
                 "stream_options".to_string(),
@@ -971,6 +1055,7 @@ async fn proxy_handler(
         let provider_type = get_provider_type(&provider.name);
         let db = state.db.clone();
         let model_clone = model.clone();
+        let is_responses_api_stream = is_responses_api;
 
         tokio::spawn(async move {
             let mut last_chunk_json: Option<Value> = None;
@@ -980,6 +1065,16 @@ async fn proxy_handler(
             let mut anthropic_input: i64 = 0;
             let mut anthropic_output: i64 = 0;
             let mut anthropic_cached: i64 = 0;
+            // For OpenAI Responses API streaming (incl. Codex OAuth): the usage
+            // block lives in the terminal `response.completed` event. We track
+            // it as it arrives so it survives the post-stream extraction step.
+            let mut responses_api_usage: Option<(i64, i64, i64, i64)> = None;
+            // SSE line buffer. A single SSE event can be much larger than one
+            // TCP/HTTP chunk (the Codex `response.completed` event is ~1.5 KB),
+            // so we cannot rely on each chunk containing complete `data:` lines.
+            // We accumulate UTF-8 text here and only consume up to the last
+            // newline on each iteration; the trailing partial line carries over.
+            let mut sse_buffer = String::new();
 
             while let Some(chunk_result) = stream.next().await {
                 match chunk_result {
@@ -989,43 +1084,69 @@ async fn proxy_handler(
                             first_chunk = false;
                         }
 
-                        // Parse SSE data lines for usage
-                        if let Ok(text) = std::str::from_utf8(&chunk) {
-                            for line in text.lines() {
-                                if let Some(data) = line.strip_prefix("data: ") {
-                                    if data.trim() != "[DONE]" {
-                                        if let Ok(json) = serde_json::from_str::<Value>(data) {
-                                            // Anthropic: accumulate from message_start and message_delta events
-                                            if provider_name == "anthropic" {
-                                                // message_start: {"type":"message_start","message":{"usage":{"input_tokens":X}}}
-                                                if let Some(msg) = json.get("message") {
-                                                    if let Some(usage) = msg.get("usage") {
-                                                        if let Some(v) = usage
-                                                            .get("input_tokens")
-                                                            .and_then(|v| v.as_i64())
-                                                        {
-                                                            anthropic_input = v;
-                                                        }
-                                                        if let Some(v) = usage
-                                                            .get("cache_read_input_tokens")
-                                                            .and_then(|v| v.as_i64())
-                                                        {
-                                                            anthropic_cached = v;
-                                                        }
-                                                    }
-                                                }
-                                                // message_delta: {"type":"message_delta","usage":{"output_tokens":Y}}
-                                                if let Some(usage) = json.get("usage") {
+                        // Append new bytes to the line buffer (lossy UTF-8 is
+                        // safe here: SSE is text/event-stream and any invalid
+                        // bytes would already be a protocol violation).
+                        sse_buffer.push_str(&String::from_utf8_lossy(&chunk));
+
+                        // Process every complete line in the buffer. Anything
+                        // after the last newline is a partial line that has to
+                        // wait for the next chunk.
+                        let last_newline = sse_buffer.rfind('\n');
+                        let to_process = if let Some(idx) = last_newline {
+                            // Drain `[0..=idx]` from the buffer; keep the rest.
+                            let drained: String = sse_buffer.drain(..=idx).collect();
+                            drained
+                        } else {
+                            String::new()
+                        };
+
+                        for line in to_process.lines() {
+                            if let Some(data) = line.strip_prefix("data: ") {
+                                if data.trim() != "[DONE]" {
+                                    if let Ok(json) = serde_json::from_str::<Value>(data) {
+                                        // OpenAI Responses API: scan every event for a usage
+                                        // block. The terminal `response.completed` event
+                                        // carries the final counts; intermediate events have
+                                        // `response.usage = null` and are skipped by the
+                                        // helper.
+                                        if is_responses_api_stream {
+                                            if let Some(usage) =
+                                                extract_responses_api_usage(&json)
+                                            {
+                                                responses_api_usage = Some(usage);
+                                            }
+                                        }
+                                        // Anthropic: accumulate from message_start and message_delta events
+                                        if provider_name == "anthropic" {
+                                            // message_start: {"type":"message_start","message":{"usage":{"input_tokens":X}}}
+                                            if let Some(msg) = json.get("message") {
+                                                if let Some(usage) = msg.get("usage") {
                                                     if let Some(v) = usage
-                                                        .get("output_tokens")
+                                                        .get("input_tokens")
                                                         .and_then(|v| v.as_i64())
                                                     {
-                                                        anthropic_output = v;
+                                                        anthropic_input = v;
+                                                    }
+                                                    if let Some(v) = usage
+                                                        .get("cache_read_input_tokens")
+                                                        .and_then(|v| v.as_i64())
+                                                    {
+                                                        anthropic_cached = v;
                                                     }
                                                 }
                                             }
-                                            last_chunk_json = Some(json);
+                                            // message_delta: {"type":"message_delta","usage":{"output_tokens":Y}}
+                                            if let Some(usage) = json.get("usage") {
+                                                if let Some(v) = usage
+                                                    .get("output_tokens")
+                                                    .and_then(|v| v.as_i64())
+                                                {
+                                                    anthropic_output = v;
+                                                }
+                                            }
                                         }
+                                        last_chunk_json = Some(json);
                                     }
                                 }
                             }
@@ -1074,10 +1195,37 @@ async fn proxy_handler(
                 }
             }
 
-            // Extract usage: prefer accumulated Anthropic tokens, fall back to last chunk
+            // Flush any trailing line that didn't have a final newline. Most
+            // SSE producers terminate events with `\n\n`, but defensive
+            // flushing is cheap and prevents the very last event being lost
+            // if the upstream omits the trailing newline.
+            if !sse_buffer.is_empty() {
+                for line in sse_buffer.lines() {
+                    if let Some(data) = line.strip_prefix("data: ") {
+                        if data.trim() != "[DONE]" {
+                            if let Ok(json) = serde_json::from_str::<Value>(data) {
+                                if is_responses_api_stream {
+                                    if let Some(usage) = extract_responses_api_usage(&json) {
+                                        responses_api_usage = Some(usage);
+                                    }
+                                }
+                                last_chunk_json = Some(json);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Extract usage. Resolution order:
+            //   1. Anthropic accumulator (message_start + message_delta).
+            //   2. OpenAI Responses API accumulator (response.completed event).
+            //   3. Generic last-chunk extractor (Chat Completions usage block,
+            //      Ollama native fields, etc.).
             let (input_tokens, output_tokens, cached_tokens, reasoning_tokens) =
                 if provider_name == "anthropic" && (anthropic_input > 0 || anthropic_output > 0) {
                     (anthropic_input, anthropic_output, anthropic_cached, 0)
+                } else if let Some(usage) = responses_api_usage {
+                    usage
                 } else if let Some(ref json) = last_chunk_json {
                     extract_usage(json, &provider_name)
                 } else {
