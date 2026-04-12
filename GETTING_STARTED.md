@@ -71,7 +71,7 @@ This is the most accurate path if you're building from source or testing current
 ### Build and run
 
 ```bash
-git clone git@github.com:TokenPulse26/TokenPulse.git
+git clone https://github.com/TokenPulse26/TokenPulse.git
 cd TokenPulse/src-tauri
 cargo build --release
 cd ..

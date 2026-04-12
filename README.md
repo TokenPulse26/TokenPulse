@@ -138,7 +138,7 @@ If you want the smallest honest proof-of-life check for v1, see [VERIFICATION_FL
 
 If a tool supports a custom OpenAI-compatible base URL, TokenPulse can usually sit in front of it.
 
-For the current support posture and wording guidance around local-model tracking, see [TP-09-LOCAL-MODEL-TRACKING.md](../../vault/TokenPulse/TP-09-LOCAL-MODEL-TRACKING.md) and [LMSTUDIO_INVESTIGATION_2026-04-10.md](../../vault/TokenPulse/LMSTUDIO_INVESTIGATION_2026-04-10.md).
+For current local-model tracking details, see the [Getting Started guide](GETTING_STARTED.md).
 
 ---
 
@@ -176,7 +176,7 @@ Requirements:
 - Python 3.8+
 
 ```bash
-git clone git@github.com:TokenPulse26/TokenPulse.git
+git clone https://github.com/TokenPulse26/TokenPulse.git
 cd TokenPulse
 
 # Build the Rust side currently used for the local proxy and Tauri app shell

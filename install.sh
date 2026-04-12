@@ -47,6 +47,7 @@ curl -fsSL "$BASE_URL/src-tauri/src/lib.rs" -o "$INSTALL_DIR/src-tauri/src/lib.r
 curl -fsSL "$BASE_URL/src-tauri/src/pricing.rs" -o "$INSTALL_DIR/src-tauri/src/pricing.rs"
 curl -fsSL "$BASE_URL/src-tauri/src/main.rs" -o "$INSTALL_DIR/src-tauri/src/main.rs"
 curl -fsSL "$BASE_URL/src-tauri/Cargo.toml" -o "$INSTALL_DIR/src-tauri/Cargo.toml"
+curl -fsSL "$BASE_URL/src-tauri/Cargo.lock" -o "$INSTALL_DIR/src-tauri/Cargo.lock"
 curl -fsSL "$BASE_URL/src-tauri/pricing.json" -o "$INSTALL_DIR/src-tauri/pricing.json"
 curl -fsSL "$BASE_URL/src-tauri/build.rs" -o "$INSTALL_DIR/src-tauri/build.rs"
 curl -fsSL "$BASE_URL/src-tauri/tauri.conf.json" -o "$INSTALL_DIR/src-tauri/tauri.conf.json"
