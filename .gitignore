@@ -21,6 +21,11 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
+# Leftover frontend build artifacts
+dist/
+public/
+src/
+
 # Database (user data, don't commit)
 *.db
 *.db-journal
@@ -51,3 +56,9 @@ SCREENSHOT_AND_DEMO_CHECKLIST.md
 VERIFICATION_FLOW_V1.md
 CONTEXT_AUDIT_IMPLEMENTATION_PLAN.md
 VISION.md
+AUDIT_REPORT.md
+ROADMAP.md
+REPAIR_PLAN.md
+REPAIR_REPORT.md
+DASHBOARD_CLEANUP_SPEC.md
+DASHBOARD_CLARITY_FIX_PLAN.md
