@@ -1,6 +1,6 @@
 # TokenPulse — Build Status
 
-**Last updated:** 2026-04-06
+**Last updated:** 2026-04-12
 **Current architecture:** Rust proxy (port 4100) + Python web dashboard (port 4200)
 **Services:** Both run as launchd services (com.tokenpulse.proxy, com.tokenpulse.dashboard)
 
@@ -11,6 +11,7 @@
 ### Core Proxy (Rust — src-tauri/)
 - Axum-based HTTP proxy on port 4100, binds to 127.0.0.1
 - Provider routing: OpenAI, Anthropic, Google, Ollama, LM Studio, Mistral, Groq, CLIProxy, OpenRouter, OpenAI-Codex
+- Local-model posture: Ollama is the strongest verified local-model path today, while LM Studio route support exists but remains more lightly verified
 - Streaming SSE handling with per-provider usage extraction (Anthropic, OpenAI, Responses API)
 - Non-streaming request capture with full token/cost tracking
 - SQLite local database for all request records
@@ -37,21 +38,25 @@
 
 ## Known Issues Being Fixed
 
-- Dashboard needs to bind to localhost only (currently binds all interfaces)
 - /api/health route falls through to forward proxy
 - Stale pricing data for some newer model families
 - Some dashboard sections don't honor time range filter consistently
+- LM Studio support posture still needs stronger end-to-end verification than Ollama before it should be described as equally proven
 
 ---
 
 ## Not Built Yet (Deferred)
 
-- Landing page for tokenpulse.to
-- One-command install script
+- One-command install script beyond the current narrow bootstrap path
 - Provider registry (configurable providers)
-- Verification system (test routing)
-- Getting started guide for external users
 - Public GitHub release
+
+## Built, but still being tightened
+
+- Landing page for tokenpulse.to exists, but positioning/onboarding copy is still being refined
+- Verification guidance exists in `VERIFICATION_FLOW_V1.md`, but a more polished in-product verification experience is still deferred
+- Getting started and first-tester onboarding docs now exist (`GETTING_STARTED.md`, `FIRST_TESTER_ONBOARDING.md`), but they are still being tightened for launch-readiness
+- Local-model docs now consistently frame Ollama as the stronger verified path and LM Studio as supported but lighter-confidence until more direct verification is logged
 
 ---
 

@@ -13,14 +13,14 @@ It records request metadata locally in SQLite so you can see what you're spendin
 ## How It Works
 
 ```text
-Your Tools → TokenPulse Proxy (:4100) → AI Providers
+Your Tools → TokenPulse Proxy (route on :4100) → AI Providers
                     ↓
               SQLite Database
                     ↓
             Web Dashboard (:4200)
 ```
 
-Point your tools at `http://localhost:4100` instead of the provider directly. TokenPulse forwards requests, extracts usage metadata when providers expose it, calculates cost where pricing is available, and stores the results locally.
+Point your tools at the correct TokenPulse route on `http://localhost:4100` instead of the provider directly. For example: root for OpenAI-compatible traffic, `/anthropic` for Anthropic-native clients, `/ollama` for Ollama, and `/lmstudio` for LM Studio. TokenPulse forwards requests, extracts usage metadata when providers expose it, calculates cost where pricing is available, and stores the results locally.
 
 Your API keys pass through to the upstream provider. TokenPulse is designed to track usage locally, not to relay data to a hosted TokenPulse service.
 
@@ -35,7 +35,7 @@ Your API keys pass through to the upstream provider. TokenPulse is designed to t
 - Mistral
 - Groq
 - Ollama
-- LM Studio
+- LM Studio (implemented route, lighter verification confidence today)
 - CLIProxy / subscription-style OpenAI-compatible traffic
 
 ### Usage data
@@ -67,13 +67,27 @@ Your API keys pass through to the upstream provider. TokenPulse is designed to t
 TokenPulse currently ships as:
 - a **headless-friendly local proxy**
 - a **browser-based dashboard**
-- an **optional macOS tray app** that opens the dashboard and surfaces notifications
+- a **macOS Tauri app codebase** used for local packaging, updater plumbing, and tray/app-shell behavior
 
-The browser dashboard is the primary interface. The Tauri app is not a separate desktop dashboard anymore.
+The browser dashboard is still the primary day-to-day interface.
+
+The Tauri side should currently be described as **supporting app-shell/tray infrastructure, not a separate polished desktop dashboard experience**. Repo packaging/config still exists there, so avoid implying the Tauri layer is absent. The safer claim today is that the browser dashboard is primary, while the Tauri app remains secondary and less central to the product experience.
 
 ---
 
+## Best-Supported Setup Today
+
+Today, the most reliable TokenPulse path is:
+- a technical early tester
+- running locally
+- starting from the repo or a source-based bootstrap install
+- using the browser dashboard as the main interface
+
+TokenPulse is **not yet a polished cross-platform one-click install product**. The current installer is a convenience bootstrapper for a narrow setup, not a finished general release flow.
+
 ## Quick Start
+
+If you are comfortable running from source, this is the clearest current path.
 
 **Start the proxy**
 
@@ -87,16 +101,24 @@ The browser dashboard is the primary interface. The Tauri app is not a separate 
 python3 web-dashboard.py
 ```
 
-**Point your tools at TokenPulse**
+**Point one tool at the correct TokenPulse route**
 
-```bash
-export OPENAI_BASE_URL=http://localhost:4100
-export ANTHROPIC_BASE_URL=http://localhost:4100/anthropic
+```text
+OpenAI-compatible: http://localhost:4100
+Anthropic:         http://localhost:4100/anthropic
+Ollama:            http://localhost:4100/ollama
+LM Studio:         http://localhost:4100/lmstudio
 ```
 
-Then open <http://localhost:4200>.
+If you want the cleanest first local-model test, start with **Ollama first** and treat LM Studio as a second-step route until it is re-verified successfully.
 
-For full setup steps, service configuration, and tool-specific examples, see [GETTING_STARTED.md](GETTING_STARTED.md).
+Then send one recognizable test request and open <http://127.0.0.1:4200>.
+
+For the full recommended flow, install-path details, and a first-run verification check, see [GETTING_STARTED.md](GETTING_STARTED.md).
+
+If you want the single clearest early-access path, start with [FIRST_TESTER_ONBOARDING.md](FIRST_TESTER_ONBOARDING.md).
+
+If you want the smallest honest proof-of-life check for v1, see [VERIFICATION_FLOW_V1.md](VERIFICATION_FLOW_V1.md).
 
 ---
 
@@ -111,10 +133,12 @@ For full setup steps, service configuration, and tool-specific examples, see [GE
 - **CLIProxy:** `http://localhost:4100/cliproxy`
 
 ### Local models
-- **Ollama:** `http://localhost:4100/ollama`
-- **LM Studio:** `http://localhost:4100/lmstudio`
+- **Ollama:** `http://localhost:4100/ollama` , currently the strongest verified local-model path
+- **LM Studio:** `http://localhost:4100/lmstudio` , route support exists, but this path should still be treated as a lighter-confidence route until it is re-verified successfully on a live upstream
 
 If a tool supports a custom OpenAI-compatible base URL, TokenPulse can usually sit in front of it.
+
+For the current support posture and wording guidance around local-model tracking, see [TP-09-LOCAL-MODEL-TRACKING.md](../../vault/TokenPulse/TP-09-LOCAL-MODEL-TRACKING.md) and [LMSTUDIO_INVESTIGATION_2026-04-10.md](../../vault/TokenPulse/LMSTUDIO_INVESTIGATION_2026-04-10.md).
 
 ---
 
@@ -123,7 +147,7 @@ If a tool supports a custom OpenAI-compatible base URL, TokenPulse can usually s
 - **Proxy:** Rust + Axum
 - **Dashboard:** Python standard library HTTP server
 - **Database:** SQLite
-- **Tray app:** Tauri 2.x (optional, macOS-focused)
+- **App shell / tray layer:** Tauri 2.x (macOS-focused, secondary to the browser dashboard)
 - **Pricing:** LiteLLM pricing data with a bundled fallback set for common models
 
 ---
@@ -155,7 +179,7 @@ Requirements:
 git clone git@github.com:TokenPulse26/TokenPulse.git
 cd TokenPulse
 
-# Build the proxy / tray app codebase
+# Build the Rust side currently used for the local proxy and Tauri app shell
 cd src-tauri
 cargo build --release
 cd ..
@@ -164,9 +188,11 @@ cd ..
 python3 web-dashboard.py
 ```
 
-Depending on how you launch the Rust binary, the proxy will listen on port `4100`.
+Depending on how you launch the built binary, the proxy will listen on port `4100`.
 
-To build the optional Tauri app, install Node.js first, then run the usual Tauri build flow from `src-tauri` / project root as configured in the repo.
+This source path is currently more honest and reliable than presenting TokenPulse like a fully packaged cross-platform installer product.
+
+Note: the repo still contains active Tauri packaging/build config, including frontend build hooks. So while the browser dashboard is the main user experience today, docs should not imply the Tauri layer is gone, only that it is not yet the primary polished interface.
 
 ---
 

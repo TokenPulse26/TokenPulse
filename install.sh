@@ -5,6 +5,7 @@ set -euo pipefail
 # Usage: curl -fsSL https://raw.githubusercontent.com/TokenPulse26/TokenPulse/main/install.sh | bash
 
 echo "Installing TokenPulse..."
+echo "Note: this installer is currently a bootstrap helper for macOS Apple Silicon, not a polished general release installer."
 
 # Detect OS and architecture
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -92,7 +93,7 @@ echo "  Start proxy:     $INSTALL_DIR/tokenpulse"
 echo "  Start dashboard:  python3 $INSTALL_DIR/web-dashboard.py"
 echo "  Dashboard URL:   http://localhost:4200"
 echo ""
-echo "  Point your AI tools at: http://localhost:4100"
+echo "  Point one AI tool at: http://localhost:4100"
 echo ""
-echo "  Full setup guide: $INSTALL_DIR/GETTING_STARTED.md"
+echo "  Full setup + verification guide: $INSTALL_DIR/GETTING_STARTED.md"
 echo "═══════════════════════════════════════════"

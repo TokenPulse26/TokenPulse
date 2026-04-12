@@ -65,7 +65,7 @@ If docs and packaging/version files disagree, trust the implementation first and
 - Mistral: `/mistral/...`
 - Groq: `/groq/...`
 - Ollama: `/ollama/...`
-- LM Studio: `/lmstudio/...`
+- LM Studio: `/lmstudio/...` (implemented route, but still lighter-confidence than Ollama until re-verified on a live upstream)
 - CLIProxy: `/cliproxy/...`
 
 Provider handling is not perfectly uniform because upstream APIs expose usage in different formats.
@@ -105,13 +105,15 @@ Provider handling is not perfectly uniform because upstream APIs expose usage in
 ## Useful Endpoints
 
 Served by the proxy/dashboard stack today:
-- `GET /health`
-- `GET /api/stats?range=7d`
-- `GET /api/requests?limit=50&range=7d`
-- `GET /api/budgets`
-- `GET /api/budget-alerts`
-- `GET /api/budget-forecasts`
-- `GET /export/csv?range=7d`
+- Proxy health: `GET http://127.0.0.1:4100/health`
+- Dashboard stats: `GET http://127.0.0.1:4200/api/stats?range=7d`
+- Dashboard requests: `GET http://127.0.0.1:4200/api/requests?limit=50&range=7d`
+- Dashboard budgets: `GET http://127.0.0.1:4200/api/budgets`
+- Dashboard budget alerts: `GET http://127.0.0.1:4200/api/budget-alerts`
+- Dashboard forecasts: `GET http://127.0.0.1:4200/api/budget-forecasts`
+- Dashboard CSV export: `GET http://127.0.0.1:4200/export/csv?range=7d`
+
+Contributor note: the current dashboard bind is localhost-only by default, so use `127.0.0.1:4200` when documenting or manually checking the web UI on this host.
 
 ---
 
@@ -188,4 +190,5 @@ For contributors:
 - The product is fundamentally **local-first**, not SaaS-first.
 - The **web dashboard** is the main user experience.
 - The **tray app is supportive infrastructure**, not the core UI.
+- LM Studio should currently be described as implemented but less strongly verified than Ollama.
 - If you see a mismatch between docs, packaging metadata, and code behavior, verify against the implementation before making claims.
