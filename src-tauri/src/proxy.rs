@@ -370,6 +370,101 @@ fn extract_responses_api_usage(event: &Value) -> Option<(i64, i64, i64, i64)> {
     Some((input, output, cached, reasoning))
 }
 
+fn extract_sse_field_value<'a>(line: &'a str, field: &str) -> Option<&'a str> {
+    let rest = line.strip_prefix(field)?;
+    Some(rest.strip_prefix(' ').unwrap_or(rest))
+}
+
+fn handle_stream_sse_event(
+    provider_name: &str,
+    model: &str,
+    is_responses_api_stream: bool,
+    event_name: Option<&str>,
+    data: &str,
+    last_chunk_json: &mut Option<Value>,
+    responses_api_usage: &mut Option<(i64, i64, i64, i64)>,
+    anthropic_input: &mut i64,
+    anthropic_output: &mut i64,
+    anthropic_cached: &mut i64,
+) {
+    let data = data.trim();
+    if data.is_empty() || data == "[DONE]" {
+        return;
+    }
+
+    match serde_json::from_str::<Value>(data) {
+        Ok(json) => {
+            if is_responses_api_stream {
+                if let Some(usage) = extract_responses_api_usage(&json) {
+                    *responses_api_usage = Some(usage);
+                }
+            }
+
+            if provider_name == "anthropic" {
+                let event_type = json
+                    .get("type")
+                    .and_then(|v| v.as_str())
+                    .or(event_name)
+                    .unwrap_or("unknown");
+
+                if let Some(usage) = json.get("message").and_then(|msg| msg.get("usage")) {
+                    if let Some(v) = usage.get("input_tokens").and_then(|v| v.as_i64()) {
+                        *anthropic_input = v;
+                    }
+                    if let Some(v) = usage
+                        .get("cache_read_input_tokens")
+                        .and_then(|v| v.as_i64())
+                    {
+                        *anthropic_cached = v;
+                    }
+                    if let Some(v) = usage.get("output_tokens").and_then(|v| v.as_i64()) {
+                        *anthropic_output = v;
+                    }
+                }
+
+                if let Some(usage) = json.get("usage") {
+                    if let Some(v) = usage.get("input_tokens").and_then(|v| v.as_i64()) {
+                        *anthropic_input = v;
+                    }
+                    if let Some(v) = usage
+                        .get("cache_read_input_tokens")
+                        .and_then(|v| v.as_i64())
+                    {
+                        *anthropic_cached = v;
+                    }
+                    if let Some(v) = usage.get("output_tokens").and_then(|v| v.as_i64()) {
+                        *anthropic_output = v;
+                    }
+                }
+
+                if matches!(
+                    event_type,
+                    "message_start" | "message_delta" | "message_stop"
+                ) {
+                    eprintln!(
+                        "[TokenPulse] anthropic stream event={} model={} input_tokens={} output_tokens={} cached_tokens={}",
+                        event_type, model, *anthropic_input, *anthropic_output, *anthropic_cached
+                    );
+                }
+            }
+
+            *last_chunk_json = Some(json);
+        }
+        Err(err) => {
+            if provider_name == "anthropic" {
+                let preview: String = data.chars().take(240).collect();
+                eprintln!(
+                    "[TokenPulse] anthropic stream parse error event={} model={} err={} data={}",
+                    event_name.unwrap_or("unknown"),
+                    model,
+                    err,
+                    preview
+                );
+            }
+        }
+    }
+}
+
 fn build_forward_path(provider: &ProviderInfo, original_path: &str) -> String {
     let stripped = match provider.name.as_str() {
         "anthropic" => original_path
@@ -900,10 +995,7 @@ async fn proxy_handler(
     // automatically excluded without having to add it to a hand-maintained
     // provider name list.
     let is_responses_api = is_responses_api_path(&path);
-    let provider_excluded = matches!(
-        provider.name.as_str(),
-        "anthropic" | "google" | "ollama"
-    );
+    let provider_excluded = matches!(provider.name.as_str(), "anthropic" | "google" | "ollama");
     if is_streaming && !provider_excluded && !is_responses_api {
         if let Some(obj) = body_json.as_object_mut() {
             obj.insert(
@@ -925,9 +1017,12 @@ async fn proxy_handler(
     for (name, value) in &parts.headers {
         let name_str = name.as_str();
         // Skip only hop-by-hop headers and host (host gets set by reqwest for the target URL)
+        // Also strip accept-encoding: the proxy reads the raw byte stream for SSE
+        // parsing, so compressed responses would break token extraction.
+        // reqwest's bytes_stream() does NOT auto-decompress.
         if matches!(
             name_str,
-            "host" | "connection" | "transfer-encoding" | "content-length"
+            "host" | "connection" | "transfer-encoding" | "content-length" | "accept-encoding"
         ) {
             continue;
         }
@@ -1071,10 +1166,12 @@ async fn proxy_handler(
             let mut responses_api_usage: Option<(i64, i64, i64, i64)> = None;
             // SSE line buffer. A single SSE event can be much larger than one
             // TCP/HTTP chunk (the Codex `response.completed` event is ~1.5 KB),
-            // so we cannot rely on each chunk containing complete `data:` lines.
+            // so we cannot rely on each chunk containing complete SSE events.
             // We accumulate UTF-8 text here and only consume up to the last
             // newline on each iteration; the trailing partial line carries over.
             let mut sse_buffer = String::new();
+            let mut current_sse_event: Option<String> = None;
+            let mut current_sse_data: Vec<String> = Vec::new();
 
             while let Some(chunk_result) = stream.next().await {
                 match chunk_result {
@@ -1101,54 +1198,36 @@ async fn proxy_handler(
                             String::new()
                         };
 
-                        for line in to_process.lines() {
-                            if let Some(data) = line.strip_prefix("data: ") {
-                                if data.trim() != "[DONE]" {
-                                    if let Ok(json) = serde_json::from_str::<Value>(data) {
-                                        // OpenAI Responses API: scan every event for a usage
-                                        // block. The terminal `response.completed` event
-                                        // carries the final counts; intermediate events have
-                                        // `response.usage = null` and are skipped by the
-                                        // helper.
-                                        if is_responses_api_stream {
-                                            if let Some(usage) =
-                                                extract_responses_api_usage(&json)
-                                            {
-                                                responses_api_usage = Some(usage);
-                                            }
-                                        }
-                                        // Anthropic: accumulate from message_start and message_delta events
-                                        if provider_name == "anthropic" {
-                                            // message_start: {"type":"message_start","message":{"usage":{"input_tokens":X}}}
-                                            if let Some(msg) = json.get("message") {
-                                                if let Some(usage) = msg.get("usage") {
-                                                    if let Some(v) = usage
-                                                        .get("input_tokens")
-                                                        .and_then(|v| v.as_i64())
-                                                    {
-                                                        anthropic_input = v;
-                                                    }
-                                                    if let Some(v) = usage
-                                                        .get("cache_read_input_tokens")
-                                                        .and_then(|v| v.as_i64())
-                                                    {
-                                                        anthropic_cached = v;
-                                                    }
-                                                }
-                                            }
-                                            // message_delta: {"type":"message_delta","usage":{"output_tokens":Y}}
-                                            if let Some(usage) = json.get("usage") {
-                                                if let Some(v) = usage
-                                                    .get("output_tokens")
-                                                    .and_then(|v| v.as_i64())
-                                                {
-                                                    anthropic_output = v;
-                                                }
-                                            }
-                                        }
-                                        last_chunk_json = Some(json);
-                                    }
+                        for raw_line in to_process.lines() {
+                            let line = raw_line.trim_end_matches('\r');
+                            if line.is_empty() {
+                                if !current_sse_data.is_empty() {
+                                    let event_data = current_sse_data.join("\n");
+                                    handle_stream_sse_event(
+                                        &provider_name,
+                                        &model_clone,
+                                        is_responses_api_stream,
+                                        current_sse_event.as_deref(),
+                                        &event_data,
+                                        &mut last_chunk_json,
+                                        &mut responses_api_usage,
+                                        &mut anthropic_input,
+                                        &mut anthropic_output,
+                                        &mut anthropic_cached,
+                                    );
+                                    current_sse_data.clear();
                                 }
+                                current_sse_event = None;
+                                continue;
+                            }
+
+                            if let Some(event_name) = extract_sse_field_value(line, "event:") {
+                                current_sse_event = Some(event_name.to_string());
+                                continue;
+                            }
+
+                            if let Some(data) = extract_sse_field_value(line, "data:") {
+                                current_sse_data.push(data.to_string());
                             }
                         }
 
@@ -1200,20 +1279,54 @@ async fn proxy_handler(
             // flushing is cheap and prevents the very last event being lost
             // if the upstream omits the trailing newline.
             if !sse_buffer.is_empty() {
-                for line in sse_buffer.lines() {
-                    if let Some(data) = line.strip_prefix("data: ") {
-                        if data.trim() != "[DONE]" {
-                            if let Ok(json) = serde_json::from_str::<Value>(data) {
-                                if is_responses_api_stream {
-                                    if let Some(usage) = extract_responses_api_usage(&json) {
-                                        responses_api_usage = Some(usage);
-                                    }
-                                }
-                                last_chunk_json = Some(json);
-                            }
+                for raw_line in sse_buffer.lines() {
+                    let line = raw_line.trim_end_matches('\r');
+                    if line.is_empty() {
+                        if !current_sse_data.is_empty() {
+                            let event_data = current_sse_data.join("\n");
+                            handle_stream_sse_event(
+                                &provider_name,
+                                &model_clone,
+                                is_responses_api_stream,
+                                current_sse_event.as_deref(),
+                                &event_data,
+                                &mut last_chunk_json,
+                                &mut responses_api_usage,
+                                &mut anthropic_input,
+                                &mut anthropic_output,
+                                &mut anthropic_cached,
+                            );
+                            current_sse_data.clear();
                         }
+                        current_sse_event = None;
+                        continue;
+                    }
+
+                    if let Some(event_name) = extract_sse_field_value(line, "event:") {
+                        current_sse_event = Some(event_name.to_string());
+                        continue;
+                    }
+
+                    if let Some(data) = extract_sse_field_value(line, "data:") {
+                        current_sse_data.push(data.to_string());
                     }
                 }
+            }
+
+            if !current_sse_data.is_empty() {
+                let event_data = current_sse_data.join("\n");
+                handle_stream_sse_event(
+                    &provider_name,
+                    &model_clone,
+                    is_responses_api_stream,
+                    current_sse_event.as_deref(),
+                    &event_data,
+                    &mut last_chunk_json,
+                    &mut responses_api_usage,
+                    &mut anthropic_input,
+                    &mut anthropic_output,
+                    &mut anthropic_cached,
+                );
             }
 
             // Extract usage. Resolution order:
@@ -1391,5 +1504,81 @@ pub async fn start_proxy_server(
             );
             proxy_running.store(false, Ordering::SeqCst);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{extract_sse_field_value, handle_stream_sse_event};
+    use serde_json::json;
+
+    #[test]
+    fn sse_field_value_accepts_optional_space_after_colon() {
+        assert_eq!(extract_sse_field_value("data: {\"ok\":true}", "data:"), Some("{\"ok\":true}"));
+        assert_eq!(extract_sse_field_value("data:{\"ok\":true}", "data:"), Some("{\"ok\":true}"));
+        assert_eq!(extract_sse_field_value("event: message_start", "event:"), Some("message_start"));
+    }
+
+    #[test]
+    fn anthropic_stream_usage_accumulates_from_documented_events() {
+        let mut last_chunk_json = None;
+        let mut responses_api_usage = None;
+        let mut anthropic_input = 0;
+        let mut anthropic_output = 0;
+        let mut anthropic_cached = 0;
+
+        handle_stream_sse_event(
+            "anthropic",
+            "claude-opus-4-6",
+            false,
+            Some("message_start"),
+            &json!({
+                "type": "message_start",
+                "message": {
+                    "usage": {
+                        "input_tokens": 472,
+                        "output_tokens": 2,
+                        "cache_read_input_tokens": 128
+                    }
+                }
+            })
+            .to_string(),
+            &mut last_chunk_json,
+            &mut responses_api_usage,
+            &mut anthropic_input,
+            &mut anthropic_output,
+            &mut anthropic_cached,
+        );
+
+        handle_stream_sse_event(
+            "anthropic",
+            "claude-opus-4-6",
+            false,
+            Some("message_delta"),
+            &json!({
+                "type": "message_delta",
+                "usage": {
+                    "output_tokens": 89
+                }
+            })
+            .to_string(),
+            &mut last_chunk_json,
+            &mut responses_api_usage,
+            &mut anthropic_input,
+            &mut anthropic_output,
+            &mut anthropic_cached,
+        );
+
+        assert_eq!(anthropic_input, 472);
+        assert_eq!(anthropic_output, 89);
+        assert_eq!(anthropic_cached, 128);
+        assert_eq!(
+            last_chunk_json
+                .as_ref()
+                .and_then(|json| json.get("type"))
+                .and_then(|value| value.as_str()),
+            Some("message_delta")
+        );
+        assert!(responses_api_usage.is_none());
     }
 }

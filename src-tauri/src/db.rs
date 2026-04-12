@@ -221,7 +221,12 @@ struct TopOccurrence {
     provider_count: i64,
 }
 
-fn context_audit_score_penalty(severity: &str, confidence: &str, impact_usd: f64, requests: i64) -> f64 {
+fn context_audit_score_penalty(
+    severity: &str,
+    confidence: &str,
+    impact_usd: f64,
+    requests: i64,
+) -> f64 {
     let severity_weight = match severity {
         "high" => 1.0,
         "medium" => 0.6,
@@ -237,10 +242,7 @@ fn context_audit_score_penalty(severity: &str, confidence: &str, impact_usd: f64
     (severity_weight * confidence_weight * (cost_factor + volume_factor)).min(25.0)
 }
 
-fn fetch_top_occurrence(
-    conn: &Connection,
-    filter_clause: &str,
-) -> Result<TopOccurrence> {
+fn fetch_top_occurrence(conn: &Connection, filter_clause: &str) -> Result<TopOccurrence> {
     let model_query = format!(
         "SELECT model, COUNT(*) as cnt
          FROM requests {}
@@ -322,7 +324,10 @@ fn filter_hint_for(
             "Filter recent requests to sub-500-token API calls.{}",
             route_hint
         ),
-        _ => format!("Filter recent requests to matching candidates.{}", route_hint),
+        _ => format!(
+            "Filter recent requests to matching candidates.{}",
+            route_hint
+        ),
     })
 }
 
@@ -1564,7 +1569,10 @@ pub fn get_context_audit_snapshot(
     let api_where = if where_clause.is_empty() {
         "WHERE COALESCE(provider_type, 'api') = 'api'".to_string()
     } else {
-        format!("{} AND COALESCE(provider_type, 'api') = 'api'", where_clause)
+        format!(
+            "{} AND COALESCE(provider_type, 'api') = 'api'",
+            where_clause
+        )
     };
 
     let mut findings: Vec<ContextAuditFinding> = Vec::new();
@@ -2081,9 +2089,11 @@ pub fn get_reliability_snapshot(
                 > 0
         } else {
             let family = model_family(&model);
-            recent_mix.iter().any(|((other_provider, other_model), count)| {
-                *count > 0 && *other_provider != provider && model_family(other_model) == family
-            })
+            recent_mix
+                .iter()
+                .any(|((other_provider, other_model), count)| {
+                    *count > 0 && *other_provider != provider && model_family(other_model) == family
+                })
         };
 
         if baseline_latency > 0.0

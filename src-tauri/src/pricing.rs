@@ -13,11 +13,15 @@ pub struct PricingEntry {
 
 static PRICING_JSON: &str = include_str!("../pricing.json");
 
-static BUNDLED_PRICING: Lazy<Vec<PricingEntry>> = Lazy::new(|| {
-    serde_json::from_str(PRICING_JSON).unwrap_or_default()
-});
+static BUNDLED_PRICING: Lazy<Vec<PricingEntry>> =
+    Lazy::new(|| serde_json::from_str(PRICING_JSON).unwrap_or_default());
 
-pub fn calculate_cost(model: &str, provider: Option<&str>, input_tokens: u32, output_tokens: u32) -> f64 {
+pub fn calculate_cost(
+    model: &str,
+    provider: Option<&str>,
+    input_tokens: u32,
+    output_tokens: u32,
+) -> f64 {
     let pricing = &*BUNDLED_PRICING;
     let model_lower = model.to_lowercase();
     let provider_lower = provider.map(str::to_lowercase);
@@ -27,22 +31,27 @@ pub fn calculate_cost(model: &str, provider: Option<&str>, input_tokens: u32, ou
         None => true,
     };
 
-    let entry = pricing.iter().find(|p| {
-        matches_provider(p) && model_lower == p.model.to_lowercase()
-    }).or_else(|| {
-        pricing.iter().find(|p| {
-            matches_provider(p)
-                && (model_lower.contains(&p.model.to_lowercase())
-                    || p.model.to_lowercase().contains(&model_lower))
+    let entry = pricing
+        .iter()
+        .find(|p| matches_provider(p) && model_lower == p.model.to_lowercase())
+        .or_else(|| {
+            pricing.iter().find(|p| {
+                matches_provider(p)
+                    && (model_lower.contains(&p.model.to_lowercase())
+                        || p.model.to_lowercase().contains(&model_lower))
+            })
         })
-    }).or_else(|| {
-        pricing.iter().find(|p| model_lower == p.model.to_lowercase())
-    }).or_else(|| {
-        pricing.iter().find(|p| {
-            model_lower.contains(&p.model.to_lowercase())
-                || p.model.to_lowercase().contains(&model_lower)
+        .or_else(|| {
+            pricing
+                .iter()
+                .find(|p| model_lower == p.model.to_lowercase())
         })
-    });
+        .or_else(|| {
+            pricing.iter().find(|p| {
+                model_lower.contains(&p.model.to_lowercase())
+                    || p.model.to_lowercase().contains(&model_lower)
+            })
+        });
 
     match entry {
         Some(e) => {
