@@ -211,5 +211,6 @@ Contributions are welcome. If you're planning a significant change, open an issu
 
 **Website:** <https://tokenpulse.to>  
 **Getting Started:** [GETTING_STARTED.md](GETTING_STARTED.md)  
+**Agent Setup Guide:** [AGENT_SETUP.md](AGENT_SETUP.md) — optimized for AI agents setting up TokenPulse on your behalf  
 **Changelog:** [CHANGELOG.md](CHANGELOG.md)  
 **Repository:** <https://github.com/TokenPulse26/TokenPulse>
