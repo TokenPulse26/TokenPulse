@@ -639,7 +639,7 @@ async fn proxy_handler(
         let body = serde_json::json!({
             "status": "ok",
             "service": "tokenpulse-proxy",
-            "version": "0.2.0",
+            "version": "0.3.0",
             "port": 4100,
             "uptime_seconds": uptime_secs,
             "proxy_paused": state.proxy_paused.load(Ordering::SeqCst),

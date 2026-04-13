@@ -24,7 +24,7 @@ Thumbs.db
 # Leftover frontend build artifacts
 dist/
 public/
-src/
+/src/
 
 # Database (user data, don't commit)
 *.db
