@@ -409,4 +409,4 @@ A few repo details are still in motion:
 
 ---
 
-Need more context? See [README.md](README.md), [FIRST_TESTER_ONBOARDING.md](FIRST_TESTER_ONBOARDING.md), [VERIFICATION_FLOW_V1.md](VERIFICATION_FLOW_V1.md), [CHANGELOG.md](CHANGELOG.md), or the contributor-oriented [BRIEFING.md](BRIEFING.md).
+Need more context? See [README.md](README.md), [AGENT_SETUP.md](AGENT_SETUP.md), or [CHANGELOG.md](CHANGELOG.md).

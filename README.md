@@ -116,9 +116,7 @@ Then send one recognizable test request and open <http://127.0.0.1:4200>.
 
 For the full recommended flow, install-path details, and a first-run verification check, see [GETTING_STARTED.md](GETTING_STARTED.md).
 
-If you want the single clearest early-access path, start with [FIRST_TESTER_ONBOARDING.md](FIRST_TESTER_ONBOARDING.md).
-
-If you want the smallest honest proof-of-life check for v1, see [VERIFICATION_FLOW_V1.md](VERIFICATION_FLOW_V1.md).
+If you're having an AI agent set this up for you, point it at [AGENT_SETUP.md](AGENT_SETUP.md) — it's optimized for agents of any capability level.
 
 ---
 
@@ -193,13 +191,6 @@ Depending on how you launch the built binary, the proxy will listen on port `410
 This source path is currently more honest and reliable than presenting TokenPulse like a fully packaged cross-platform installer product.
 
 Note: the repo still contains active Tauri packaging/build config, including frontend build hooks. So while the browser dashboard is the main user experience today, docs should not imply the Tauri layer is gone, only that it is not yet the primary polished interface.
-
----
-
-## Repo Notes
-
-- [BRIEFING.md](BRIEFING.md) is a contributor-facing project brief, not end-user documentation.
-- `REPAIR_PLAN.md` and `REPAIR_REPORT.md` are internal maintenance notes kept in the repo for project history.
 
 ---
 
