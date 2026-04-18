@@ -1,10 +1,14 @@
 # Build artifacts
 target/
-dist/
 build/
+dist/
+src-tauri/target/
+src-tauri/gen/
 
-# Node (removed but just in case)
+# Node / frontend leftovers
 node_modules/
+public/
+src/
 
 # Python
 __pycache__/
@@ -21,24 +25,17 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-# Leftover frontend build artifacts
-dist/
-public/
-/src/
-
-# Database (user data, don't commit)
+# Runtime data
 *.db
 *.db-journal
 *.db-wal
-
-# Logs
 *.log
 
 # Environment
 .env
 .env.local
 
-# Internal planning docs (not for public repo)
+# Internal planning / working docs
 TOKENPULSE_EXECUTION_PACKET.md
 TOKENPULSE_EXECUTION_BOARD.md
 TOKENPULSE_WORKING_PLAN.md
@@ -51,19 +48,9 @@ REPAIR_PLAN.md
 REPAIR_REPORT.md
 DASHBOARD_CLEANUP_SPEC.md
 DASHBOARD_CLARITY_FIX_PLAN.md
-LAUNCH_COPY_DRAFT.md
-SCREENSHOT_AND_DEMO_CHECKLIST.md
-VERIFICATION_FLOW_V1.md
 CONTEXT_AUDIT_IMPLEMENTATION_PLAN.md
 VISION.md
 AUDIT_REPORT.md
-ROADMAP.md
-REPAIR_PLAN.md
-REPAIR_REPORT.md
-DASHBOARD_CLEANUP_SPEC.md
-DASHBOARD_CLARITY_FIX_PLAN.md
 BRIEFING.md
-BUILD_STATUS.md
-FIRST_TESTER_ONBOARDING.md
-/docs/
+ROADMAP.md
 update.json

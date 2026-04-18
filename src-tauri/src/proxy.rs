@@ -644,7 +644,7 @@ async fn proxy_handler(
             "uptime_seconds": uptime_secs,
             "proxy_paused": state.proxy_paused.load(Ordering::SeqCst),
             "total_requests_tracked": count,
-            "dashboard_url": "http://localhost:4200",
+            "dashboard_url": "http://127.0.0.1:4200",
         });
         return Ok(Response::builder()
             .status(200)
