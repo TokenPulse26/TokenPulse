@@ -1,16 +1,45 @@
 # TokenPulse
 
-**Track every AI token you spend — across providers, models, and projects — on your own machine.**
+**TokenPulse — the accounting layer for AI. Know where every token goes.**
 
-TokenPulse is a local-first AI usage tracker built around two parts:
-- a **Rust proxy** on port `4100` that sits between your tools and AI providers
-- a **Python web dashboard** on port `4200` that shows usage, costs, errors, budgets, and trends
+TokenPulse is a local-first proxy and dashboard that helps you see AI usage across providers, models, and projects on your own machine.
 
-It records request metadata locally in SQLite so you can see what you're spending without hopping between provider dashboards.
+For v1, this is a **free early access** release for technical testers on **macOS Apple Silicon**.
 
 ---
 
-## How It Works
+## Who this is for
+
+TokenPulse is for technical users on macOS Apple Silicon who want local-first visibility into AI spend across cloud and local providers.
+
+It is a fit if you want to:
+- route AI traffic through one local proxy
+- see usage and estimated cost in one dashboard
+- compare cloud and local model activity in one place
+- keep request history on your own machine
+
+If you are looking for a polished cross-platform SaaS product, this is not that release.
+
+---
+
+## v1 support status
+
+**Supported for v1:**
+- macOS Apple Silicon
+
+**Coming soon:**
+- Linux, Windows, and NVIDIA-based setups, join the feedback channel to be notified
+
+TokenPulse currently ships as:
+- a Rust proxy on port `4100`
+- a Python browser dashboard on port `4200`
+- a secondary macOS Tauri app-shell / tray layer
+
+The browser dashboard is the primary interface today.
+
+---
+
+## How it works
 
 ```text
 Your Tools → TokenPulse Proxy (route on :4100) → AI Providers
@@ -20,23 +49,67 @@ Your Tools → TokenPulse Proxy (route on :4100) → AI Providers
             Web Dashboard (:4200)
 ```
 
-Point your tools at the correct TokenPulse route on `http://localhost:4100` instead of the provider directly. For example: root for OpenAI-compatible traffic, `/anthropic` for Anthropic-native clients, `/ollama` for Ollama, and `/lmstudio` for LM Studio. TokenPulse forwards requests, extracts usage metadata when providers expose it, calculates cost where pricing is available, and stores the results locally.
+Point your tools at the correct TokenPulse route on `http://localhost:4100` instead of the provider directly. For example: root for OpenAI-compatible traffic, `/anthropic` for Anthropic-native clients, `/ollama` for Ollama, and `/lmstudio` for LM Studio.
 
-Your API keys pass through to the upstream provider. TokenPulse is designed to track usage locally, not to relay data to a hosted TokenPulse service.
+TokenPulse forwards requests, extracts usage metadata when providers expose it, calculates cost where pricing is available, and stores the results locally.
 
 ---
 
-## What TokenPulse Tracks
+## Install
 
-### Providers and endpoints
-- OpenAI-compatible APIs
-- Anthropic
-- Google Gemini
-- Mistral
-- Groq
-- Ollama
-- LM Studio (implemented route, lighter verification confidence today)
-- CLIProxy / subscription-style OpenAI-compatible traffic
+### Recommended v1 path
+
+The one supported install path for v1 is:
+- **macOS Apple Silicon via `install.sh`**
+
+```bash
+./install.sh
+```
+
+Then follow the full setup and verification flow in [FIRST_TESTER_ONBOARDING.md](FIRST_TESTER_ONBOARDING.md).
+
+### Advanced / manual paths
+
+These paths still exist, but treat them as advanced/manual:
+- run from source
+- set up background services manually with `launchd`
+
+If you only want the clearest early-access path, use `install.sh` first.
+
+---
+
+## First verification path
+
+The fastest proof-of-life flow is:
+1. install with `install.sh`
+2. start the proxy and dashboard
+3. point one tool at one TokenPulse route
+4. send one recognizable test request
+5. confirm it appears in the dashboard at `http://127.0.0.1:4200`
+
+Use [FIRST_TESTER_ONBOARDING.md](FIRST_TESTER_ONBOARDING.md) as the source of truth.
+
+---
+
+## Supported routes
+
+### Cloud APIs
+- **OpenAI-compatible:** `http://localhost:4100`
+- **Anthropic:** `http://localhost:4100/anthropic`
+- **Google Gemini:** `http://localhost:4100/google`
+- **Mistral:** `http://localhost:4100/mistral`
+- **Groq:** `http://localhost:4100/groq`
+- **CLIProxy:** `http://localhost:4100/cliproxy`
+
+### Local models
+- **Ollama:** `http://localhost:4100/ollama` , recommended local-model path for v1
+- **LM Studio:** `http://localhost:4100/lmstudio` , supported but lower confidence than Ollama today
+
+If a tool supports a custom OpenAI-compatible base URL, TokenPulse can usually sit in front of it.
+
+---
+
+## What TokenPulse tracks
 
 ### Usage data
 - input and output tokens
@@ -57,96 +130,21 @@ Your API keys pass through to the upstream provider. TokenPulse is designed to t
 - spending forecasts
 - reliability and error monitoring
 - cost optimization suggestions
-- context audit heuristics for prompt waste / model misuse / cache underuse
+- context audit heuristics
 - CSV export
 
 ---
 
-## Current Product Shape
+## Known limitations
 
-TokenPulse currently ships as:
-- a **headless-friendly local proxy**
-- a **browser-based dashboard**
-- a **macOS Tauri app codebase** used for local packaging, updater plumbing, and tray/app-shell behavior
-
-The browser dashboard is still the primary day-to-day interface.
-
-The Tauri side should currently be described as **supporting app-shell/tray infrastructure, not a separate polished desktop dashboard experience**. Repo packaging/config still exists there, so avoid implying the Tauri layer is absent. The safer claim today is that the browser dashboard is primary, while the Tauri app remains secondary and less central to the product experience.
-
----
-
-## Best-Supported Setup Today
-
-Today, the most reliable TokenPulse path is:
-- a technical early tester
-- running locally
-- starting from the repo or a source-based bootstrap install
-- using the browser dashboard as the main interface
-
-TokenPulse is **not yet a polished cross-platform one-click install product**. The current installer is a convenience bootstrapper for a narrow setup, not a finished general release flow.
-
-## Quick Start
-
-If you are comfortable running from source, this is the clearest current path.
-
-**Start the proxy**
-
-```bash
-./tokenpulse
-```
-
-**Start the dashboard**
-
-```bash
-python3 web-dashboard.py
-```
-
-**Point one tool at the correct TokenPulse route**
-
-```text
-OpenAI-compatible: http://localhost:4100
-Anthropic:         http://localhost:4100/anthropic
-Ollama:            http://localhost:4100/ollama
-LM Studio:         http://localhost:4100/lmstudio
-```
-
-If you want the cleanest first local-model test, start with **Ollama first** and treat LM Studio as a second-step route until it is re-verified successfully.
-
-Then send one recognizable test request and open <http://127.0.0.1:4200>.
-
-For the full recommended flow, install-path details, and a first-run verification check, see [GETTING_STARTED.md](GETTING_STARTED.md).
-
-If you're having an AI agent set this up for you, point it at [AGENT_SETUP.md](AGENT_SETUP.md) — it's optimized for agents of any capability level.
-
----
-
-## Supported Routes
-
-### Cloud APIs
-- **OpenAI-compatible:** `http://localhost:4100`
-- **Anthropic:** `http://localhost:4100/anthropic`
-- **Google Gemini:** `http://localhost:4100/google`
-- **Mistral:** `http://localhost:4100/mistral`
-- **Groq:** `http://localhost:4100/groq`
-- **CLIProxy:** `http://localhost:4100/cliproxy`
-
-### Local models
-- **Ollama:** `http://localhost:4100/ollama` , currently the strongest verified local-model path
-- **LM Studio:** `http://localhost:4100/lmstudio` , route support exists, but this path should still be treated as a lighter-confidence route until it is re-verified successfully on a live upstream
-
-If a tool supports a custom OpenAI-compatible base URL, TokenPulse can usually sit in front of it.
-
-For current local-model tracking details, see the [Getting Started guide](GETTING_STARTED.md).
-
----
-
-## Tech Stack
-
-- **Proxy:** Rust + Axum
-- **Dashboard:** Python standard library HTTP server
-- **Database:** SQLite
-- **App shell / tray layer:** Tauri 2.x (macOS-focused, secondary to the browser dashboard)
-- **Pricing:** LiteLLM pricing data with a bundled fallback set for common models
+Current early-access limitations:
+- macOS Apple Silicon is the only supported v1 platform
+- Ollama is the recommended local-model path today
+- LM Studio is supported, but lower confidence than Ollama
+- pricing data can be stale for some newer model families
+- some dashboard time-range filters may not fully apply
+- the Tauri app-shell is secondary, the browser dashboard is the main surface
+- the installer is still a narrow bootstrap path, not a polished general release installer
 
 ---
 
@@ -167,7 +165,7 @@ The default local database path used by the current app/dashboard build is:
 
 ---
 
-## Building from Source
+## Build from source (advanced/manual)
 
 Requirements:
 - Rust (stable)
@@ -176,32 +174,27 @@ Requirements:
 ```bash
 git clone https://github.com/TokenPulse26/TokenPulse.git
 cd TokenPulse
-
-# Build the Rust side currently used for the local proxy and Tauri app shell
 cd src-tauri
 cargo build --release
 cd ..
-
-# Run the dashboard
 python3 web-dashboard.py
 ```
 
 Depending on how you launch the built binary, the proxy will listen on port `4100`.
 
-This source path is currently more honest and reliable than presenting TokenPulse like a fully packaged cross-platform installer product.
-
-Note: the repo still contains active Tauri packaging/build config, including frontend build hooks. So while the browser dashboard is the main user experience today, docs should not imply the Tauri layer is gone, only that it is not yet the primary polished interface.
+This path is valid, but for first testers the supported v1 path is still `install.sh` on macOS Apple Silicon.
 
 ---
 
-## Contributing
+## Feedback
 
-Contributions are welcome. If you're planning a significant change, open an issue first so the implementation direction is clear before work starts.
+Report bugs and onboarding friction here:
+- `TODO: [INSERT FEEDBACK LINK]`
 
 ---
 
 **Website:** <https://tokenpulse.to>  
+**First Tester Onboarding:** [FIRST_TESTER_ONBOARDING.md](FIRST_TESTER_ONBOARDING.md)  
 **Getting Started:** [GETTING_STARTED.md](GETTING_STARTED.md)  
-**Agent Setup Guide:** [AGENT_SETUP.md](AGENT_SETUP.md) — optimized for AI agents setting up TokenPulse on your behalf  
-**Changelog:** [CHANGELOG.md](CHANGELOG.md)  
+**Agent Setup Guide:** [AGENT_SETUP.md](AGENT_SETUP.md)  
 **Repository:** <https://github.com/TokenPulse26/TokenPulse>

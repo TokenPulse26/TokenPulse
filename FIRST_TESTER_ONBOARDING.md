@@ -1,49 +1,55 @@
 # TokenPulse First Tester Onboarding
 
-This guide is the **best-supported early-access path** for trying TokenPulse today.
+This is the **single source of truth** for first-tester onboarding.
 
-It is written for a technical early tester who wants one clear setup path, one clear connection path, and one clear success check.
+For v1, TokenPulse is **free early access** for technical testers on **macOS Apple Silicon only**.
+
+**Feedback:** `TODO: [INSERT FEEDBACK LINK]`
+
+Linux, Windows, and NVIDIA-based setups are not part of the supported v1 path yet.
 
 ---
 
 ## What TokenPulse is today
 
-TokenPulse is currently best understood as:
+TokenPulse is currently:
 - a local proxy on port `4100`
 - a browser dashboard on port `4200`
 - a secondary macOS Tauri app-shell / tray layer
 
 The browser dashboard is the primary interface.
 
-The Tauri layer still exists in the repo and packaging flow, but it should not be described like the main polished product surface yet.
-
-This is **not yet a polished mass-market installer flow**. The most reliable experience today is a local technical setup where you can run commands, point one AI tool at TokenPulse, and verify traffic in the dashboard.
+This is not yet a polished mass-market installer flow. The goal of this onboarding guide is to get you from zero to one verified request as quickly and honestly as possible.
 
 ---
 
 ## Best-supported path
 
-If you want the fewest surprises, use this order:
+Use this order:
+1. install with `install.sh`
+2. start the proxy
+3. start the dashboard
+4. verify the dashboard loads
+5. send one test request through the proxy
+6. confirm it appears in the dashboard
 
-1. run TokenPulse locally
-2. start the dashboard
-3. connect one tool through one TokenPulse route
-4. send one test request
-5. confirm it appears in the dashboard
-
-Do not start by wiring up five tools at once.
+Do not start by wiring up multiple tools or providers.
 
 ---
 
-## Step 1: Start TokenPulse
+## Checklist
 
-Start the proxy:
+### 1. Install TokenPulse
+
+Run:
 
 ```bash
-./tokenpulse
+./install.sh
 ```
 
-If you installed through the bootstrap installer, your path may be:
+This is the supported v1 install path for macOS Apple Silicon.
+
+### 2. Start the proxy
 
 ```bash
 ~/.tokenpulse/tokenpulse
@@ -55,17 +61,7 @@ You want TokenPulse listening on:
 http://localhost:4100
 ```
 
----
-
-## Step 2: Start the dashboard
-
-From the repo:
-
-```bash
-python3 web-dashboard.py
-```
-
-Or from the bootstrap install path:
+### 3. Start the dashboard
 
 ```bash
 python3 ~/.tokenpulse/web-dashboard.py
@@ -77,57 +73,31 @@ Then open:
 http://127.0.0.1:4200
 ```
 
----
+### 4. Verify the dashboard loads
 
-## Step 3: Connect one tool only
-
-Use one provider path first.
-
-### OpenAI-compatible route
-
-Set:
-
-```bash
-export OPENAI_BASE_URL=http://localhost:4100
-```
-
-### Anthropic route
-
-Set:
-
-```bash
-export ANTHROPIC_BASE_URL=http://localhost:4100/anthropic
-```
-
-### Ollama route
-
-Set your tool’s Ollama base URL to:
+Success means the dashboard opens locally at:
 
 ```text
-http://localhost:4100/ollama
+http://127.0.0.1:4200
 ```
 
-### LM Studio route
+### 5. Point one tool at TokenPulse
 
-Set your LM Studio-compatible base URL to:
+Use one route only for your first test:
+- OpenAI-compatible: `http://localhost:4100`
+- Anthropic: `http://localhost:4100/anthropic`
+- Ollama: `http://localhost:4100/ollama`
+- LM Studio: `http://localhost:4100/lmstudio`
 
-```text
-http://localhost:4100/lmstudio
-```
+Recommended first choices:
+- OpenAI-compatible for the simplest first check
+- Ollama for the recommended local-model path
 
-LM Studio route support exists, but it is still less strongly verified end-to-end than the Ollama path today. If you just want the cleanest first local-model test, start with Ollama first and treat LM Studio as a second verification step.
+LM Studio is supported, but lower confidence than Ollama today.
 
-If your tool supports a custom OpenAI-compatible base URL, the plain TokenPulse root route is often the easiest first test:
+### 6. Make one recognizable test request
 
-```text
-http://localhost:4100
-```
-
----
-
-## Step 4: Send one known test request
-
-Here is the simplest OpenAI-compatible check:
+Example:
 
 ```bash
 curl http://localhost:4100/v1/chat/completions \
@@ -136,13 +106,7 @@ curl http://localhost:4100/v1/chat/completions \
   -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Hello from TokenPulse"}],"max_tokens":10}'
 ```
 
-If you are testing Anthropic instead, make sure you use the Anthropic route and credentials your tool actually expects.
-
-The goal is not a fancy prompt. The goal is one request you can recognize in the dashboard.
-
----
-
-## Step 5: Verify success in the dashboard
+### 7. Confirm it appears in the dashboard
 
 Open or refresh:
 
@@ -150,77 +114,74 @@ Open or refresh:
 http://127.0.0.1:4200
 ```
 
-What success looks like:
+Success looks like:
 - a new request appears in recent activity
 - the provider looks correct
 - the model looks correct
-- token and cost fields appear when that upstream/provider path exposes them
-- the request timing looks plausible
+- token and cost fields appear when that provider exposes them
+- the timestamp is fresh and matches your test
+
+If that works, you have a valid first success.
 
 ---
 
-## What to do if something feels wrong
+## Known limitations
 
-### If the AI request succeeds but nothing appears in TokenPulse
-Check these first:
-- your tool is pointed at TokenPulse, not the provider directly
-- you used the correct route prefix
-- the proxy is actually running on port `4100`
-- the dashboard is reading the same local database your proxy is writing to
+Current early-access limitations:
+- macOS Apple Silicon is the only supported v1 platform
+- Ollama is the recommended local-model path today
+- LM Studio is supported, but lower confidence than Ollama
+- pricing data can be stale for some newer model families
+- some dashboard time-range filters may not fully apply
+- the Tauri app-shell is secondary, the browser dashboard is the main surface
+- the installer is still a bootstrap helper, not a polished general release installer
+
+---
+
+## Troubleshooting
 
 ### If the dashboard loads but looks empty
 That usually means either:
 - no request has actually gone through TokenPulse yet, or
 - the request bypassed the proxy
 
-### If tokens or cost do not appear
-That does **not always mean failure**.
-Some provider paths and request types expose usage more clearly than others. The first question is:
-- did the request appear correctly at all?
+### If the AI request succeeds but nothing appears in TokenPulse
+Check these first:
+- your tool is pointed at TokenPulse, not the provider directly
+- you used the correct route prefix
+- the proxy is actually running on port `4100`
+- the dashboard is reading the same local database the proxy is writing to
 
-If yes, start by treating it as a route/visibility success, then verify the provider-specific usage behavior after that.
+### If tokens or cost do not appear
+That does not always mean failure.
+Some provider paths expose usage more clearly than others. First confirm the request itself appears correctly.
 
 ### If the installer path feels rough
 That is expected today.
-The bootstrap installer is useful, but it is not yet the same thing as a polished general-user installer.
+The installer is useful, but it is not yet a polished general-user install experience.
 
 ---
 
-## What to test next after the first success
+## Feedback
+
+If you hit a bug, onboarding confusion, or data mismatch, report it here:
+- `TODO: [INSERT FEEDBACK LINK]`
+
+Useful bug reports include:
+- your route used
+- what command or tool you tested with
+- what you expected to see
+- what actually happened
+- screenshots if the dashboard looked wrong
+
+---
+
+## What to do next after first success
 
 Once one request appears correctly, the next best tests are:
 1. one real request from the AI tool you care about most
 2. one second provider route if you use a hybrid setup
-3. the Ollama route if local tracking matters to you most
-4. the LM Studio route after that if you want to verify the lighter-confidence local path
+3. Ollama if local tracking matters most
+4. LM Studio after that if you want to test the lower-confidence local path
 
-Only widen scope after the first clean success.
-
----
-
-## Current honesty notes
-
-TokenPulse is already useful, but still early.
-
-Current strongest reality:
-- local-first proxy works
-- browser dashboard is the main experience
-- multiple real provider routes are already tracking successfully
-- Ollama is the strongest verified local-model path right now
-
-Current rough edges:
-- onboarding is still being tightened
-- installer experience is narrower than a polished public release
-- some provider/request-type coverage is stronger than others
-- LM Studio support is real, but still carries lighter verification confidence than Ollama today
-
----
-
-## Recommended first tester mindset
-
-Treat TokenPulse today as:
-- a promising, already-useful local tool
-- best for technical early adopters
-- strongest when tested one route at a time
-
-If you can get one clean request to appear in the dashboard, you are using the real product, not a mockup.
+Keep scope narrow until the first success is solid.
