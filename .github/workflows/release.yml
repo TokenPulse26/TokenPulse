@@ -1,0 +1,118 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build (creates a draft release if not already present, e.g. v0.3.1)'
+        required: false
+        default: ''
+
+jobs:
+  build-macos-arm64:
+    name: Build macOS Apple Silicon binary
+    # macos-14 is GitHub's Apple Silicon (M1) hosted runner as of 2026-04.
+    # If this label becomes unavailable, macos-latest currently also maps to ARM,
+    # but pin explicitly for reproducibility.
+    runs-on: macos-14
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Rust stable (aarch64-apple-darwin)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin
+
+      - name: Cache cargo registry and git db
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache cargo build target
+        uses: actions/cache@v4
+        with:
+          path: src-tauri/target
+          key: ${{ runner.os }}-cargo-target-release-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-target-release-
+
+      - name: Build release binary
+        run: |
+          cargo build --release --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin
+          ls -la src-tauri/target/aarch64-apple-darwin/release/tokenpulse
+          file src-tauri/target/aarch64-apple-darwin/release/tokenpulse
+
+      - name: Stage release artifacts
+        id: stage
+        run: |
+          set -euo pipefail
+          mkdir -p dist-release
+          cp src-tauri/target/aarch64-apple-darwin/release/tokenpulse dist-release/tokenpulse-macos-arm64
+          chmod +x dist-release/tokenpulse-macos-arm64
+          # Compute SHA256 in a format that works with `shasum -a 256 -c`
+          cd dist-release
+          shasum -a 256 tokenpulse-macos-arm64 > tokenpulse-macos-arm64.sha256
+          cat tokenpulse-macos-arm64.sha256
+          echo "sha256=$(awk '{print $1}' tokenpulse-macos-arm64.sha256)" >> "$GITHUB_OUTPUT"
+
+      - name: Determine release tag
+        id: tag
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "push" ]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+          else
+            TAG="${{ github.event.inputs.tag }}"
+          fi
+          if [ -z "$TAG" ]; then
+            # Manual dispatch with no tag input: produce a dev tag tied to the commit
+            TAG="v0.0.0-dev-${GITHUB_SHA::7}"
+            echo "No tag provided for workflow_dispatch; using dev tag $TAG"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Upload workflow artifacts (always)
+        uses: actions/upload-artifact@v4
+        with:
+          name: tokenpulse-macos-arm64
+          path: |
+            dist-release/tokenpulse-macos-arm64
+            dist-release/tokenpulse-macos-arm64.sha256
+          if-no-files-found: error
+
+      - name: Create or update GitHub Release
+        # Only create a Release when the run is tied to a real tag push OR when
+        # workflow_dispatch was given an explicit tag input.
+        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.tag }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          body: |
+            TokenPulse ${{ steps.tag.outputs.tag }} — macOS Apple Silicon pre-built binary.
+
+            **Artifacts**
+            - `tokenpulse-macos-arm64` — Rust proxy binary (arm64)
+            - `tokenpulse-macos-arm64.sha256` — SHA256 checksum
+
+            **SHA256:** `${{ steps.stage.outputs.sha256 }}`
+
+            Install via `install.sh`, which will download this binary and verify the checksum automatically.
+          files: |
+            dist-release/tokenpulse-macos-arm64
+            dist-release/tokenpulse-macos-arm64.sha256
