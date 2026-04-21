@@ -52,8 +52,18 @@ The installer is a bootstrap helper for a narrow setup. It is useful, but it is 
 ### 1. Install
 
 ```bash
-./install.sh
+curl -fsSL https://raw.githubusercontent.com/TokenPulse26/TokenPulse/main/install.sh | bash
 ```
+
+The installer downloads a pre-built proxy binary for macOS Apple Silicon from the latest GitHub Release and verifies its SHA256 before installing. No Rust toolchain is required on the default path.
+
+If you prefer to build from source (e.g. during development), pass `--from-source`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/TokenPulse26/TokenPulse/main/install.sh | bash -s -- --from-source
+```
+
+First-run note: the binary is not codesigned for early access. If macOS blocks it, open **System Settings → Privacy & Security**, scroll to the bottom, and click **Allow Anyway** for `tokenpulse`, then launch it again.
 
 ### 2. Start the services
 

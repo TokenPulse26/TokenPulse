@@ -63,15 +63,23 @@ The one supported install path for v1 is:
 - **macOS Apple Silicon via `install.sh`**
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/TokenPulse26/TokenPulse/main/install.sh | bash
+```
+
+Or, if you have already cloned the repo:
+
+```bash
 ./install.sh
 ```
+
+The installer downloads a pre-built proxy binary (macOS Apple Silicon) from the latest GitHub Release and verifies its SHA256 before installing. No Rust toolchain is required on the default path. The binary is not codesigned for early access, so the first run may require an “Allow Anyway” step in System Settings → Privacy & Security.
 
 Then follow the full setup and verification flow in [FIRST_TESTER_ONBOARDING.md](FIRST_TESTER_ONBOARDING.md).
 
 ### Advanced / manual paths
 
 These paths still exist, but treat them as advanced/manual:
-- run from source
+- build from source (`./install.sh --from-source`, requires Rust)
 - set up background services manually with `launchd`
 
 If you only want the clearest early-access path, use `install.sh` first.
