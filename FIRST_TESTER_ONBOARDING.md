@@ -4,7 +4,7 @@ This is the **single source of truth** for first-tester onboarding.
 
 For v1, TokenPulse is **free early access** for technical testers on **macOS Apple Silicon only**.
 
-**Feedback:** `TODO: [INSERT FEEDBACK LINK]`
+**Feedback:** [github.com/TokenPulse26/TokenPulse/issues](https://github.com/TokenPulse26/TokenPulse/issues)
 
 Linux, Windows, and NVIDIA-based setups are not part of the supported v1 path yet.
 
@@ -165,7 +165,7 @@ The installer is useful, but it is not yet a polished general-user install exper
 ## Feedback
 
 If you hit a bug, onboarding confusion, or data mismatch, report it here:
-- `TODO: [INSERT FEEDBACK LINK]`
+- [github.com/TokenPulse26/TokenPulse/issues](https://github.com/TokenPulse26/TokenPulse/issues)
 
 Useful bug reports include:
 - your route used

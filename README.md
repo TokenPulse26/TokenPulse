@@ -189,7 +189,7 @@ This path is valid, but for first testers the supported v1 path is still `instal
 ## Feedback
 
 Report bugs and onboarding friction here:
-- `TODO: [INSERT FEEDBACK LINK]`
+- [github.com/TokenPulse26/TokenPulse/issues](https://github.com/TokenPulse26/TokenPulse/issues)
 
 ---
 

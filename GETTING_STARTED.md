@@ -187,7 +187,7 @@ Check these first:
 ## Feedback
 
 Report bugs and onboarding friction here:
-- `TODO: [INSERT FEEDBACK LINK]`
+- [github.com/TokenPulse26/TokenPulse/issues](https://github.com/TokenPulse26/TokenPulse/issues)
 
 ---
 
