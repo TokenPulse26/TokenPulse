@@ -1,6 +1,6 @@
 [package]
 name = "tokenpulse"
-version = "0.3.0"
+version = "0.3.1"
 description = "Track every AI token you spend, across every model, in one place."
 authors = ["you"]
 edition = "2021"

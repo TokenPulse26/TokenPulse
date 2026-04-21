@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+---
+
+## [0.3.1] - 2026-04-21 (Early Access)
+
+### Added
+- GitHub Actions release workflow that builds a macOS Apple Silicon proxy binary on every `v*.*.*` tag and publishes it as a GitHub Release asset (`tokenpulse-macos-arm64` + `.sha256`).
+- `install.sh` downloads the pre-built binary from the latest GitHub Release and verifies its SHA256, removing the hard Rust toolchain dependency from the default install path.
+- `install.sh --from-source` flag for the advanced build-from-source path.
+
+### Changed
+- Default `install.sh` path no longer compiles Rust on the tester's machine.
+- README and GETTING_STARTED updated to reflect the pre-built binary install flow.
+
+### Notes
+- Proxy binary is not codesigned for v1 early access; macOS may require an “Allow Anyway” step on first run.
+
+---
+
 ## [0.3.0] - 2026-04-12 (Early Access)
 
 ### Added
