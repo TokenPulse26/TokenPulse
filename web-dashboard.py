@@ -5884,6 +5884,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(html)))
         self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        # Defense-in-depth: we emit large blocks of inline <script>/<style>,
+        # so we can't drop 'unsafe-inline' without rewriting the dashboard.
+        # We can still block plugins, iframing, base-tag hijacking, and
+        # cross-origin form posts.
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; "
+            "connect-src 'self' http://127.0.0.1:4100; "
+            "object-src 'none'; "
+            "frame-ancestors 'none'; "
+            "base-uri 'self'; "
+            "form-action 'self'",
+        )
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
         self.end_headers()
         self.wfile.write(html)
 

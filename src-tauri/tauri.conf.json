@@ -20,7 +20,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self' ipc: http://ipc.localhost; img-src 'self' data: asset: http://asset.localhost; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:4100 http://127.0.0.1:4200"
     }
   },
   "bundle": {
@@ -34,13 +34,5 @@
       "icons/icon.ico"
     ]
   },
-  "plugins": {
-    "updater": {
-      "endpoints": [
-        "https://raw.githubusercontent.com/TokenPulse26/TokenPulse/main/update.json"
-      ],
-      "dialog": false,
-      "pubkey": ""
-    }
-  }
+  "plugins": {}
 }

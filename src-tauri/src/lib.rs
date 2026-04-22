@@ -477,7 +477,15 @@ pub fn run() {
             Some(vec![]),
         ))
         .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
+        // The tauri-plugin-updater signature-verifies downloaded bundles
+        // against `tauri.conf.json.plugins.updater.pubkey`. We don't yet
+        // ship a real pubkey, so enabling the plugin with an empty key
+        // would either be a no-op (confusing) or bypass signature checks
+        // (dangerous). Until a release keypair is generated and the
+        // public key is committed, we rely on the custom `check_for_update`
+        // command below, which only emits an "update-available" event —
+        // it never downloads or installs anything.
+        //.plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let app_dir = app
                 .path()
