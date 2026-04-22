@@ -914,6 +914,22 @@ pub struct BudgetForecast {
 
 // ─── Budget functions ─────────────────────────────────────────────────────────
 
+/// Accept only the three periods the dashboard and forecast code know how
+/// to handle. Previously `create_budget`/`update_budget` forwarded an
+/// arbitrary string into the DB; downstream `budget_time_expr` silently
+/// coerced anything unrecognized to the 30-day window, which hid bugs.
+fn normalize_budget_period(period: &str) -> Result<&'static str> {
+    match period.trim() {
+        "daily" => Ok("daily"),
+        "weekly" => Ok("weekly"),
+        "monthly" | "" => Ok("monthly"),
+        other => Err(rusqlite::Error::InvalidParameterName(format!(
+            "invalid budget period: {}",
+            other
+        ))),
+    }
+}
+
 fn normalize_budget_scope(
     scope_kind: Option<&str>,
     scope_value: Option<&str>,
@@ -1039,7 +1055,13 @@ pub fn create_budget(
     scope_kind: Option<&str>,
     scope_value: Option<&str>,
 ) -> Result<i64> {
+    let period = normalize_budget_period(period)?;
     let (scope_kind, scope_value) = normalize_budget_scope(scope_kind, scope_value)?;
+    if !threshold.is_finite() || threshold <= 0.0 {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "budget threshold must be a positive finite number".to_string(),
+        ));
+    }
     conn.execute(
         "INSERT INTO budgets (name, period, threshold_usd, provider_filter, scope_kind, scope_value, enabled, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, datetime('now'))",
@@ -1082,7 +1104,13 @@ pub fn update_budget(
     scope_value: Option<&str>,
     enabled: bool,
 ) -> Result<()> {
+    let period = normalize_budget_period(period)?;
     let (scope_kind, scope_value) = normalize_budget_scope(scope_kind, scope_value)?;
+    if !threshold.is_finite() || threshold <= 0.0 {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "budget threshold must be a positive finite number".to_string(),
+        ));
+    }
     conn.execute(
         "UPDATE budgets
          SET name = ?1, period = ?2, threshold_usd = ?3, provider_filter = ?4,

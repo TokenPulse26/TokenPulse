@@ -91,7 +91,10 @@ install_from_release() {
     local tmpdir
     tmpdir=$(mktemp -d)
     # shellcheck disable=SC2064
-    trap "rm -rf '$tmpdir'" RETURN
+    # Clean up on function return AND on Ctrl-C / kill, otherwise an
+    # interrupt between mktemp and the normal return path leaves the
+    # tempdir behind.
+    trap "rm -rf '$tmpdir'" RETURN INT TERM
 
     if ! curl -fsSL "$bin_url" -o "$tmpdir/$BINARY_ASSET"; then
         echo "Failed to download binary asset ($BINARY_ASSET) from latest release."

@@ -13,8 +13,6 @@
     "notification:default",
     "autostart:allow-enable",
     "autostart:allow-disable",
-    "autostart:allow-is-enabled",
-    "updater:allow-check",
-    "updater:allow-download-and-install"
+    "autostart:allow-is-enabled"
   ]
 }

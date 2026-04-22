@@ -22,6 +22,84 @@ use crate::pricing::calculate_cost_with_db;
 /// Process start time for uptime calculation.
 static PROCESS_START: Lazy<std::time::Instant> = Lazy::new(std::time::Instant::now);
 
+/// Query-string keys that carry provider credentials. Any occurrence is
+/// replaced with a fixed "REDACTED" marker before logging a URL or storing
+/// an upstream error body.
+const SECRET_QUERY_KEYS: &[&str] = &["key", "api_key", "access_token", "token"];
+
+/// Rewrite a URL so sensitive query parameters are replaced with "REDACTED".
+/// Used before any URL gets written to stderr. Returns the original string on
+/// parse failure rather than dropping it, because the logs are diagnostic.
+fn redact_url_secrets(url_str: &str) -> String {
+    match url::Url::parse(url_str) {
+        Ok(mut u) => {
+            let pairs: Vec<(String, String)> = u
+                .query_pairs()
+                .map(|(k, v)| {
+                    let k = k.into_owned();
+                    let v = if SECRET_QUERY_KEYS.iter().any(|s| k.eq_ignore_ascii_case(s)) {
+                        "REDACTED".to_string()
+                    } else {
+                        v.into_owned()
+                    };
+                    (k, v)
+                })
+                .collect();
+            if pairs.is_empty() {
+                u.set_query(None);
+            } else {
+                let mut ser = u.query_pairs_mut();
+                ser.clear();
+                for (k, v) in &pairs {
+                    ser.append_pair(k, v);
+                }
+                drop(ser);
+            }
+            u.to_string()
+        }
+        Err(_) => url_str.to_string(),
+    }
+}
+
+/// Replace anything that looks like an AI provider API key inside a free-form
+/// string (e.g. an upstream error body) with "REDACTED". Covers the common
+/// prefixes we already recognize in `detect_provider`, plus a generic
+/// "Bearer <token>" pattern. Used before persisting upstream error responses.
+fn redact_secrets_in_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    let prefixes = ["sk-ant-", "sk-proj-", "sk-", "AIza", "gsk_"];
+    'outer: while !rest.is_empty() {
+        for prefix in &prefixes {
+            if let Some(pos) = rest.find(prefix) {
+                out.push_str(&rest[..pos]);
+                out.push_str("REDACTED");
+                // Skip the token: consume prefix + following non-whitespace/non-quote chars.
+                let tail = &rest[pos + prefix.len()..];
+                let end = tail
+                    .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ',' | '}' | ')' | ']'))
+                    .unwrap_or(tail.len());
+                rest = &tail[end..];
+                continue 'outer;
+            }
+        }
+        // No more known prefixes. Also scrub "Bearer <token>" sequences.
+        if let Some(pos) = rest.find("Bearer ") {
+            out.push_str(&rest[..pos + "Bearer ".len()]);
+            let tail = &rest[pos + "Bearer ".len()..];
+            let end = tail
+                .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ',' | '}' | ')' | ']'))
+                .unwrap_or(tail.len());
+            out.push_str("REDACTED");
+            rest = &tail[end..];
+            continue;
+        }
+        out.push_str(rest);
+        break;
+    }
+    out
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub db: Arc<Mutex<rusqlite::Connection>>,
@@ -322,12 +400,9 @@ fn is_streaming_request(body: &Value) -> bool {
 ///   - `/cliproxy/v1/chat/completions`
 ///   - `/anthropic/v1/messages`
 fn is_responses_api_path(path: &str) -> bool {
-    // Match `/responses` as a path segment, optionally followed by query/extra
-    // segments. We deliberately use a substring check on `/responses` rather
-    // than checking the suffix, so future variants like `/responses/<id>` are
-    // also caught. The leading slash guards against false positives like
-    // `/foo-responses-bar`.
-    path.contains("/responses")
+    // Match `responses` only as a full path segment, so `/v1/responses` and
+    // `/codex/responses/<id>` are caught but `/v1/my-responses-list` is not.
+    path.split('/').any(|seg| seg == "responses")
 }
 
 /// Extract usage from a single SSE event JSON object emitted by an OpenAI
@@ -437,13 +512,12 @@ fn handle_stream_sse_event(
                     }
                 }
 
-                if matches!(
-                    event_type,
-                    "message_start" | "message_delta" | "message_stop"
-                ) {
+                // Only log on the terminal message_stop event — logging every
+                // message_delta floods stderr for long streaming responses.
+                if event_type == "message_stop" {
                     eprintln!(
-                        "[TokenPulse] anthropic stream event={} model={} input_tokens={} output_tokens={} cached_tokens={}",
-                        event_type, model, *anthropic_input, *anthropic_output, *anthropic_cached
+                        "[TokenPulse] anthropic stream done model={} input_tokens={} output_tokens={} cached_tokens={}",
+                        model, *anthropic_input, *anthropic_output, *anthropic_cached
                     );
                 }
             }
@@ -973,7 +1047,12 @@ async fn proxy_handler(
 
     eprintln!(
         "[TokenPulse] {} {} → {} (provider: {}, model: {}, streaming: {})",
-        parts.method, path, target_url, provider.name, model, is_streaming
+        parts.method,
+        path,
+        redact_url_secrets(&target_url),
+        provider.name,
+        model,
+        is_streaming
     );
 
     // Inject `stream_options: {include_usage: true}` for OpenAI-compatible
@@ -1066,7 +1145,11 @@ async fn proxy_handler(
             r
         }
         Err(e) => {
-            eprintln!("[TokenPulse] ERROR forwarding to {}: {}", target_url, e);
+            eprintln!(
+                "[TokenPulse] ERROR forwarding to {}: {}",
+                redact_url_secrets(&target_url),
+                e
+            );
             // Log the failed attempt
             let latency_ms = start_time.elapsed().as_millis() as i64;
             let record = RequestRecord {
@@ -1085,7 +1168,7 @@ async fn proxy_handler(
                 is_streaming,
                 is_complete: false,
                 source_tag: source_tag.clone(),
-                error_message: Some(e.to_string()),
+                error_message: Some(redact_secrets_in_text(&e.to_string())),
                 provider_type: get_provider_type(&provider.name),
             };
             if let Ok(conn) = state.db.lock() {
@@ -1106,6 +1189,7 @@ async fn proxy_handler(
             .map_err(|_| StatusCode::BAD_GATEWAY)?;
         let latency_ms = start_time.elapsed().as_millis() as i64;
         let error_text = String::from_utf8_lossy(&resp_bytes).to_string();
+        let truncated = &error_text[..error_text.len().min(200)];
         let record = RequestRecord {
             id: None,
             timestamp: start_timestamp,
@@ -1122,11 +1206,11 @@ async fn proxy_handler(
             is_streaming: false,
             is_complete: false,
             source_tag: source_tag.clone(),
-            error_message: Some(format!(
+            error_message: Some(redact_secrets_in_text(&format!(
                 "HTTP {}: {}",
                 status.as_u16(),
-                &error_text[..error_text.len().min(200)]
-            )),
+                truncated
+            ))),
             provider_type: get_provider_type(&provider.name),
         };
         if let Ok(conn) = state.db.lock() {
@@ -1263,7 +1347,10 @@ async fn proxy_handler(
                             is_streaming: true,
                             is_complete: false,
                             source_tag: source_tag.clone(),
-                            error_message: Some(format!("stream interrupted: {}", error_text)),
+                            error_message: Some(redact_secrets_in_text(&format!(
+                                "stream interrupted: {}",
+                                error_text
+                            ))),
                             provider_type: provider_type.clone(),
                         };
                         if let Ok(conn) = db.lock() {
