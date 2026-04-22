@@ -22,14 +22,23 @@ VERSION = "0.4.0"
 PROXY_API_BASE = os.environ.get("TOKENPULSE_PROXY_API", "http://127.0.0.1:4100")
 
 def _fetch_proxy_json(path, timeout=1.2):
+    # Returns the payload on success, None if the proxy is unreachable, and
+    # the payload itself (including its "status": "error" and "message") when
+    # the proxy responds with a structured error. Callers that used to rely
+    # on "None == no data" still work, but they can now also surface real
+    # database/proxy errors to logs instead of silently dropping them.
     try:
         req = Request(f"{PROXY_API_BASE}{path}", headers={"Accept": "application/json"})
         with urlopen(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
-        if isinstance(payload, dict) and payload.get("status") == "ok":
-            return payload
     except Exception:
         return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("status") == "ok":
+        return payload
+    msg = payload.get("message") or payload.get("error") or "unknown error"
+    print(f"[tokenpulse-dashboard] proxy error on {path}: {msg}", flush=True)
     return None
 
 
@@ -2046,7 +2055,7 @@ def _reliability_recommendation(kind, model_name, recent_latency, baseline_laten
 
 def _fetch_context_audit_data(time_range):
     """Fetch context audit heuristics from the local proxy when available."""
-    proxied = _fetch_proxy_json(f'/api/context-audit?range={time_range}')
+    proxied = _fetch_proxy_json(f'/api/context-audit?range={quote(time_range, safe="")}')
     if proxied:
         audit = proxied.get('context_audit') or {}
         findings = audit.get('findings') or []
@@ -2059,7 +2068,7 @@ def _fetch_context_audit_data(time_range):
 
 def _fetch_reliability_data(time_range):
     """Fetch latency/reliability rollups plus anomaly candidates."""
-    proxied = _fetch_proxy_json(f'/api/reliability?range={time_range}')
+    proxied = _fetch_proxy_json(f'/api/reliability?range={quote(time_range, safe="")}')
     if proxied:
         return proxied.get('reliability') or {}
     try:
@@ -2571,7 +2580,7 @@ def _build_budget_section(budgets, all_budgets, alert_history):
                 f'<div class="budget-title">'
                 f'<div class="budget-name-row">'
                 f'<span class="budget-name">{name}</span>'
-                f'<span class="budget-period-badge">{period}</span>'
+                f'<span class="budget-period-badge">{_escape_html(period)}</span>'
                 f'</div>'
                 f'<div class="budget-meta">{meta_html.lstrip(" &middot;")}</div>'
                 f'</div>'
@@ -2610,7 +2619,7 @@ def _build_budget_section(budgets, all_budgets, alert_history):
             f'data-scope-kind="{_escape_html(scope_kind)}" data-scope-value="{_escape_html(scope_value)}" '
             f'data-enabled="{1 if b.get("enabled", 1) else 0}">'
             f'<div>'
-            f'<div class="budget-manage-info">{bname} &mdash; {fmt_cost(threshold)} / {period}</div>'
+            f'<div class="budget-manage-info">{bname} &mdash; {fmt_cost(threshold)} / {_escape_html(period)}</div>'
             f'<div class="budget-manage-sub">{_escape_html(" · ".join(meta_parts))}</div>'
             f'</div>'
             f'<div class="budget-manage-actions">'
@@ -4157,7 +4166,7 @@ def _build_heatmap(data):
             # Format tooltip: e.g. "March 24, 14:00 — 42 requests"
             try:
                 dt = datetime.strptime(d, "%Y-%m-%d")
-                label_day = dt.strftime("%B %-d")
+                label_day = f"{dt.strftime('%B')} {dt.day}"
             except Exception:
                 label_day = d
             tooltip = f"{label_day}, {h:02d}:00 — {cnt} requests"
@@ -5200,10 +5209,13 @@ def build_page(time_range, page=1):
     try:
         data = _fetch_data(time_range)
     except Exception as e:
+        # Log the raw exception server-side, but don't render SQLite error
+        # text or the absolute DB path back to whoever hit the dashboard.
+        print(f"[tokenpulse-dashboard] build_page error: {e}", flush=True)
         error_body = ERROR_TEMPLATE.substitute(
             icon_svg='<svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 8v5m0 4h.01M10.3 3.85 1.82 18a2 2 0 0 0 1.72 3h16.92a2 2 0 0 0 1.72-3L13.7 3.85a2 2 0 0 0-3.4 0Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-            error_message=_escape_html(str(e)),
-            db_path=_escape_html(DB_PATH),
+            error_message="Dashboard could not read the local database. See the terminal running the dashboard for details.",
+            db_path="",
         )
         empty_scripts = "<script>document.body.classList.remove('preload');setTimeout(function(){location.reload()},3000);</script>"
         return PAGE_TEMPLATE.substitute(
@@ -5421,7 +5433,9 @@ def build_page(time_range, page=1):
 def _json_response(handler, status, data):
     body = json.dumps(data).encode("utf-8")
     handler.send_response(status)
-    handler.send_header("Access-Control-Allow-Origin", "http://127.0.0.1:4200")
+    # JSON is consumed same-origin from the dashboard page itself; we
+    # deliberately do not set Access-Control-Allow-Origin, so a cross-origin
+    # JS caller that somehow reaches us still cannot read the response body.
     handler.send_header("Content-Type", "application/json")
     handler.send_header("Content-Length", str(len(body)))
     handler.end_headers()
@@ -5509,7 +5523,10 @@ def _api_create_budget(form_data):
         conn.close()
         return {"ok": True, "id": bid}
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        # Don't leak raw SQLite/schema error strings to a remote caller; log
+        # them server-side instead and return a generic message.
+        print(f"[tokenpulse-dashboard] budget API error: {e}", flush=True)
+        return {"ok": False, "error": "internal error"}
 
 
 def _api_update_budget(budget_id, form_data):
@@ -5531,7 +5548,10 @@ def _api_update_budget(budget_id, form_data):
         conn.close()
         return {"ok": True}
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        # Don't leak raw SQLite/schema error strings to a remote caller; log
+        # them server-side instead and return a generic message.
+        print(f"[tokenpulse-dashboard] budget API error: {e}", flush=True)
+        return {"ok": False, "error": "internal error"}
 
 
 def _api_set_budget_enabled(budget_id, form_data):
@@ -5548,7 +5568,10 @@ def _api_set_budget_enabled(budget_id, form_data):
         conn.close()
         return {"ok": True}
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        # Don't leak raw SQLite/schema error strings to a remote caller; log
+        # them server-side instead and return a generic message.
+        print(f"[tokenpulse-dashboard] budget API error: {e}", flush=True)
+        return {"ok": False, "error": "internal error"}
 
 
 def _api_delete_budget(budget_id):
@@ -5562,11 +5585,21 @@ def _api_delete_budget(budget_id):
         conn.close()
         return {"ok": True}
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        # Don't leak raw SQLite/schema error strings to a remote caller; log
+        # them server-side instead and return a generic message.
+        print(f"[tokenpulse-dashboard] budget API error: {e}", flush=True)
+        return {"ok": False, "error": "internal error"}
+
+
+CSV_EXPORT_ROW_CAP = 500_000
 
 
 def _export_csv(time_range):
-    """Generate CSV content for all requests in the given time range."""
+    """Generate CSV content for all requests in the given time range.
+
+    Reads rows in batches and hard-caps the row count so a database
+    spanning millions of requests can't OOM the dashboard process.
+    """
     import csv
     import io
 
@@ -5575,6 +5608,15 @@ def _export_csv(time_range):
     c = conn.cursor()
 
     where = _time_filter_sql(time_range, "WHERE")
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "timestamp", "provider", "model", "input_tokens", "output_tokens",
+        "cached_tokens", "reasoning_tokens", "cost_usd", "latency_ms",
+        "tokens_per_second", "time_to_first_token_ms", "is_streaming",
+        "source_tag", "provider_type", "error_message",
+    ])
 
     try:
         c.execute(
@@ -5588,38 +5630,108 @@ def _export_csv(time_range):
             f"COALESCE(source_tag, '') as source_tag, "
             f"COALESCE(provider_type, 'api') as provider_type, "
             f"COALESCE(error_message, '') as error_message "
-            f"FROM requests{where} ORDER BY timestamp DESC"
+            f"FROM requests{where} ORDER BY timestamp DESC "
+            f"LIMIT {int(CSV_EXPORT_ROW_CAP)}"
         )
-        rows = c.fetchall()
-    except Exception:
-        rows = []
-
-    conn.close()
-
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow([
-        "timestamp", "provider", "model", "input_tokens", "output_tokens",
-        "cached_tokens", "reasoning_tokens", "cost_usd", "latency_ms",
-        "tokens_per_second", "time_to_first_token_ms", "is_streaming",
-        "source_tag", "provider_type", "error_message",
-    ])
-    for r in rows:
-        writer.writerow([
-            r["timestamp"], r["provider"], r["model"],
-            r["input_tokens"], r["output_tokens"],
-            r["cached_tokens"], r["reasoning_tokens"],
-            f"{r['cost_usd']:.6f}", r["latency_ms"],
-            f"{r['tokens_per_second']:.1f}", r["time_to_first_token_ms"],
-            bool(r["is_streaming"]),
-            r["source_tag"], r["provider_type"], r["error_message"],
-        ])
+        while True:
+            rows = c.fetchmany(5000)
+            if not rows:
+                break
+            for r in rows:
+                writer.writerow([
+                    r["timestamp"], r["provider"], r["model"],
+                    r["input_tokens"], r["output_tokens"],
+                    r["cached_tokens"], r["reasoning_tokens"],
+                    f"{r['cost_usd']:.6f}", r["latency_ms"],
+                    f"{r['tokens_per_second']:.1f}", r["time_to_first_token_ms"],
+                    bool(r["is_streaming"]),
+                    r["source_tag"], r["provider_type"], r["error_message"],
+                ])
+    except Exception as e:
+        print(f"[tokenpulse-dashboard] CSV export error: {e}", flush=True)
+    finally:
+        conn.close()
 
     return output.getvalue()
 
 
+ALLOWED_HOSTS = frozenset({
+    "127.0.0.1:4200",
+    "localhost:4200",
+    "[::1]:4200",
+})
+
+# Simple token-bucket rate limiter shared across worker threads. This is a
+# defense-in-depth control — the dashboard is localhost-only, but combined
+# with DNS-rebinding or a misbehaving local process a tight fetch loop could
+# otherwise pin SQLite. 120 requests per rolling 10-second window per client
+# IP is comfortable for normal dashboard polling.
+import threading
+import time as _time
+_RATE_LOCK = threading.Lock()
+_RATE_WINDOW_S = 10.0
+_RATE_MAX = 120
+_RATE_BUCKETS = {}
+
+def _rate_limit_ok(client):
+    now = _time.time()
+    with _RATE_LOCK:
+        entries = _RATE_BUCKETS.setdefault(client, [])
+        cutoff = now - _RATE_WINDOW_S
+        while entries and entries[0] < cutoff:
+            entries.pop(0)
+        if len(entries) >= _RATE_MAX:
+            return False
+        entries.append(now)
+        if len(_RATE_BUCKETS) > 1024:
+            # Opportunistic GC so a flood of distinct clients can't grow the
+            # dict without bound.
+            for k in list(_RATE_BUCKETS.keys()):
+                if not _RATE_BUCKETS[k] or _RATE_BUCKETS[k][-1] < cutoff:
+                    _RATE_BUCKETS.pop(k, None)
+        return True
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
+    def _host_ok(self):
+        # Reject requests whose Host header is not the local dashboard origin.
+        # Without this, a page on evil.com that DNS-rebinds to 127.0.0.1 can
+        # still talk to us, because the browser considers the fetch same-origin.
+        host = (self.headers.get("Host") or "").strip().lower()
+        if host not in ALLOWED_HOSTS:
+            self.send_response(421)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(b"Misdirected request")
+            return False
+        client = self.client_address[0] if self.client_address else "unknown"
+        if not _rate_limit_ok(client):
+            self.send_response(429)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Retry-After", "10")
+            self.end_headers()
+            self.wfile.write(b"Too many requests")
+            return False
+        return True
+
+    def _origin_ok_for_write(self):
+        # For state-changing requests, require Origin (or Referer as a fallback
+        # for form-encoded POSTs) to match the dashboard's own origin. This
+        # blocks cross-site form CSRF from arbitrary web pages.
+        origin = (self.headers.get("Origin") or "").strip()
+        if origin:
+            return origin in ("http://127.0.0.1:4200", "http://localhost:4200")
+        referer = (self.headers.get("Referer") or "").strip()
+        if referer:
+            return (
+                referer.startswith("http://127.0.0.1:4200/")
+                or referer.startswith("http://localhost:4200/")
+            )
+        return False
+
     def do_GET(self):
+        if not self._host_ok():
+            return
         parsed = urlparse(self.path)
         path = parsed.path
 
@@ -5653,12 +5765,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path == "/api/context-audit":
             params = parse_qs(parsed.query)
             time_range = (params.get("range") or ["today"])[0]
+            if time_range not in RANGE_LABELS:
+                time_range = "today"
             _json_response(self, 200, {"ok": True, "context_audit": _fetch_context_audit_data(time_range)})
             return
 
         if path == "/api/stats":
             params = parse_qs(parsed.query)
             time_range = (params.get("range") or ["today"])[0]
+            if time_range not in RANGE_LABELS:
+                time_range = "today"
             data = _fetch_data(time_range)
             _json_response(self, 200, {
                 "ok": True,
@@ -5680,23 +5796,36 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path == "/api/requests":
             params = parse_qs(parsed.query)
             time_range = (params.get("range") or ["today"])[0]
+            if time_range not in RANGE_LABELS:
+                time_range = "today"
             try:
                 limit = int((params.get("limit") or ["50"])[0] or 50)
             except (TypeError, ValueError):
                 limit = 50
             limit = max(1, min(limit, 200))
-            data = _fetch_data(time_range)
+            try:
+                page = int((params.get("page") or ["1"])[0] or 1)
+            except (TypeError, ValueError):
+                page = 1
+            page = max(1, min(page, 10_000))
+            all_requests = _fetch_data(time_range).get("requests", [])
+            offset = (page - 1) * limit
+            window = all_requests[offset:offset + limit]
             _json_response(self, 200, {
                 "ok": True,
                 "range": time_range,
-                "count": min(len(data.get("requests", [])), limit),
-                "requests": (data.get("requests", [])[:limit]),
+                "page": page,
+                "limit": limit,
+                "count": len(window),
+                "requests": window,
             })
             return
 
         if path == "/api/reliability":
             params = parse_qs(parsed.query)
             time_range = (params.get("range") or ["today"])[0]
+            if time_range not in RANGE_LABELS:
+                time_range = "today"
             _json_response(self, 200, {"ok": True, "reliability": _fetch_reliability_data(time_range)})
             return
 
@@ -5746,8 +5875,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             time_range = "today"
         try:
             page = int(params.get("page", ["1"])[0])
-        except (ValueError, IndexError):
+        except (ValueError, IndexError, TypeError):
             page = 1
+        page = max(1, min(page, 10_000))
 
         html = build_page(time_range, page=page).encode("utf-8")
         self.send_response(200)
@@ -5757,15 +5887,34 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(html)
 
+    def _read_form_body(self, max_bytes=65536):
+        # Cap the body read so a malicious/forged request can't pin a worker
+        # thread on a multi-GB Content-Length. Returns (form_data, error_json).
+        raw_len = self.headers.get("Content-Length", "0")
+        try:
+            content_length = int(raw_len)
+        except (TypeError, ValueError):
+            return None, {"ok": False, "error": "Invalid Content-Length"}
+        if content_length < 0 or content_length > max_bytes:
+            return None, {"ok": False, "error": "Request body too large"}
+        raw_body = self.rfile.read(content_length).decode("utf-8", errors="replace") if content_length else ""
+        return parse_qs(raw_body), None
+
     def do_POST(self):
+        if not self._host_ok():
+            return
+        if not self._origin_ok_for_write():
+            _json_response(self, 403, {"ok": False, "error": "Forbidden origin"})
+            return
         parsed = urlparse(self.path)
         path = parsed.path
 
         # API endpoint: POST /api/budgets
         if path == "/api/budgets":
-            content_length = int(self.headers.get("Content-Length", 0))
-            raw_body = self.rfile.read(content_length).decode("utf-8") if content_length else ""
-            form_data = parse_qs(raw_body)
+            form_data, err = self._read_form_body()
+            if err:
+                _json_response(self, 400, err)
+                return
             result = _api_create_budget(form_data)
             _json_response(self, 200 if result.get("ok") else 400, result)
             return
@@ -5774,11 +5923,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_PUT(self):
+        if not self._host_ok():
+            return
+        if not self._origin_ok_for_write():
+            _json_response(self, 403, {"ok": False, "error": "Forbidden origin"})
+            return
         parsed = urlparse(self.path)
         path = parsed.path
-        content_length = int(self.headers.get("Content-Length", 0))
-        raw_body = self.rfile.read(content_length).decode("utf-8") if content_length else ""
-        form_data = parse_qs(raw_body)
+        form_data, err = self._read_form_body()
+        if err:
+            _json_response(self, 400, err)
+            return
 
         if path.startswith("/api/budgets/") and path.endswith("/enabled"):
             try:
@@ -5804,6 +5959,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_DELETE(self):
+        if not self._host_ok():
+            return
+        if not self._origin_ok_for_write():
+            _json_response(self, 403, {"ok": False, "error": "Forbidden origin"})
+            return
         parsed = urlparse(self.path)
         path = parsed.path
 
@@ -5822,6 +5982,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_OPTIONS(self):
+        if not self._host_ok():
+            return
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "http://127.0.0.1:4200")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")

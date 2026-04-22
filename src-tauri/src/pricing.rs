@@ -105,11 +105,21 @@ pub fn parse_litellm_json(json_str: &str) -> Vec<PricingEntry> {
             .get("output_cost_per_token")
             .and_then(|v| v.as_f64());
 
-        // Skip entries without pricing (e.g. embedding-only or image models)
+        // Skip entries without pricing (e.g. embedding-only or image models).
+        // Also reject NaN, infinity, negatives, and absurd values so a
+        // compromised or malformed upstream file can't poison cost math.
         let (input, output) = match (input_cost, output_cost) {
             (Some(i), Some(o)) => (i, o),
             _ => continue,
         };
+        if !input.is_finite() || !output.is_finite() {
+            continue;
+        }
+        // $1000/token is several orders of magnitude above real pricing;
+        // values above this are treated as malformed.
+        if input < 0.0 || output < 0.0 || input > 1000.0 || output > 1000.0 {
+            continue;
+        }
 
         let provider = model_data
             .get("litellm_provider")
