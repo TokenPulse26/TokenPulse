@@ -77,7 +77,9 @@ fn redact_secrets_in_text(text: &str) -> String {
                 // Skip the token: consume prefix + following non-whitespace/non-quote chars.
                 let tail = &rest[pos + prefix.len()..];
                 let end = tail
-                    .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ',' | '}' | ')' | ']'))
+                    .find(|c: char| {
+                        c.is_whitespace() || matches!(c, '"' | '\'' | ',' | '}' | ')' | ']')
+                    })
                     .unwrap_or(tail.len());
                 rest = &tail[end..];
                 continue 'outer;
@@ -88,7 +90,9 @@ fn redact_secrets_in_text(text: &str) -> String {
             out.push_str(&rest[..pos + "Bearer ".len()]);
             let tail = &rest[pos + "Bearer ".len()..];
             let end = tail
-                .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ',' | '}' | ')' | ']'))
+                .find(|c: char| {
+                    c.is_whitespace() || matches!(c, '"' | '\'' | ',' | '}' | ')' | ']')
+                })
                 .unwrap_or(tail.len());
             out.push_str("REDACTED");
             rest = &tail[end..];
@@ -612,28 +616,64 @@ fn build_cors_layer() -> CorsLayer {
 }
 
 fn reject_disallowed_api_origin(headers: &HeaderMap, path: &str) -> Option<Response<Body>> {
-    if !path.starts_with("/api/") {
-        return None;
-    }
-
+    // Browser requests (identified by Origin header) are restricted to the
+    // local dashboard origin for every endpoint, not only `/api/*`.
     let origin = headers.get(header::ORIGIN)?.to_str().ok()?;
     if is_allowed_browser_origin(origin) {
         return None;
     }
 
-    Some(
-        Response::builder()
-            .status(StatusCode::FORBIDDEN)
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from(
-                serde_json::json!({
-                    "status": "error",
-                    "message": "TokenPulse local API only accepts browser requests from the local dashboard origin.",
-                })
-                .to_string(),
-            ))
-            .unwrap(),
-    )
+    Some(json_response(
+        StatusCode::FORBIDDEN,
+        serde_json::json!({
+            "status": "error",
+            "path": path,
+            "message": "TokenPulse local API only accepts browser requests from the local dashboard origin.",
+        }),
+    ))
+}
+
+fn build_response(status: StatusCode, content_type: &str, body: Body) -> Response<Body> {
+    let mut response = Response::new(body);
+    *response.status_mut() = status;
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_str(content_type)
+            .unwrap_or_else(|_| header::HeaderValue::from_static("application/octet-stream")),
+    );
+    response
+}
+
+fn json_response(status: StatusCode, value: Value) -> Response<Body> {
+    match serde_json::to_vec(&value) {
+        Ok(body) => build_response(status, "application/json", Body::from(body)),
+        Err(err) => {
+            eprintln!("[TokenPulse] failed to serialize JSON response: {}", err);
+            build_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "application/json",
+                Body::from(r#"{"status":"error","message":"internal server error"}"#),
+            )
+        }
+    }
+}
+
+fn response_with_headers(
+    status: StatusCode,
+    source_headers: &HeaderMap,
+    body: Body,
+    drop_hop_by_hop: bool,
+) -> Response<Body> {
+    let mut response = Response::new(body);
+    *response.status_mut() = status;
+    for (name, value) in source_headers {
+        let name_str = name.as_str();
+        if drop_hop_by_hop && matches!(name_str, "transfer-encoding" | "connection") {
+            continue;
+        }
+        response.headers_mut().append(name.clone(), value.clone());
+    }
+    response
 }
 
 fn detect_source_tag(headers: &HeaderMap) -> String {
@@ -720,11 +760,7 @@ async fn proxy_handler(
             "total_requests_tracked": count,
             "dashboard_url": "http://127.0.0.1:4200",
         });
-        return Ok(Response::builder()
-            .status(200)
-            .header("content-type", "application/json")
-            .body(Body::from(serde_json::to_string(&body).unwrap()))
-            .unwrap());
+        return Ok(json_response(StatusCode::OK, body));
     }
 
     // ── /api/stats endpoint ───────────────────────────────────────────
@@ -836,11 +872,7 @@ async fn proxy_handler(
             serde_json::json!({"status": "error", "message": "database lock failed"})
         };
 
-        return Ok(Response::builder()
-            .status(200)
-            .header("content-type", "application/json")
-            .body(Body::from(serde_json::to_string(&result).unwrap()))
-            .unwrap());
+        return Ok(json_response(StatusCode::OK, result));
     }
 
     // ── /api/requests endpoint ────────────────────────────────────────
@@ -881,11 +913,7 @@ async fn proxy_handler(
             serde_json::json!({"status": "error", "message": "database lock failed"})
         };
 
-        return Ok(Response::builder()
-            .status(200)
-            .header("content-type", "application/json")
-            .body(Body::from(serde_json::to_string(&result).unwrap()))
-            .unwrap());
+        return Ok(json_response(StatusCode::OK, result));
     }
 
     // ── /api/reliability endpoint ─────────────────────────────────────
@@ -916,11 +944,7 @@ async fn proxy_handler(
             serde_json::json!({"status": "error", "message": "database lock failed"})
         };
 
-        return Ok(Response::builder()
-            .status(200)
-            .header("content-type", "application/json")
-            .body(Body::from(serde_json::to_string(&result).unwrap()))
-            .unwrap());
+        return Ok(json_response(StatusCode::OK, result));
     }
 
     // ── /api/notifications endpoint ───────────────────────────────────
@@ -947,11 +971,7 @@ async fn proxy_handler(
             serde_json::json!({"status": "error", "message": "database lock failed"})
         };
 
-        return Ok(Response::builder()
-            .status(200)
-            .header("content-type", "application/json")
-            .body(Body::from(serde_json::to_string(&result).unwrap()))
-            .unwrap());
+        return Ok(json_response(StatusCode::OK, result));
     }
 
     // ── /api/budget-forecasts endpoint ───────────────────────────────
@@ -968,11 +988,7 @@ async fn proxy_handler(
             serde_json::json!({"status": "error", "message": "database lock failed"})
         };
 
-        return Ok(Response::builder()
-            .status(200)
-            .header("content-type", "application/json")
-            .body(Body::from(serde_json::to_string(&result).unwrap()))
-            .unwrap());
+        return Ok(json_response(StatusCode::OK, result));
     }
 
     // ── /api/budgets endpoint ─────────────────────────────────────────
@@ -989,11 +1005,7 @@ async fn proxy_handler(
             serde_json::json!({"status": "error", "message": "database lock failed"})
         };
 
-        return Ok(Response::builder()
-            .status(200)
-            .header("content-type", "application/json")
-            .body(Body::from(serde_json::to_string(&result).unwrap()))
-            .unwrap());
+        return Ok(json_response(StatusCode::OK, result));
     }
 
     if path == "/api/context-audit" && parts.method == Method::GET {
@@ -1019,11 +1031,7 @@ async fn proxy_handler(
             serde_json::json!({"status": "error", "message": "database lock failed"})
         };
 
-        return Ok(Response::builder()
-            .status(200)
-            .header("content-type", "application/json")
-            .body(Body::from(serde_json::to_string(&result).unwrap()))
-            .unwrap());
+        return Ok(json_response(StatusCode::OK, result));
     }
 
     let provider = detect_provider(&parts.headers, &path);
@@ -1113,11 +1121,7 @@ async fn proxy_handler(
             }
         }
     }
-    eprintln!(
-        "[TokenPulse] Forwarding {} headers (auth present: {})",
-        forward_headers.len(),
-        forward_headers.contains_key("authorization") || forward_headers.contains_key("x-api-key")
-    );
+    eprintln!("[TokenPulse] Forwarding {} headers", forward_headers.len());
 
     let method = match parts.method {
         Method::GET => reqwest::Method::GET,
@@ -1216,14 +1220,12 @@ async fn proxy_handler(
         if let Ok(conn) = state.db.lock() {
             let _ = insert_request(&conn, &record);
         }
-        let mut response_builder = Response::builder().status(status.as_u16());
-        for (name, value) in &resp_headers {
-            if let Ok(header_name) = http::header::HeaderName::from_bytes(name.as_str().as_bytes())
-            {
-                response_builder = response_builder.header(header_name, value.as_bytes());
-            }
-        }
-        return Ok(response_builder.body(Body::from(resp_bytes)).unwrap());
+        return Ok(response_with_headers(
+            status,
+            &resp_headers,
+            Body::from(resp_bytes),
+            false,
+        ));
     }
 
     if is_streaming {
@@ -1477,15 +1479,12 @@ async fn proxy_handler(
 
         let stream_body = Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx));
 
-        let mut response_builder = Response::builder().status(status.as_u16());
-        for (name, value) in &resp_headers {
-            if let Ok(header_name) = http::header::HeaderName::from_bytes(name.as_str().as_bytes())
-            {
-                response_builder = response_builder.header(header_name, value.as_bytes());
-            }
-        }
-
-        Ok(response_builder.body(stream_body).unwrap())
+        Ok(response_with_headers(
+            status,
+            &resp_headers,
+            stream_body,
+            false,
+        ))
     } else {
         // Non-streaming: read full response
         let resp_bytes = response
@@ -1539,18 +1538,12 @@ async fn proxy_handler(
             }
         }
 
-        let mut response_builder = Response::builder().status(status.as_u16());
-        for (name, value) in &resp_headers {
-            let name_str = name.as_str();
-            if matches!(name_str, "transfer-encoding" | "connection") {
-                continue;
-            }
-            if let Ok(header_name) = http::header::HeaderName::from_bytes(name_str.as_bytes()) {
-                response_builder = response_builder.header(header_name, value.as_bytes());
-            }
-        }
-
-        Ok(response_builder.body(Body::from(resp_bytes)).unwrap())
+        Ok(response_with_headers(
+            status,
+            &resp_headers,
+            Body::from(resp_bytes),
+            true,
+        ))
     }
 }
 
@@ -1559,10 +1552,17 @@ pub async fn start_proxy_server(
     proxy_running: Arc<AtomicBool>,
     proxy_paused: Arc<AtomicBool>,
 ) {
-    let http_client = Client::builder()
+    let http_client = match Client::builder()
         .timeout(std::time::Duration::from_secs(300))
         .build()
-        .expect("Failed to build HTTP client");
+    {
+        Ok(client) => client,
+        Err(err) => {
+            eprintln!("[TokenPulse] Failed to build HTTP client: {}", err);
+            proxy_running.store(false, Ordering::SeqCst);
+            return;
+        }
+    };
 
     let state = AppState {
         db,
@@ -1601,9 +1601,18 @@ mod tests {
 
     #[test]
     fn sse_field_value_accepts_optional_space_after_colon() {
-        assert_eq!(extract_sse_field_value("data: {\"ok\":true}", "data:"), Some("{\"ok\":true}"));
-        assert_eq!(extract_sse_field_value("data:{\"ok\":true}", "data:"), Some("{\"ok\":true}"));
-        assert_eq!(extract_sse_field_value("event: message_start", "event:"), Some("message_start"));
+        assert_eq!(
+            extract_sse_field_value("data: {\"ok\":true}", "data:"),
+            Some("{\"ok\":true}")
+        );
+        assert_eq!(
+            extract_sse_field_value("data:{\"ok\":true}", "data:"),
+            Some("{\"ok\":true}")
+        );
+        assert_eq!(
+            extract_sse_field_value("event: message_start", "event:"),
+            Some("message_start")
+        );
     }
 
     #[test]

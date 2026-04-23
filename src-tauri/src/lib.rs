@@ -186,7 +186,7 @@ fn update_pricing_now(state: State<DbState>) -> Result<(), String> {
 }
 
 fn csv_escape(value: &str) -> String {
-    if value.contains([',', '"', '\n', '\r']) {
+    if value.contains(',') || value.contains('"') || value.contains('\n') || value.contains('\r') {
         format!("\"{}\"", value.replace('"', "\"\""))
     } else {
         value.to_string()
@@ -490,12 +490,14 @@ pub fn run() {
             let app_dir = app
                 .path()
                 .app_data_dir()
-                .expect("Failed to get app data dir");
-            std::fs::create_dir_all(&app_dir).expect("Failed to create app data dir");
+                .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
+            std::fs::create_dir_all(&app_dir)
+                .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
             let db_path = app_dir.join("tokenpulse.db");
-            let db_path_str = db_path.to_str().expect("Invalid DB path").to_string();
+            let db_path_str = db_path.to_string_lossy().to_string();
 
-            let conn = db::init_db(&db_path_str).expect("Failed to initialize database");
+            let conn = db::init_db(&db_path_str)
+                .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
             let db_arc = Arc::new(Mutex::new(conn));
 
             // Enforce data retention on startup
@@ -569,7 +571,7 @@ pub fn run() {
             mark_notifications_delivered_cmd,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .unwrap_or_else(|e| eprintln!("error while running tauri application: {}", e));
 }
 
 fn setup_tray(
@@ -601,8 +603,13 @@ fn setup_tray(
     let pause_item_clone = pause_item.clone();
     let proxy_paused_for_menu = proxy_paused.clone();
 
+    let icon = app
+        .default_window_icon()
+        .cloned()
+        .ok_or_else(|| "missing default window icon".to_string())?;
+
     let _tray = TrayIconBuilder::with_id("main")
-        .icon(app.default_window_icon().unwrap().clone())
+        .icon(icon)
         .menu(&menu)
         .show_menu_on_left_click(true)
         .on_menu_event(move |app, event| {
