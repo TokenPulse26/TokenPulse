@@ -2373,11 +2373,11 @@ mod tests {
 
         let budget_id = create_budget(&conn, "Warn me", "monthly", 10.0, None, None, None).unwrap();
         let statuses = check_budgets(&conn).unwrap();
-        assert_eq!(statuses[0].warning_tier_pct, Some(80));
+        assert_eq!(statuses[0].warning_tier_pct, Some(75));
 
         let first = sync_budget_notifications(&conn).unwrap();
         assert_eq!(first.len(), 1);
-        assert!(first[0].title.contains("80%"));
+        assert!(first[0].title.contains("75%"));
 
         let second = sync_budget_notifications(&conn).unwrap();
         assert!(second.is_empty());
@@ -2388,10 +2388,10 @@ mod tests {
         )
         .unwrap();
         let statuses = check_budgets(&conn).unwrap();
-        assert_eq!(statuses[0].warning_tier_pct, Some(95));
+        assert_eq!(statuses[0].warning_tier_pct, Some(90));
         let escalated = sync_budget_notifications(&conn).unwrap();
         assert_eq!(escalated.len(), 1);
-        assert!(escalated[0].title.contains("95%"));
+        assert!(escalated[0].title.contains("90%"));
 
         conn.execute(
             "UPDATE requests SET cost_usd = 2.00 WHERE source_tag = 'project-a'",

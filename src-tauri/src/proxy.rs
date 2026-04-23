@@ -743,8 +743,10 @@ async fn proxy_handler(
 
     // ── Health check endpoint ─────────────────────────────────────────
     if (path == "/" || path == "/health" || path == "/api/health") && parts.method == Method::GET {
-        let (count, db_path, db_size_bytes): (i64, String, u64) = if let Ok(conn) = state.db.lock() {
-            let c = conn.query_row("SELECT COUNT(*) FROM requests", [], |row| row.get(0))
+        let (count, db_path, db_size_bytes): (i64, String, u64) = if let Ok(conn) = state.db.lock()
+        {
+            let c = conn
+                .query_row("SELECT COUNT(*) FROM requests", [], |row| row.get(0))
                 .unwrap_or(0);
             // Retrieve the database file path via PRAGMA database_list
             let path: String = conn

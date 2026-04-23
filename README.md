@@ -94,10 +94,11 @@ If you only want the clearest early-access path, use `install.sh` first.
 
 The fastest proof-of-life flow is:
 1. install with `install.sh`
-2. start the proxy and dashboard
-3. point one tool at one TokenPulse route
-4. send one recognizable test request
-5. confirm it appears in the dashboard at `http://127.0.0.1:4200`
+2. let the installer auto-start the proxy and dashboard
+3. verify `http://127.0.0.1:4100/health`
+4. point one tool at one TokenPulse route
+5. send one recognizable test request
+6. confirm it appears in the dashboard at `http://127.0.0.1:4200`
 
 Use [FIRST_TESTER_ONBOARDING.md](FIRST_TESTER_ONBOARDING.md) as the source of truth.
 

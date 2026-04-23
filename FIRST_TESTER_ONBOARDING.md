@@ -13,27 +13,27 @@ Linux, Windows, and NVIDIA-based setups are not part of the supported v1 path ye
 ## What TokenPulse is today
 
 TokenPulse is currently:
-- a local proxy on port `4100`
+- a local AI proxy on port `4100`
 - a browser dashboard on port `4200`
 - a secondary macOS Tauri app-shell / tray layer
 
 The browser dashboard is the primary interface.
 
-This is not yet a polished mass-market installer flow. The goal of this onboarding guide is to get you from zero to one verified request as quickly and honestly as possible.
+The install flow is now agent-installable for the supported macOS Apple Silicon path, but this is still early access rather than a polished mass-market installer.
 
 ---
 
 ## Best-supported path
 
 Use this order:
-1. install with `install.sh`
-2. start the proxy
-3. start the dashboard
-4. verify the dashboard loads
+1. install with the one-command installer
+2. let the installer auto-start the proxy and dashboard
+3. verify `/health`
+4. open the dashboard
 5. send one test request through the proxy
 6. confirm it appears in the dashboard
 
-Do not start by wiring up multiple tools or providers.
+Do not start by wiring up multiple tools or providers. Get one clean request first.
 
 ---
 
@@ -41,47 +41,57 @@ Do not start by wiring up multiple tools or providers.
 
 ### 1. Install TokenPulse
 
-Run:
+Recommended one-command install:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/TokenPulse26/TokenPulse/main/install.sh | bash
+```
+
+If you already cloned the repo, this is also fine:
 
 ```bash
 ./install.sh
 ```
 
-This is the supported v1 install path for macOS Apple Silicon.
+The installer should:
+- check basic prerequisites
+- download the pre-built macOS ARM release binary
+- install the dashboard files
+- create launchd services
+- start the proxy and dashboard
+- run a health check
+- print the dashboard URL
 
-### 2. Start the proxy
-
-```bash
-~/.tokenpulse/tokenpulse
-```
-
-You want TokenPulse listening on:
-
-```text
-http://localhost:4100
-```
-
-### 3. Start the dashboard
+If you do not want auto-start, use:
 
 ```bash
-python3 ~/.tokenpulse/web-dashboard.py
+./install.sh --no-autostart
 ```
 
-Then open:
+### 2. Verify the proxy is healthy
+
+Run:
+
+```bash
+curl -fsS http://127.0.0.1:4100/health
+```
+
+Success means you see JSON with:
+- `"status":"ok"`
+- `"service":"tokenpulse-proxy"`
+- `"dashboard_url":"http://127.0.0.1:4200"`
+
+### 3. Open the dashboard
+
+Open:
 
 ```text
 http://127.0.0.1:4200
 ```
 
-### 4. Verify the dashboard loads
+Success means the TokenPulse dashboard loads locally in your browser.
 
-Success means the dashboard opens locally at:
-
-```text
-http://127.0.0.1:4200
-```
-
-### 5. Point one tool at TokenPulse
+### 4. Point one tool at TokenPulse
 
 Use one route only for your first test:
 - OpenAI-compatible: `http://localhost:4100`
@@ -90,14 +100,14 @@ Use one route only for your first test:
 - LM Studio: `http://localhost:4100/lmstudio`
 
 Recommended first choices:
-- OpenAI-compatible for the simplest first check
+- OpenAI-compatible for the simplest API-style check
 - Ollama for the recommended local-model path
 
 LM Studio is supported, but lower confidence than Ollama today.
 
-### 6. Make one recognizable test request
+### 5. Make one recognizable test request
 
-Example:
+Example OpenAI-compatible request:
 
 ```bash
 curl http://localhost:4100/v1/chat/completions \
@@ -106,7 +116,7 @@ curl http://localhost:4100/v1/chat/completions \
   -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Hello from TokenPulse"}],"max_tokens":10}'
 ```
 
-### 7. Confirm it appears in the dashboard
+### 6. Confirm it appears in the dashboard
 
 Open or refresh:
 
@@ -125,27 +135,64 @@ If that works, you have a valid first success.
 
 ---
 
+## Uninstall / Reset
+
+Clean uninstall:
+
+```bash
+~/.tokenpulse/uninstall.sh
+```
+
+Keep your local data:
+
+```bash
+~/.tokenpulse/uninstall.sh --keep-data
+```
+
+Non-interactive uninstall:
+
+```bash
+~/.tokenpulse/uninstall.sh --yes
+```
+
+---
+
 ## Known limitations
 
 Current early-access limitations:
 - macOS Apple Silicon is the only supported v1 platform
 - Ollama is the recommended local-model path today
 - LM Studio is supported, but lower confidence than Ollama
-- pricing data can be stale for some newer model families
-- some dashboard time-range filters may not fully apply
-- the Tauri app-shell is secondary, the browser dashboard is the main surface
-- the installer is still a bootstrap helper, not a polished general release installer
+- pricing data can lag for some newer model families
+- the Tauri app-shell is secondary; the browser dashboard is the main surface
+- codesigning/notarization is skipped for early access, so macOS may require manually allowing the binary
 
 ---
 
 ## Troubleshooting
 
+### If the dashboard does not load
+
+Check services:
+
+```bash
+launchctl list | grep tokenpulse
+```
+
+Check proxy health:
+
+```bash
+curl -fsS http://127.0.0.1:4100/health
+```
+
 ### If the dashboard loads but looks empty
+
 That usually means either:
 - no request has actually gone through TokenPulse yet, or
 - the request bypassed the proxy
 
 ### If the AI request succeeds but nothing appears in TokenPulse
+
 Check these first:
 - your tool is pointed at TokenPulse, not the provider directly
 - you used the correct route prefix
@@ -153,12 +200,8 @@ Check these first:
 - the dashboard is reading the same local database the proxy is writing to
 
 ### If tokens or cost do not appear
-That does not always mean failure.
-Some provider paths expose usage more clearly than others. First confirm the request itself appears correctly.
 
-### If the installer path feels rough
-That is expected today.
-The installer is useful, but it is not yet a polished general-user install experience.
+That does not always mean failure. Some provider paths expose usage more clearly than others. First confirm the request itself appears correctly.
 
 ---
 

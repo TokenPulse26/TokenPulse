@@ -38,12 +38,13 @@ You point your tools at TokenPulse instead of the provider directly. TokenPulse 
 ## Recommended early-access path
 
 The supported v1 path is:
-1. run `./install.sh`
-2. start the proxy and dashboard
-3. route one test request through TokenPulse
-4. verify it appears in the dashboard at `http://127.0.0.1:4200`
+1. run the one-command installer
+2. let the installer auto-start the proxy and dashboard
+3. verify the proxy health endpoint
+4. route one test request through TokenPulse
+5. verify it appears in the dashboard at `http://127.0.0.1:4200`
 
-The installer is a bootstrap helper for a narrow setup. It is useful, but it is not a polished general release installer.
+The installer is agent-installable for the supported macOS Apple Silicon path. This is still early access, but the default path no longer requires manually building or starting services.
 
 ---
 
@@ -65,14 +66,28 @@ curl -fsSL https://raw.githubusercontent.com/TokenPulse26/TokenPulse/main/instal
 
 First-run note: the binary is not codesigned for early access. If macOS blocks it, open **System Settings → Privacy & Security**, scroll to the bottom, and click **Allow Anyway** for `tokenpulse`, then launch it again.
 
-### 2. Start the services
+### 2. Verify the services
+
+The installer starts the proxy and dashboard automatically by default.
+
+Check proxy health:
+
+```bash
+curl -fsS http://127.0.0.1:4100/health
+```
+
+Then open the dashboard:
+
+```text
+http://127.0.0.1:4200
+```
+
+If you intentionally installed with `--no-autostart`, start services manually:
 
 ```bash
 ~/.tokenpulse/tokenpulse
 python3 ~/.tokenpulse/web-dashboard.py
 ```
-
-If you are running from the repo instead, use the equivalent local paths.
 
 ### 3. Connect one route and verify
 
