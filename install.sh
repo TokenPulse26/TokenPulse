@@ -51,6 +51,53 @@ case "$ARCH" in
         ;;
 esac
 
+# ── Pre-flight checks ──────────────────────────────────────────────────────────
+preflight_checks() {
+    local failed=0
+
+    # 1. curl present (critical for downloads)
+    if ! command -v curl &>/dev/null; then
+        echo "❌ curl not found. Cannot download TokenPulse."
+        failed=1
+    fi
+
+    # 2. Write permission on \$HOME
+    if mkdir -p "$HOME/.tokenpulse/.preflight-test" 2>/dev/null && rm -rf "$HOME/.tokenpulse/.preflight-test"; then
+        : # ok
+    else
+        echo "❌ Cannot write to $HOME/.tokenpulse/ — check filesystem permissions."
+        failed=1
+    fi
+
+    # 3. Python 3 (warn only — dashboard needs it, proxy doesn't)
+    if ! command -v python3 &>/dev/null; then
+        echo "⚠️  Python 3 not found. The proxy will install, but the dashboard requires Python 3."
+    fi
+
+    # 4. Disk space — at least 50 MB free on the volume containing \$HOME
+    local avail_kb
+    avail_kb=$(df -k "$HOME" 2>/dev/null | awk 'NR==2 {print $4}')
+    if [ -n "$avail_kb" ] && [ "$avail_kb" -lt 51200 ] 2>/dev/null; then
+        echo "⚠️  Low disk space ($(( avail_kb / 1024 )) MB free). TokenPulse needs ~50 MB."
+    fi
+
+    # 5. Network connectivity
+    local http_code
+    http_code=$(curl -fsSL -o /dev/null -w '%{http_code}' --connect-timeout 5 https://api.github.com 2>/dev/null || true)
+    if [ "$http_code" != "200" ]; then
+        echo "❌ No network connectivity — cannot download TokenPulse."
+        failed=1
+    fi
+
+    if [ "$failed" -ne 0 ]; then
+        echo ""
+        echo "Pre-flight checks failed. Fix the issues above and re-run."
+        exit 1
+    fi
+}
+
+preflight_checks
+
 # Create install directory
 INSTALL_DIR="$HOME/.tokenpulse"
 LOG_DIR="$INSTALL_DIR/logs"
