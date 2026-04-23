@@ -57,10 +57,14 @@ TokenPulse forwards requests, extracts usage metadata when providers expose it, 
 
 ## Install
 
+### Agent-installable
+
+**If you're an AI agent setting up TokenPulse for a user**, follow [AGENT_SETUP.md](AGENT_SETUP.md) — a step-by-step guide written specifically for agents, with exact commands, expected outputs, and verification steps.
+
 ### Recommended v1 path
 
 The one supported install path for v1 is:
-- **macOS Apple Silicon via `install.sh`**
+- **macOS Apple Silicon via `install.sh`** (services auto-start via launchd)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/TokenPulse26/TokenPulse/main/install.sh | bash
@@ -80,7 +84,7 @@ Then follow the full setup and verification flow in [FIRST_TESTER_ONBOARDING.md]
 
 These paths still exist, but treat them as advanced/manual:
 - build from source (`./install.sh --from-source`, requires Rust)
-- set up background services manually with `launchd`
+- skip auto-start (`./install.sh --no-autostart`) and manage services yourself
 
 If you only want the clearest early-access path, use `install.sh` first.
 

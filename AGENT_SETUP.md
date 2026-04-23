@@ -1,132 +1,147 @@
 # TokenPulse — Agent Setup Guide
 
-This guide is optimized for AI agents (Claude, GPT, Codex, local models) setting up TokenPulse on behalf of a user. Every step includes exact commands with no ambiguity.
+**If you are an AI agent installing TokenPulse for a user, follow this file.**
 
-## What This Sets Up
+TokenPulse is a local-first AI usage tracking proxy + dashboard. This guide walks you through a complete install in under 3 minutes on macOS Apple Silicon.
 
-TokenPulse has two components:
-1. **Proxy** (Rust binary) — listens on `http://localhost:4100`, intercepts AI API requests, logs usage to SQLite
-2. **Dashboard** (Python script) — serves a web UI on `http://127.0.0.1:4200`, reads from the same SQLite database
+---
 
-Both must be running for TokenPulse to work.
+## What gets installed
+
+| Component | Purpose | Port |
+|---|---|---|
+| **Proxy** (Rust binary) | Sits between AI tools and providers, logs every request to SQLite | 4100 |
+| **Dashboard** (Python script) | Web UI showing spend, activity, errors, trends | 4200 |
+
+Both run as launchd services (auto-start on boot, auto-restart on crash).
+All data stays local. API keys pass through and are never stored.
 
 ---
 
 ## Prerequisites
 
-Check that required tools are installed before proceeding:
+**Required:**
+- macOS with Apple Silicon (M1/M2/M3/M4)
+- Internet connection (to download the binary)
+- `curl` (pre-installed on macOS)
 
-```bash
-# Check Rust toolchain
-rustc --version    # Requires Rust stable (1.70+)
-cargo --version
+**Recommended:**
+- Python 3 (for the dashboard — pre-installed on macOS 12.3+, or via `brew install python3`)
 
-# Check Python
-python3 --version  # Requires Python 3.8+
-
-# Check git
-git --version
-```
-
-**If Rust is missing**, install it:
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-source "$HOME/.cargo/env"
-```
-
-**If Python 3 is missing**, install it via your system package manager (`brew install python3` on macOS, `apt install python3` on Debian/Ubuntu).
+**Not required:**
+- Rust, Cargo, or any build tools (the installer downloads a pre-built binary)
+- Node.js, npm, or any JavaScript runtime
+- Docker or containers
 
 ---
 
-## Step 1: Clone and Build
+## Step 1: Install
+
+Run this single command:
 
 ```bash
-# Clone the repository
-git clone https://github.com/TokenPulse26/TokenPulse.git
-cd TokenPulse
-
-# Build the Rust proxy (this takes 1-3 minutes on first build)
-cd src-tauri
-cargo build --release
-
-# Verify the binary was built
-ls -la target/release/tokenpulse
-# Expected: a ~19MB executable file
-
-# Return to repo root
-cd ..
+curl -fsSL https://raw.githubusercontent.com/TokenPulse26/TokenPulse/main/install.sh | bash
 ```
 
-After this step, you should have:
-- The proxy binary at `TokenPulse/src-tauri/target/release/tokenpulse`
-- The dashboard script at `TokenPulse/web-dashboard.py`
+**What this does:**
+1. Verifies macOS Apple Silicon
+2. Downloads the pre-built proxy binary from GitHub Releases
+3. Verifies SHA256 checksum
+4. Downloads the dashboard script and docs
+5. Installs launchd services for both proxy and dashboard
+6. Starts both services
+7. Health-checks both endpoints
+8. Prints success with URLs and next steps
+
+**Expected output on success:**
+```
+✅ Proxy binary installed: /Users/<you>/.tokenpulse/tokenpulse
+✅ Python 3 found: /opt/homebrew/bin/python3 (Python 3.x.x)
+✅ proxy healthy at http://127.0.0.1:4100/health
+✅ dashboard healthy at http://127.0.0.1:4200/
+🟢 TokenPulse is running
+```
+
+**If the install fails:** Check the error output. Common issues:
+- Port 4100 or 4200 already in use → stop the conflicting process
+- No network → check internet connectivity
+- Python 3 missing → proxy installs fine, dashboard won't start. Install Python 3 and re-run.
+
+**macOS security note:** The binary is not codesigned. On first run, macOS may block it. Go to System Settings → Privacy & Security → scroll down → click "Allow Anyway" for tokenpulse. Then re-run the installer or restart the launchd service.
+
+### Installer flags
+
+| Flag | Effect |
+|---|---|
+| `--from-source` | Skip pre-built binary, build from source (requires Rust) |
+| `--no-autostart` | Install files but don't create launchd services |
+
+Pass flags via: `curl -fsSL ... | bash -s -- --no-autostart`
 
 ---
 
-## Step 2: Start the Proxy
+## Step 2: Verify the install
 
 ```bash
-# From the repo root (TokenPulse/)
-./src-tauri/target/release/tokenpulse &
-
-# Verify it's running
-sleep 2
-curl -s http://localhost:4100/health
+curl -s http://127.0.0.1:4100/health | python3 -m json.tool
 ```
 
-Expected response:
+**Expected response:**
 ```json
-{"status":"ok","service":"tokenpulse-proxy","port":4100,"total_requests_tracked":0}
+{
+    "status": "ok",
+    "service": "tokenpulse-proxy",
+    "port": 4100,
+    "version": "0.3.1",
+    "dashboard_url": "http://127.0.0.1:4200",
+    "proxy_paused": false,
+    "total_requests_tracked": 0,
+    "uptime_seconds": 5
+}
 ```
 
-If port 4100 is already in use:
+**Success criteria:**
+- `"status": "ok"` — proxy is running
+- `"total_requests_tracked"` — starts at 0 for fresh install
+- Dashboard loads at `http://127.0.0.1:4200` (verify with `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:4200/` — expect `200`)
+
+If either check fails, inspect logs:
 ```bash
-lsof -i :4100
-# Kill the conflicting process, then retry
+tail -20 ~/.tokenpulse/logs/proxy.error.log
+tail -20 ~/.tokenpulse/logs/dashboard.error.log
 ```
 
 ---
 
-## Step 3: Start the Dashboard
+## Step 3: Route one AI tool through TokenPulse
 
-```bash
-# From the repo root (TokenPulse/)
-python3 web-dashboard.py &
+Change the base URL of the user's AI tool to point at TokenPulse instead of the provider directly.
 
-# Verify it's running
-sleep 2
-curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:4200/
-```
+### Route table
 
-Expected response: `200`
+| Provider Type | TokenPulse Route |
+|---|---|
+| OpenAI / OpenAI-compatible | `http://localhost:4100` |
+| Anthropic | `http://localhost:4100/anthropic` |
+| Google Gemini | `http://localhost:4100/google` |
+| Ollama (local) | `http://localhost:4100/ollama` |
+| LM Studio (local) | `http://localhost:4100/lmstudio` |
+| Mistral | `http://localhost:4100/mistral` |
+| Groq | `http://localhost:4100/groq` |
+| OpenRouter | `http://localhost:4100/openrouter` |
 
-If port 4200 is already in use:
-```bash
-lsof -i :4200
-```
-
----
-
-## Step 4: Connect AI Tools
-
-Change the base URL of whichever AI tool/provider the user wants to track. **Use the correct route for each provider type:**
-
-| Provider Type | TokenPulse Route | Environment Variable |
-|---|---|---|
-| OpenAI / OpenAI-compatible | `http://localhost:4100` | `OPENAI_BASE_URL=http://localhost:4100` |
-| Anthropic | `http://localhost:4100/anthropic` | `ANTHROPIC_BASE_URL=http://localhost:4100/anthropic` |
-| Google Gemini | `http://localhost:4100/google` | Set base URL in client config |
-| Ollama | `http://localhost:4100/ollama` | `OLLAMA_HOST=http://localhost:4100/ollama` |
-| LM Studio | `http://localhost:4100/lmstudio` | Set base URL in client config |
-| Mistral | `http://localhost:4100/mistral` | Set base URL in client config |
-| Groq | `http://localhost:4100/groq` | Set base URL in client config |
-| OpenRouter | `http://localhost:4100/openrouter` | Set base URL in client config |
-
-**Important:** Do not send Anthropic-format requests to the root route. Anthropic clients must use `/anthropic`. Do not send Ollama requests to the root route. Ollama clients must use `/ollama`.
+**Critical:** Each provider type MUST use its specific route. Anthropic requests to the root route will fail. Ollama requests to the root route will fail.
 
 ### Common tool configurations
 
-**OpenClaw** — edit `openclaw.json` or equivalent config:
+**Environment variables (most tools):**
+```bash
+export OPENAI_BASE_URL=http://localhost:4100
+export ANTHROPIC_BASE_URL=http://localhost:4100/anthropic
+export OLLAMA_HOST=http://localhost:4100/ollama
+```
+
+**OpenClaw** — edit the provider config:
 ```json
 {
   "providers": {
@@ -138,20 +153,16 @@ Change the base URL of whichever AI tool/provider the user wants to track. **Use
 
 **Cursor** — Settings → Models → OpenAI Base URL → `http://localhost:4100`
 
-**Claude Code CLI** — set environment variable:
+**Claude Code CLI:**
 ```bash
 export ANTHROPIC_BASE_URL=http://localhost:4100/anthropic
 ```
 
-**Any OpenAI-compatible tool** — set the base URL to `http://localhost:4100`
-
 ---
 
-## Step 5: Verify It Works
+## Step 4: Send a test request and confirm tracking
 
-Send a test request through TokenPulse and confirm it appears in the dashboard.
-
-**OpenAI-compatible test** (requires a valid OpenAI API key):
+**OpenAI-compatible test:**
 ```bash
 curl http://localhost:4100/v1/chat/completions \
   -H "Content-Type: application/json" \
@@ -159,7 +170,7 @@ curl http://localhost:4100/v1/chat/completions \
   -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"ping"}],"max_tokens":5}'
 ```
 
-**Anthropic test** (requires a valid Anthropic API key):
+**Anthropic test:**
 ```bash
 curl http://localhost:4100/anthropic/v1/messages \
   -H "Content-Type: application/json" \
@@ -168,148 +179,80 @@ curl http://localhost:4100/anthropic/v1/messages \
   -d '{"model":"claude-sonnet-4-20250514","max_tokens":5,"messages":[{"role":"user","content":"ping"}]}'
 ```
 
-**Ollama test** (requires Ollama running locally on port 11434):
+**Ollama test (requires Ollama running on 11434):**
 ```bash
 curl http://localhost:4100/ollama/api/chat \
   -H "Content-Type: application/json" \
   -d '{"model":"llama3.1:8b","messages":[{"role":"user","content":"ping"}],"stream":false}'
 ```
 
-**Check the dashboard for the request:**
+**Verify it was tracked:**
 ```bash
-# Check via API that the request was logged
-curl -s http://localhost:4100/api/requests?limit=1 | python3 -m json.tool
+curl -s "http://localhost:4100/api/requests?limit=1" | python3 -m json.tool
 ```
 
-Or tell the user to open `http://127.0.0.1:4200` in a browser.
+**Expected:** The request appears with provider, model, timestamp, and token counts (when available).
+
+Or tell the user to open `http://127.0.0.1:4200` in a browser — the request should be visible in the activity feed.
 
 ---
 
-## Step 6 (Optional): Run as Background Services
+## Step 5: Done
 
-### macOS (launchd)
+TokenPulse is installed, running, and tracking. The user can:
+- View their dashboard at `http://127.0.0.1:4200`
+- Route additional tools through port 4100
+- Check proxy health anytime: `curl http://127.0.0.1:4100/health`
 
-Replace `TOKENPULSE_DIR` with the actual absolute path to the cloned repo:
+Services auto-start on boot via launchd. No further maintenance needed.
+
+---
+
+## Uninstall
+
+One command removes everything:
 
 ```bash
-TOKENPULSE_DIR="$(pwd)"  # Run this from the TokenPulse repo root
-
-# Create proxy service
-cat > ~/Library/LaunchAgents/com.tokenpulse.proxy.plist << EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key><string>com.tokenpulse.proxy</string>
-    <key>ProgramArguments</key>
-    <array><string>${TOKENPULSE_DIR}/src-tauri/target/release/tokenpulse</string></array>
-    <key>RunAtLoad</key><true/>
-    <key>KeepAlive</key><true/>
-    <key>StandardOutPath</key><string>/tmp/tokenpulse.log</string>
-    <key>StandardErrorPath</key><string>/tmp/tokenpulse-error.log</string>
-</dict>
-</plist>
-EOF
-
-# Create dashboard service
-cat > ~/Library/LaunchAgents/com.tokenpulse.dashboard.plist << EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key><string>com.tokenpulse.dashboard</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/usr/bin/python3</string>
-        <string>${TOKENPULSE_DIR}/web-dashboard.py</string>
-    </array>
-    <key>RunAtLoad</key><true/>
-    <key>KeepAlive</key><true/>
-    <key>StandardOutPath</key><string>/tmp/tokenpulse-dashboard.log</string>
-    <key>StandardErrorPath</key><string>/tmp/tokenpulse-dashboard-error.log</string>
-</dict>
-</plist>
-EOF
-
-# Load services
-launchctl load ~/Library/LaunchAgents/com.tokenpulse.proxy.plist
-launchctl load ~/Library/LaunchAgents/com.tokenpulse.dashboard.plist
-
-# Verify
-launchctl list | grep tokenpulse
+curl -fsSL https://raw.githubusercontent.com/TokenPulse26/TokenPulse/main/uninstall.sh | bash -s -- --yes
 ```
 
-### Linux (systemd)
-
+To keep the usage database before removing:
 ```bash
-TOKENPULSE_DIR="$(pwd)"  # Run this from the TokenPulse repo root
-
-sudo tee /etc/systemd/system/tokenpulse-proxy.service << EOF
-[Unit]
-Description=TokenPulse Proxy
-After=network.target
-[Service]
-Type=simple
-ExecStart=${TOKENPULSE_DIR}/src-tauri/target/release/tokenpulse
-Restart=always
-RestartSec=5
-[Install]
-WantedBy=multi-user.target
-EOF
-
-sudo tee /etc/systemd/system/tokenpulse-dashboard.service << EOF
-[Unit]
-Description=TokenPulse Web Dashboard
-After=network.target tokenpulse-proxy.service
-[Service]
-Type=simple
-ExecStart=/usr/bin/python3 ${TOKENPULSE_DIR}/web-dashboard.py
-Restart=always
-RestartSec=5
-[Install]
-WantedBy=multi-user.target
-EOF
-
-sudo systemctl daemon-reload
-sudo systemctl enable --now tokenpulse-proxy tokenpulse-dashboard
-
-# Verify
-systemctl status tokenpulse-proxy tokenpulse-dashboard
+curl -fsSL https://raw.githubusercontent.com/TokenPulse26/TokenPulse/main/uninstall.sh | bash -s -- --keep-data
 ```
 
 ---
 
 ## Troubleshooting
 
-| Symptom | Likely Cause | Fix |
+| Symptom | Cause | Fix |
 |---|---|---|
-| `cargo build` fails | Rust not installed or outdated | `rustup update stable` |
-| Port 4100 in use | Another process on that port | `lsof -i :4100` then kill it |
-| Port 4200 in use | Another process on that port | `lsof -i :4200` then kill it |
-| Dashboard returns empty | No requests routed through proxy yet | Send a test request per Step 5 |
-| Request succeeds but not in dashboard | Tool bypassing TokenPulse | Verify the tool's base URL points to `localhost:4100` |
-| Anthropic requests fail | Using wrong route | Must use `/anthropic` route, not root |
-| Ollama requests fail | Ollama not running on 11434 | Start Ollama first: `ollama serve` |
-| Token counts show 0 | Normal for some request types | Embeddings and some streaming patterns may not report tokens |
+| Install fails: "port 4100 in use" | Another process on that port | `lsof -i :4100` → kill it → re-run install |
+| Install fails: "port 4200 in use" | Another process on that port | `lsof -i :4200` → kill it → re-run install |
+| macOS blocks the binary | Unsigned binary | System Settings → Privacy & Security → Allow Anyway |
+| Dashboard shows no data | No requests routed yet | Send a test request per Step 4 |
+| Requests succeed but don't appear | Tool bypassing TokenPulse | Verify tool's base URL points to `localhost:4100`, not the provider |
+| Anthropic requests fail | Wrong route | Must use `/anthropic` route, not root |
+| Ollama requests fail | Ollama not running | Start Ollama first: `ollama serve` |
+| Token counts show 0 | Normal for some request types | Embeddings and health checks don't report tokens |
+| `/health` returns error | Proxy not running | `launchctl list | grep tokenpulse` to check; re-run install to fix |
 
 ---
 
-## Architecture Notes for Agents
+## Architecture notes (for agents)
 
-- The proxy binary is a standalone Rust executable. It does not need Cargo or Rust at runtime — only for building.
-- The dashboard is a single Python file with zero external dependencies (standard library only).
-- Data is stored in SQLite at `~/Library/Application Support/com.tokenpulse.desktop/tokenpulse.db` (macOS) or equivalent.
-- The proxy and dashboard are independent processes that share the SQLite database file.
-- The proxy forwards all requests transparently — API keys pass through in headers and are never stored.
-- Both processes must be running simultaneously for the full experience.
+- The proxy is a standalone Rust binary. No runtime dependencies.
+- The dashboard is a single Python file using only the standard library. No pip packages needed.
+- Data lives in SQLite at `~/Library/Application Support/com.tokenpulse.desktop/tokenpulse.db`
+- The proxy and dashboard share the SQLite file but are independent processes.
+- API keys pass through in headers and are **never stored** — only metadata (model, tokens, cost, timestamps) is logged.
 - The dashboard auto-refreshes every 30 seconds.
+- Install directory: `~/.tokenpulse/`
+- Logs: `~/.tokenpulse/logs/`
+- launchd labels: `com.tokenpulse.proxy`, `com.tokenpulse.dashboard`
 
 ---
 
-## Quick Reference
+## Feedback
 
-| Component | Port | URL | Start Command |
-|---|---|---|---|
-| Proxy | 4100 | `http://localhost:4100` | `./src-tauri/target/release/tokenpulse` |
-| Dashboard | 4200 | `http://127.0.0.1:4200` | `python3 web-dashboard.py` |
-| Health check | — | `http://localhost:4100/health` | `curl http://localhost:4100/health` |
+Report bugs and onboarding friction: [github.com/TokenPulse26/TokenPulse/issues](https://github.com/TokenPulse26/TokenPulse/issues)
