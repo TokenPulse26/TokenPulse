@@ -26,7 +26,7 @@ for arg in "$@"; do
 done
 
 echo "Installing TokenPulse..."
-echo "Note: this installer is currently a bootstrap helper for macOS Apple Silicon, not a polished general release installer."
+echo "Note: this early-access installer supports macOS Apple Silicon and auto-starts TokenPulse by default."
 
 # Detect OS and architecture
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
