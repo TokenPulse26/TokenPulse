@@ -743,22 +743,34 @@ async fn proxy_handler(
 
     // ── Health check endpoint ─────────────────────────────────────────
     if (path == "/" || path == "/health" || path == "/api/health") && parts.method == Method::GET {
-        let count: i64 = if let Ok(conn) = state.db.lock() {
-            conn.query_row("SELECT COUNT(*) FROM requests", [], |row| row.get(0))
-                .unwrap_or(0)
+        let (count, db_path, db_size_bytes): (i64, String, u64) = if let Ok(conn) = state.db.lock() {
+            let c = conn.query_row("SELECT COUNT(*) FROM requests", [], |row| row.get(0))
+                .unwrap_or(0);
+            // Retrieve the database file path via PRAGMA database_list
+            let path: String = conn
+                .query_row("PRAGMA database_list", [], |row| row.get::<_, String>(2))
+                .unwrap_or_default();
+            let size = if !path.is_empty() {
+                std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0)
+            } else {
+                0
+            };
+            (c, path, size)
         } else {
-            -1
+            (-1, String::new(), 0)
         };
         let uptime_secs = PROCESS_START.elapsed().as_secs();
         let body = serde_json::json!({
             "status": "ok",
             "service": "tokenpulse-proxy",
-            "version": "0.3.0",
+            "version": env!("CARGO_PKG_VERSION"),
             "port": 4100,
             "uptime_seconds": uptime_secs,
             "proxy_paused": state.proxy_paused.load(Ordering::SeqCst),
             "total_requests_tracked": count,
             "dashboard_url": "http://127.0.0.1:4200",
+            "db_path": db_path,
+            "db_size_bytes": db_size_bytes,
         });
         return Ok(json_response(StatusCode::OK, body));
     }
