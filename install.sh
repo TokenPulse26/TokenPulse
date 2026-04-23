@@ -7,13 +7,18 @@ set -euo pipefail
 # Flags (pass after `bash -s --` when piping, e.g.
 #   curl -fsSL ... | bash -s -- --from-source
 # ):
-#   --from-source   Skip the pre-built binary path and build locally with cargo.
+#   --from-source    Skip the pre-built binary path and build locally with cargo.
+#   --no-autostart   Skip launchd install + auto-start. You'll start services manually.
 
 FROM_SOURCE=0
+NO_AUTOSTART=0
 for arg in "$@"; do
     case "$arg" in
         --from-source)
             FROM_SOURCE=1
+            ;;
+        --no-autostart)
+            NO_AUTOSTART=1
             ;;
         *)
             ;;
@@ -48,7 +53,15 @@ esac
 
 # Create install directory
 INSTALL_DIR="$HOME/.tokenpulse"
+LOG_DIR="$INSTALL_DIR/logs"
+LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
+PROXY_LABEL="com.tokenpulse.proxy"
+DASHBOARD_LABEL="com.tokenpulse.dashboard"
+PROXY_PLIST="$LAUNCH_AGENTS_DIR/$PROXY_LABEL.plist"
+DASHBOARD_PLIST="$LAUNCH_AGENTS_DIR/$DASHBOARD_LABEL.plist"
+
 mkdir -p "$INSTALL_DIR"
+mkdir -p "$LOG_DIR"
 
 REPO="TokenPulse26/TokenPulse"
 BRANCH="main"
@@ -91,9 +104,6 @@ install_from_release() {
     local tmpdir
     tmpdir=$(mktemp -d)
     # shellcheck disable=SC2064
-    # Clean up on function return AND on Ctrl-C / kill, otherwise an
-    # interrupt between mktemp and the normal return path leaves the
-    # tempdir behind.
     trap "rm -rf '$tmpdir'" RETURN INT TERM
 
     if ! curl -fsSL "$bin_url" -o "$tmpdir/$BINARY_ASSET"; then
@@ -179,32 +189,327 @@ else
     fi
 fi
 
-# Check for Python 3 (dashboard runtime)
-if ! command -v python3 &> /dev/null; then
-    echo "⚠️  Python 3 not found. Install Python 3 to run the web dashboard."
+# Detect Python 3 (dashboard runtime) with a preference order
+detect_python3() {
+    # Prefer Homebrew on Apple Silicon, then system /usr/bin/python3, then PATH lookup.
+    local candidates=(
+        "/opt/homebrew/bin/python3"
+        "/usr/local/bin/python3"
+        "/usr/bin/python3"
+    )
+    for c in "${candidates[@]}"; do
+        if [ -x "$c" ]; then
+            echo "$c"
+            return 0
+        fi
+    done
+    if command -v python3 >/dev/null 2>&1; then
+        command -v python3
+        return 0
+    fi
+    return 1
+}
+
+PYTHON3_PATH=""
+if PYTHON3_PATH=$(detect_python3); then
+    echo "✅ Python 3 found: $PYTHON3_PATH ($($PYTHON3_PATH --version 2>&1))"
 else
-    echo "✅ Python 3 found: $(python3 --version)"
+    echo "⚠️  Python 3 not found. Install Python 3 to run the web dashboard."
+fi
+
+# --- launchd / autostart ---
+
+# Port collision preflight: make sure nothing else is already bound to 4100/4200
+# (unless it's an existing TokenPulse service we're about to replace).
+port_owner_pid() {
+    # Returns the PID bound to the given TCP port, or empty if none.
+    local port="$1"
+    lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null | head -n1 || true
+}
+
+port_owner_command() {
+    local pid="$1"
+    if [ -z "$pid" ]; then
+        return 0
+    fi
+    ps -o comm= -p "$pid" 2>/dev/null | tr -d ' ' || true
+}
+
+is_existing_tokenpulse_service() {
+    # Return 0 if the given Label is currently loaded in this user's launchd domain.
+    local label="$1"
+    launchctl list 2>/dev/null | awk '{print $3}' | grep -Fxq "$label"
+}
+
+unload_service() {
+    # Best-effort unload. Prefer `bootout` on modern macOS, fall back to `unload`.
+    local label="$1"
+    local plist="$2"
+    if is_existing_tokenpulse_service "$label"; then
+        launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || launchctl unload "$plist" 2>/dev/null || true
+    else
+        # Even if not listed, try unload on the file in case it's partially registered.
+        if [ -f "$plist" ]; then
+            launchctl unload "$plist" 2>/dev/null || true
+        fi
+    fi
+}
+
+load_service() {
+    # Prefer modern `bootstrap`; fall back to `load` if bootstrap fails.
+    local plist="$1"
+    if launchctl bootstrap "gui/$(id -u)" "$plist" 2>/dev/null; then
+        return 0
+    fi
+    launchctl load "$plist" 2>/dev/null
+}
+
+write_proxy_plist() {
+    cat > "$PROXY_PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>$PROXY_LABEL</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$INSTALL_DIR/tokenpulse</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>$INSTALL_DIR</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>$LOG_DIR/proxy.log</string>
+    <key>StandardErrorPath</key>
+    <string>$LOG_DIR/proxy.error.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+</dict>
+</plist>
+EOF
+}
+
+write_dashboard_plist() {
+    local py="$1"
+    cat > "$DASHBOARD_PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>$DASHBOARD_LABEL</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$py</string>
+        <string>$INSTALL_DIR/web-dashboard.py</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>$INSTALL_DIR</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>$LOG_DIR/dashboard.log</string>
+    <key>StandardErrorPath</key>
+    <string>$LOG_DIR/dashboard.error.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+</dict>
+</plist>
+EOF
+}
+
+wait_for_health() {
+    local url="$1"
+    local label="$2"
+    local tries=30  # 30 * 0.5s = ~15s
+    local i=0
+    while [ "$i" -lt "$tries" ]; do
+        if curl -fsSL -o /dev/null -m 2 "$url" 2>/dev/null; then
+            echo "✅ $label healthy at $url"
+            return 0
+        fi
+        i=$((i + 1))
+        sleep 0.5
+    done
+    echo "❌ $label did not become healthy at $url within 15s"
+    return 1
+}
+
+install_launchd_services() {
+    # Idempotent-safe: unload existing agents with same Label (if any),
+    # write fresh plists pointing at $HOME/.tokenpulse/, then bootstrap them.
+    mkdir -p "$LAUNCH_AGENTS_DIR"
+
+    # Detect pre-existing services and warn before replacing — but proceed.
+    local replacing=0
+    if is_existing_tokenpulse_service "$PROXY_LABEL" || is_existing_tokenpulse_service "$DASHBOARD_LABEL"; then
+        replacing=1
+    fi
+    if [ "$replacing" = "1" ]; then
+        echo ""
+        echo "Note: replacing existing com.tokenpulse.proxy / com.tokenpulse.dashboard launchd"
+        echo "      services with user-install versions pointing at $INSTALL_DIR."
+    fi
+
+    # Port collision preflight. Allowed occupant = an existing TokenPulse service we're replacing.
+    local proxy_pid dash_pid
+    proxy_pid=$(port_owner_pid 4100)
+    dash_pid=$(port_owner_pid 4200)
+
+    # If a port is occupied and we're NOT about to replace a tokenpulse service, that's a hard fail.
+    if [ -n "$proxy_pid" ] && ! is_existing_tokenpulse_service "$PROXY_LABEL"; then
+        local cmd
+        cmd=$(port_owner_command "$proxy_pid")
+        echo ""
+        echo "❌ Port 4100 is already in use by PID $proxy_pid ($cmd)."
+        echo "   TokenPulse needs port 4100 for the proxy."
+        echo "   Stop the other process or pass --no-autostart to skip the launchd step."
+        return 1
+    fi
+    if [ -n "$dash_pid" ] && ! is_existing_tokenpulse_service "$DASHBOARD_LABEL"; then
+        local cmd
+        cmd=$(port_owner_command "$dash_pid")
+        echo ""
+        echo "❌ Port 4200 is already in use by PID $dash_pid ($cmd)."
+        echo "   TokenPulse needs port 4200 for the web dashboard."
+        echo "   Stop the other process or pass --no-autostart to skip the launchd step."
+        return 1
+    fi
+
+    echo "Installing launchd services..."
+
+    # Unload old definitions first so we can atomically replace the plist files.
+    unload_service "$PROXY_LABEL" "$PROXY_PLIST"
+    unload_service "$DASHBOARD_LABEL" "$DASHBOARD_PLIST"
+
+    # Small grace period so ports release before we relaunch.
+    sleep 1
+
+    write_proxy_plist
+    if [ -n "$PYTHON3_PATH" ]; then
+        write_dashboard_plist "$PYTHON3_PATH"
+    else
+        echo "⚠️  Skipping dashboard launchd service (no python3 detected)."
+    fi
+
+    # Load the proxy
+    if ! load_service "$PROXY_PLIST"; then
+        echo "❌ Failed to load $PROXY_LABEL via launchctl."
+        return 1
+    fi
+
+    # Load the dashboard (if plist was written)
+    if [ -f "$DASHBOARD_PLIST" ] && [ -n "$PYTHON3_PATH" ]; then
+        if ! load_service "$DASHBOARD_PLIST"; then
+            echo "❌ Failed to load $DASHBOARD_LABEL via launchctl."
+            return 1
+        fi
+    fi
+
+    # Health checks
+    if ! wait_for_health "http://127.0.0.1:4100/health" "proxy"; then
+        echo ""
+        echo "--- tail of $LOG_DIR/proxy.error.log ---"
+        tail -n 40 "$LOG_DIR/proxy.error.log" 2>/dev/null || echo "(no log yet)"
+        echo "--- tail of $LOG_DIR/proxy.log ---"
+        tail -n 40 "$LOG_DIR/proxy.log" 2>/dev/null || echo "(no log yet)"
+        echo "--- launchctl print ---"
+        launchctl print "gui/$(id -u)/$PROXY_LABEL" 2>&1 | head -n 40 || true
+        return 1
+    fi
+
+    if [ -n "$PYTHON3_PATH" ]; then
+        if ! wait_for_health "http://127.0.0.1:4200/" "dashboard"; then
+            echo ""
+            echo "--- tail of $LOG_DIR/dashboard.error.log ---"
+            tail -n 40 "$LOG_DIR/dashboard.error.log" 2>/dev/null || echo "(no log yet)"
+            echo "--- tail of $LOG_DIR/dashboard.log ---"
+            tail -n 40 "$LOG_DIR/dashboard.log" 2>/dev/null || echo "(no log yet)"
+            echo "--- launchctl print ---"
+            launchctl print "gui/$(id -u)/$DASHBOARD_LABEL" 2>&1 | head -n 40 || true
+            return 1
+        fi
+    fi
+
+    return 0
+}
+
+RUNNING=0
+if [ "$PROXY_OK" = "1" ] && [ "$NO_AUTOSTART" = "0" ]; then
+    if install_launchd_services; then
+        RUNNING=1
+    else
+        echo ""
+        echo "❌ Auto-start failed. TokenPulse is installed but not running."
+        echo "   You can retry by re-running install.sh, or start manually:"
+        echo "     $INSTALL_DIR/tokenpulse"
+        if [ -n "$PYTHON3_PATH" ]; then
+            echo "     $PYTHON3_PATH $INSTALL_DIR/web-dashboard.py"
+        fi
+        exit 1
+    fi
 fi
 
 echo ""
 echo "═══════════════════════════════════════════"
-echo "  TokenPulse installed to $INSTALL_DIR"
-echo "═══════════════════════════════════════════"
-echo ""
-if [ "$PROXY_OK" = "1" ]; then
-    echo "  Start proxy:     $INSTALL_DIR/tokenpulse"
+if [ "$RUNNING" = "1" ]; then
+    echo "  🟢 TokenPulse is running"
+    echo "═══════════════════════════════════════════"
+    echo ""
+    echo "  Dashboard:     http://127.0.0.1:4200"
+    echo "  Proxy:         http://127.0.0.1:4100"
+    echo "  Install dir:   $INSTALL_DIR"
+    echo "  Logs:          $LOG_DIR/"
+    echo ""
+    echo "  Services are managed by launchd and will auto-start on login + restart on crash."
+    echo "    Labels: $PROXY_LABEL, $DASHBOARD_LABEL"
+    echo ""
+    echo "  To uninstall:"
+    echo "    curl -fsSL https://raw.githubusercontent.com/$REPO/main/uninstall.sh | bash"
+    echo ""
+    echo "  First run on macOS:"
+    echo "    The binary is not codesigned for v1 early access. If you see a Gatekeeper prompt on"
+    echo "    the first launch, open System Settings → Privacy & Security, scroll down, click"
+    echo "    'Allow Anyway' for tokenpulse, then re-run install.sh."
 else
-    echo "  Proxy binary not yet available — see messages above to finish setup."
+    if [ "$NO_AUTOSTART" = "1" ]; then
+        echo "  TokenPulse installed to $INSTALL_DIR (auto-start skipped)"
+    else
+        echo "  TokenPulse installed to $INSTALL_DIR"
+    fi
+    echo "═══════════════════════════════════════════"
+    echo ""
+    if [ "$PROXY_OK" = "1" ]; then
+        echo "  Start proxy:     $INSTALL_DIR/tokenpulse"
+    else
+        echo "  Proxy binary not yet available — see messages above to finish setup."
+    fi
+    if [ -n "$PYTHON3_PATH" ]; then
+        echo "  Start dashboard: $PYTHON3_PATH $INSTALL_DIR/web-dashboard.py"
+    else
+        echo "  Start dashboard: python3 $INSTALL_DIR/web-dashboard.py"
+    fi
+    echo "  Dashboard URL:   http://127.0.0.1:4200"
+    echo ""
+    echo "  Point one AI tool at: http://127.0.0.1:4100"
+    echo ""
+    echo "  Full setup + verification guide: $INSTALL_DIR/GETTING_STARTED.md"
+    echo ""
+    echo "  First run on macOS:"
+    echo "    The binary is not codesigned for v1 early access. If macOS blocks it,"
+    echo "    open System Settings → Privacy & Security, scroll to the bottom, and"
+    echo "    click 'Allow Anyway' for tokenpulse. Then run it again."
 fi
-echo "  Start dashboard: python3 $INSTALL_DIR/web-dashboard.py"
-echo "  Dashboard URL:   http://127.0.0.1:4200"
-echo ""
-echo "  Point one AI tool at: http://127.0.0.1:4100"
-echo ""
-echo "  Full setup + verification guide: $INSTALL_DIR/GETTING_STARTED.md"
-echo ""
-echo "  First run on macOS:"
-echo "    The binary is not codesigned for v1 early access. If macOS blocks it,"
-echo "    open System Settings → Privacy & Security, scroll to the bottom, and"
-echo "    click 'Allow Anyway' for tokenpulse. Then run it again."
 echo "═══════════════════════════════════════════"
