@@ -11,6 +11,7 @@ from urllib.parse import urlparse, parse_qs, quote
 from urllib.request import Request, urlopen
 from datetime import datetime, timedelta
 from string import Template
+from pathlib import Path
 
 DB_PATH = os.environ.get(
     "TOKENPULSE_DB",
@@ -18,7 +19,7 @@ DB_PATH = os.environ.get(
         "~/Library/Application Support/com.tokenpulse.desktop/tokenpulse.db"
     ),
 )
-VERSION = "0.4.0"
+VERSION = Path(__file__).resolve().parent.joinpath("VERSION").read_text().strip() if Path(__file__).resolve().parent.joinpath("VERSION").exists() else "0.4.0"
 PROXY_API_BASE = os.environ.get("TOKENPULSE_PROXY_API", "http://127.0.0.1:4100")
 
 def _fetch_proxy_json(path, timeout=1.2):
