@@ -11,6 +11,7 @@ from urllib.parse import urlparse, parse_qs, quote
 from urllib.request import Request, urlopen
 from datetime import datetime, timedelta
 from string import Template
+from pathlib import Path
 
 DB_PATH = os.environ.get(
     "TOKENPULSE_DB",
@@ -18,7 +19,31 @@ DB_PATH = os.environ.get(
         "~/Library/Application Support/com.tokenpulse.desktop/tokenpulse.db"
     ),
 )
-VERSION = "0.4.0"
+def _load_version(default="0.4.0"):
+    override = os.environ.get("TOKENPULSE_VERSION")
+    if override and override.strip():
+        return override.strip()
+
+    script_dir = Path(__file__).resolve().parent
+    candidate_paths = [
+        script_dir / "VERSION",
+        script_dir.parent / "VERSION",
+    ]
+
+    for path in candidate_paths:
+        try:
+            if path.exists():
+                value = path.read_text(encoding="utf-8").strip()
+                if value:
+                    return value
+        except OSError:
+            # Keep dashboard startup resilient even if version file is unreadable.
+            continue
+
+    return default
+
+
+VERSION = _load_version()
 PROXY_API_BASE = os.environ.get("TOKENPULSE_PROXY_API", "http://127.0.0.1:4100")
 
 def _fetch_proxy_json(path, timeout=1.2):

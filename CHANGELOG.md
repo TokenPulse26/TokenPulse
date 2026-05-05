@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [0.3.1] - 2026-04-21 (Early Access)
+## [0.4.0] - 2026-05-04 (Early Access)
 
 ### Added
 - GitHub Actions release workflow that builds a macOS Apple Silicon proxy binary on every `v*.*.*` tag and publishes it as a GitHub Release asset (`tokenpulse-macos-arm64` + `.sha256`).
