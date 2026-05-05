@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import json
-import os
 import pathlib
 import urllib.error
 import urllib.request
@@ -155,7 +154,9 @@ def main() -> int:
     else:
         print("- Re-run install.sh and ensure files under ~/.tokenpulse are created.")
 
-    return 0
+    if summary in ("READY", "INSTALLED BUT NO TRAFFIC YET"):
+        return 0
+    return 1
 
 
 if __name__ == "__main__":

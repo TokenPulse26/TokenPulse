@@ -109,6 +109,7 @@ DASHBOARD_PLIST="$LAUNCH_AGENTS_DIR/$DASHBOARD_LABEL.plist"
 
 mkdir -p "$INSTALL_DIR"
 mkdir -p "$LOG_DIR"
+mkdir -p "$INSTALL_DIR/docs"
 
 REPO="TokenPulse26/TokenPulse"
 BRANCH="main"
@@ -128,6 +129,10 @@ chmod +x "$INSTALL_DIR/agent_verify.py"
 echo "Downloading docs..."
 curl -fsSL "$BASE_URL/GETTING_STARTED.md" -o "$INSTALL_DIR/GETTING_STARTED.md"
 curl -fsSL "$BASE_URL/README.md" -o "$INSTALL_DIR/README.md"
+curl -fsSL "$BASE_URL/AGENT_SETUP.md" -o "$INSTALL_DIR/AGENT_SETUP.md"
+curl -fsSL "$BASE_URL/FIRST_TESTER_ONBOARDING.md" -o "$INSTALL_DIR/FIRST_TESTER_ONBOARDING.md"
+curl -fsSL "$BASE_URL/QA_FIRST_TESTER.md" -o "$INSTALL_DIR/QA_FIRST_TESTER.md"
+curl -fsSL "$BASE_URL/docs/OPENCLAW_SETUP.md" -o "$INSTALL_DIR/docs/OPENCLAW_SETUP.md"
 
 install_from_release() {
     # Confirm a latest release exists via the GitHub API, then download assets
@@ -558,7 +563,6 @@ else
     echo "  Run verification: $INSTALL_DIR/agent_verify.py"
     echo ""
     echo "  Full setup + verification guide: $INSTALL_DIR/GETTING_STARTED.md"
-    echo "  Run verification: $INSTALL_DIR/agent_verify.py"
     echo ""
     echo "  First run on macOS:"
     echo "    The binary is not codesigned for v1 early access. If macOS blocks it,"

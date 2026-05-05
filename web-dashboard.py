@@ -3030,8 +3030,12 @@ def _build_connections_panel(data, time_range):
         "cursor": "Cursor",
         "vs code": "VS Code",
         "vscode": "VS Code",
+        "vs-code": "VS Code",
         "python sdk": "Python SDK",
+        "python-sdk": "Python SDK",
         "node sdk": "Node SDK",
+        "node-sdk": "Node SDK",
+        "copilot": "Copilot",
     }
     detected = set()
     other_count = 0
@@ -3060,7 +3064,7 @@ def _build_connections_panel(data, time_range):
     )
     # De-duplicate / keep order of requested labels.
     ordered = []
-    for item in ["OpenClaw", "Cursor", "VS Code", "Python SDK", "Node SDK"]:
+    for item in ["OpenClaw", "Cursor", "VS Code", "Python SDK", "Node SDK", "Copilot"]:
         if item in detected:
             ordered.append(f"<li>{item}</li>")
     if other_count > 0:
