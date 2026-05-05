@@ -208,6 +208,7 @@ Report bugs and onboarding friction here:
 
 **Website:** <https://tokenpulse.to>  
 **First Tester Onboarding:** [FIRST_TESTER_ONBOARDING.md](FIRST_TESTER_ONBOARDING.md)  
+**First-Tester QA Pack:** [QA_FIRST_TESTER.md](QA_FIRST_TESTER.md)  
 **Getting Started:** [GETTING_STARTED.md](GETTING_STARTED.md)  
 **Agent Setup Guide:** [AGENT_SETUP.md](AGENT_SETUP.md)  
 **Repository:** <https://github.com/TokenPulse26/TokenPulse>

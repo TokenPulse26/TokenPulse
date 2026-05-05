@@ -285,9 +285,6 @@ PAGE_TEMPLATE = Template(r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>TokenPulse &middot; $range_label</title>
 <link rel="icon" href="$favicon_href">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
 :root{
   --bg:#0b1018;--panel:#171e2c;--panel-soft:#121925;--border:#2a3347;--border-strong:#3a4761;
@@ -297,7 +294,7 @@ PAGE_TEMPLATE = Template(r"""<!DOCTYPE html>
 }
 *,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
 html{scroll-behavior:smooth}
-body{background:radial-gradient(circle at top left, rgba(88,166,255,.14), transparent 26%),radial-gradient(circle at top right, rgba(34,197,94,.10), transparent 20%),linear-gradient(180deg,#0a0f18 0%,#0d1320 42%,#0a0e16 100%);color:var(--text);font-family:'Inter',system-ui,-apple-system,sans-serif;line-height:1.5;min-height:100vh}
+body{background:radial-gradient(circle at top left, rgba(88,166,255,.14), transparent 26%),radial-gradient(circle at top right, rgba(34,197,94,.10), transparent 20%),linear-gradient(180deg,#0a0f18 0%,#0d1320 42%,#0a0e16 100%);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;line-height:1.5;min-height:100vh}
 body.preload .loading-surface{position:relative;overflow:hidden}
 body.preload .loading-surface::after{content:"";position:absolute;inset:0;background:linear-gradient(90deg, rgba(255,255,255,0) 0%, rgba(255,255,255,.04) 40%, rgba(255,255,255,0) 80%);transform:translateX(-100%);animation:shimmer 1.5s linear infinite}
 body.preload .reveal{opacity:.92;transform:none;animation:none}
@@ -396,6 +393,28 @@ button:hover,.range-btn:hover,.export-btn:hover,.budget-manage-link:hover,.btn-a
 
 /* Stat cards */
 .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:18px;margin-bottom:28px}
+.overview-section{margin-bottom:20px}
+.overview-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.overview-card{background:linear-gradient(180deg, rgba(18,24,36,.9), rgba(14,20,32,.95));border:1px solid var(--border);border-radius:14px;padding:14px 16px;min-height:96px}
+.overview-label{font-size:11px;letter-spacing:.7px;text-transform:uppercase;color:var(--text-soft);margin-bottom:8px;font-weight:700}
+.overview-value{font-size:24px;font-weight:800;color:#f0f6fc;line-height:1.1;word-break:break-word}
+.overview-sub{margin-top:8px;font-size:12px;color:var(--text-muted)}
+.overview-card.status-card .overview-value{font-size:18px}
+.advanced-anchor{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:10px 0 16px;padding:12px 14px;border:1px solid rgba(255,255,255,.08);border-radius:12px;background:rgba(255,255,255,.02)}
+.advanced-anchor-label{font-size:13px;font-weight:700;color:#dbe6f4}
+.advanced-anchor-copy{font-size:12px;color:var(--text-muted)}
+.connections-grid{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(220px,.8fr);gap:14px}
+.connections-list{display:flex;flex-direction:column;gap:8px}
+.connection-row{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 12px;border-radius:10px;border:1px solid rgba(255,255,255,.06);background:rgba(255,255,255,.02)}
+.connection-name{font-size:13px;font-weight:700;color:var(--text)}
+.connection-status{font-size:12px;color:var(--text-muted);text-align:right}
+.connection-status.online{color:#22c55e}
+.connection-status.range{color:#58a6ff}
+.connection-status.offline{color:#8b949e}
+.sources-box{padding:12px;border-radius:10px;border:1px solid rgba(255,255,255,.06);background:rgba(255,255,255,.02)}
+.sources-title{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--text-muted);margin-bottom:8px}
+.sources-box ul{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:6px}
+.sources-box li{font-size:13px;color:var(--text)}
 .stat-card{padding:var(--space);transition:border-color .2s,transform .2s,background .2s;position:relative;background:linear-gradient(180deg, rgba(23,30,44,.98), rgba(19,25,37,.98));background-clip:padding-box,border-box}
 .stat-card::before{content:"";position:absolute;inset:-1px;border-radius:inherit;background:linear-gradient(135deg, rgba(34,197,94,0), rgba(88,166,255,0), rgba(34,197,94,0));opacity:0;transition:opacity .22s ease;z-index:-1}
 .stat-card:hover{transform:translateY(-1px)}
@@ -845,8 +864,9 @@ td{padding:13px 16px;font-size:12px;border-top:1px solid rgba(42,45,58,.5);white
 .inline-action-btn:hover{border-color:#58a6ff;color:#f0f6fc}
 .bottom-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(320px,.92fr);gap:18px}
 @media(max-width:1080px){.primary-grid,.secondary-grid{grid-template-columns:1fr}.attention-summary,.budget-overview{grid-template-columns:repeat(2,minmax(0,1fr))}.budget-form{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@media(max-width:900px){.provider-model-grid,.bottom-grid{grid-template-columns:1fr}.provider-model-stats{grid-template-columns:1fr 1fr 1fr}}
-@media(max-width:700px){.attention-summary,.budget-overview,.budget-form,.provider-model-stats{grid-template-columns:1fr}.budget-summary-row,.budget-supporting,.section-header,.collapsible-header,.collapsible-trigger{align-items:flex-start;flex-direction:column}.budget-form-group.span-2{grid-column:auto}.collapsible-actions{width:100%;justify-content:space-between}}
+@media(max-width:1080px){.overview-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:900px){.provider-model-grid,.bottom-grid,.connections-grid{grid-template-columns:1fr}.provider-model-stats{grid-template-columns:1fr 1fr 1fr}}
+@media(max-width:700px){.overview-grid,.attention-summary,.budget-overview,.budget-form,.provider-model-stats{grid-template-columns:1fr}.budget-summary-row,.budget-supporting,.section-header,.collapsible-header,.collapsible-trigger{align-items:flex-start;flex-direction:column}.budget-form-group.span-2{grid-column:auto}.collapsible-actions{width:100%;justify-content:space-between}}
 .scroll-top{position:fixed;right:22px;bottom:74px;width:42px;height:42px;border:none;border-radius:999px;background:linear-gradient(135deg, rgba(34,197,94,.92), rgba(88,166,255,.78));color:#081016;box-shadow:0 14px 30px rgba(0,0,0,.28);cursor:pointer;display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transform:translateY(10px);z-index:120}
 .scroll-top.visible{opacity:1;pointer-events:auto;transform:translateY(0)}
 </style>
@@ -1530,6 +1550,36 @@ def _fetch_data(time_range):
     except Exception:
         pass
 
+    # Source/project breakdown (selected range)
+    source_counts = []
+    try:
+        c.execute(
+            f"SELECT TRIM(COALESCE(source_tag, '')) as source, COUNT(*) as cnt "
+            f"FROM requests{where} "
+            f"GROUP BY source "
+            f"HAVING source != '' "
+            f"ORDER BY cnt DESC, source ASC"
+        )
+        source_counts = [dict(r) for r in c.fetchall()]
+    except Exception:
+        source_counts = []
+
+    # Provider seen today (independent of selected range)
+    providers_today = set()
+    try:
+        c.execute(
+            "SELECT DISTINCT LOWER(TRIM(COALESCE(provider, ''))) as provider "
+            "FROM requests "
+            "WHERE date(timestamp) = date('now')"
+        )
+        providers_today = {
+            (row["provider"] or "").strip()
+            for row in c.fetchall()
+            if (row["provider"] or "").strip()
+        }
+    except Exception:
+        providers_today = set()
+
     conn.close()
 
     return {
@@ -1554,6 +1604,8 @@ def _fetch_data(time_range):
         "sparklines": sparklines,
         "heatmap": heatmap,
         "insights_raw": insights_raw,
+        "source_counts": source_counts,
+        "providers_today": sorted(providers_today),
     }
 
 
@@ -2839,6 +2891,204 @@ def _reliability_summary_text(reliability_data):
 
 def _insights_summary_text(insights_html):
     return "Generated insights available" if insights_html else "No additional insights"
+
+
+def _build_overview_section(data, proxy_online, error_data):
+    model_rows = data.get("models") or []
+    provider_counts = {}
+    model_counts = {}
+    for row in model_rows:
+        count = int(row.get("cnt") or 0)
+        provider = (row.get("provider") or "unknown").strip() or "unknown"
+        model = _display_model_name(row.get("model") or "unknown")
+        provider_counts[provider] = provider_counts.get(provider, 0) + count
+        model_counts[model] = model_counts.get(model, 0) + count
+
+    source_counts_map = {}
+    for row in data.get("source_counts") or []:
+        source = (row.get("source") or "").strip()
+        count = int(row.get("cnt") or 0)
+        if source:
+            source_counts_map[source] = source_counts_map.get(source, 0) + count
+
+    def top_label(counts, fallback):
+        if not counts:
+            return fallback
+        return max(counts.items(), key=lambda kv: kv[1])[0]
+
+    total_requests = int(data.get("total_requests") or 0)
+    if not proxy_online:
+        status_text = "Proxy unreachable"
+    elif total_requests == 0:
+        status_text = "No traffic yet"
+    else:
+        status_text = "Tracking"
+    total_errors = int((error_data or {}).get("total_errors") or 0)
+    error_summary = f"{total_errors:,} request error{'s' if total_errors != 1 else ''} in selected range"
+
+    overview_cards = [
+        ("Status", status_text, "Proxy + dashboard health in this range", "status-card"),
+        ("Total estimated spend", fmt_cost(data.get("api_cost")), "Costs are estimates based on available provider usage and pricing data.", ""),
+        ("Total tokens", fmt_tokens(data.get("total_tokens")), "Input + output tokens in selected range", ""),
+        ("Total requests", f"{total_requests:,}", "Requests tracked in selected range", ""),
+        ("Top provider", _escape_html(top_label(provider_counts, "No data yet")), "Most frequent provider in this range", ""),
+        ("Top model", _escape_html(top_label(model_counts, "No data yet")), "Most frequent model in this range", ""),
+        ("Top source/project", _escape_html(top_label(source_counts_map, "Not detected yet")), "Detected from source tags when available", ""),
+        ("Errors", f"{total_errors:,}", error_summary, ""),
+    ]
+
+    cards_html = "".join(
+        (
+            f'<div class="overview-card {extra}">'
+            f'<div class="overview-label">{label}</div>'
+            f'<div class="overview-value">{value}</div>'
+            f'<div class="overview-sub">{sub}</div>'
+            "</div>"
+        )
+        for (label, value, sub, extra) in overview_cards
+    )
+
+    return (
+        '<div class="overview-section reveal reveal-delay-1">'
+        '<div class="section-head compact">'
+        "<div>"
+        '<div class="section-kicker">Overview</div>'
+        '<div class="section-title">Simple status</div>'
+        '<div class="section-copy">Quick answers for whether TokenPulse is working, what changed, and where usage is concentrated.</div>'
+        "</div>"
+        "</div>"
+        f'<div class="overview-grid">{cards_html}</div>'
+        "</div>"
+    )
+
+
+def _is_local_service_reachable(url, timeout=0.35):
+    try:
+        req = Request(url, headers={"User-Agent": "TokenPulse-Dashboard"})
+        with urlopen(req, timeout=timeout) as resp:
+            return (getattr(resp, "status", None) or resp.getcode()) < 500
+    except Exception:
+        return False
+
+
+def _provider_seen_set(data):
+    seen = set()
+    for row in data.get("models") or []:
+        provider = (row.get("provider") or "").strip().lower()
+        if provider:
+            seen.add(provider)
+    for row in data.get("requests") or []:
+        provider = (row.get("provider") or "").strip().lower()
+        if provider:
+            seen.add(provider)
+    return seen
+
+
+def _build_connections_panel(data, time_range):
+    seen_in_range = _provider_seen_set(data)
+    seen_today = {p.lower() for p in (data.get("providers_today") or [])}
+
+    provider_rows = [
+        ("OpenAI-compatible", {"openai", "openai-codex", "openai_compatible"}),
+        ("Anthropic", {"anthropic"}),
+        ("Google Gemini", {"google", "gemini"}),
+        ("Mistral", {"mistral"}),
+        ("Groq", {"groq"}),
+        ("OpenRouter", {"openrouter"}),
+        ("Ollama", {"ollama"}),
+        ("LM Studio", {"lmstudio", "lm_studio"}),
+        ("CLIProxy", {"cliproxy"}),
+    ]
+
+    def seen_label(keys):
+        if keys & seen_today:
+            return "Seen today", "online"
+        if keys & seen_in_range:
+            return "Seen in selected range", "range"
+        return "Not seen yet", "offline"
+
+    ollama_up = _is_local_service_reachable("http://127.0.0.1:11434")
+    lmstudio_up = _is_local_service_reachable("http://127.0.0.1:1234")
+
+    rows_html = []
+    for label, keys in provider_rows:
+        status_text, status_class = seen_label(keys)
+        optional = ""
+        if "ollama" in keys:
+            optional = f' · local service: {"reachable" if ollama_up else "not reachable (optional)"}'
+        elif "lmstudio" in keys or "lm_studio" in keys:
+            optional = f' · local service: {"reachable" if lmstudio_up else "not reachable (optional)"}'
+        rows_html.append(
+            f'<div class="connection-row">'
+            f'<div class="connection-name">{_escape_html(label)}</div>'
+            f'<div class="connection-status {status_class}">{_escape_html(status_text + optional)}</div>'
+            f'</div>'
+        )
+
+    known_sources = {
+        "openclaw": "OpenClaw",
+        "cursor": "Cursor",
+        "vs code": "VS Code",
+        "vscode": "VS Code",
+        "vs-code": "VS Code",
+        "python sdk": "Python SDK",
+        "python-sdk": "Python SDK",
+        "node sdk": "Node SDK",
+        "node-sdk": "Node SDK",
+        "copilot": "Copilot",
+    }
+    detected = set()
+    other_count = 0
+    for row in data.get("source_counts") or []:
+        source = (row.get("source") or "").strip()
+        if not source:
+            continue
+        norm = source.lower()
+        matched = False
+        for k, v in known_sources.items():
+            if k in norm:
+                detected.add(v)
+                matched = True
+                break
+        if not matched:
+            other_count += int(row.get("cnt") or 0)
+    source_items = [f"<li>{name}</li>" for name in sorted(detected)]
+    source_items.extend(
+        [
+            "<li>OpenClaw</li>" if "OpenClaw" in detected else "",
+            "<li>Cursor</li>" if "Cursor" in detected else "",
+            "<li>VS Code</li>" if "VS Code" in detected else "",
+            "<li>Python SDK</li>" if "Python SDK" in detected else "",
+            "<li>Node SDK</li>" if "Node SDK" in detected else "",
+        ]
+    )
+    # De-duplicate / keep order of requested labels.
+    ordered = []
+    for item in ["OpenClaw", "Cursor", "VS Code", "Python SDK", "Node SDK", "Copilot"]:
+        if item in detected:
+            ordered.append(f"<li>{item}</li>")
+    if other_count > 0:
+        ordered.append(f"<li>Other tags ({other_count:,})</li>")
+    if not ordered:
+        ordered = ["<li>No source tags detected yet</li>"]
+
+    range_label = RANGE_LABELS.get(time_range, "selected range")
+    return f"""<div class=\"chart-panel loading-surface reveal reveal-delay-2\">
+  <div class=\"section-head compact\">
+    <div>
+      <div class=\"section-kicker\">Connections</div>
+      <div class=\"section-title\">Provider and agent connection status</div>
+      <div class=\"section-copy\">Seen-provider status for {range_label.lower()}, plus optional local service checks.</div>
+    </div>
+  </div>
+  <div class=\"connections-grid\">
+    <div class=\"connections-list\">{''.join(rows_html)}</div>
+    <div class=\"sources-box\">
+      <div class=\"sources-title\">Sources detected</div>
+      <ul>{''.join(ordered)}</ul>
+    </div>
+  </div>
+</div>"""
 
 
 def _build_stats_cards(data):
@@ -5261,10 +5511,23 @@ def build_page(time_range, page=1):
         )
 
     if data["total_requests"] == 0:
+        error_data = _fetch_error_data(time_range)
+        overview_html = _build_overview_section(data, proxy_online, error_data)
+        connections_html = _build_connections_panel(data, time_range)
+        advanced_anchor_html = (
+            '<div class="advanced-anchor reveal reveal-delay-1">'
+            "<div>"
+            '<div class="advanced-anchor-label">Advanced details</div>'
+            '<div class="advanced-anchor-copy">Detailed analytics appear automatically after the first tracked request.</div>'
+            "</div>"
+            f'<span class="status-chip"><span class="status-dot {proxy_status_class}"></span> Proxy {proxy_label}</span>'
+            "</div>"
+        )
         empty_body = EMPTY_TEMPLATE.substitute(
             icon_svg=_pulse_mark_svg(28),
             db_path=_escape_html(DB_PATH),
         )
+        empty_body = overview_html + connections_html + advanced_anchor_html + empty_body
         empty_scripts = "<script>document.body.classList.remove('preload');setTimeout(function(){location.reload()},3000);</script>"
         return PAGE_TEMPLATE.substitute(
             range_label=range_label,
@@ -5287,6 +5550,9 @@ def build_page(time_range, page=1):
 
     last_request_at = fmt_timestamp_full(data["requests"][0]["timestamp"]) if data.get("requests") else "—"
 
+    error_data = _fetch_error_data(time_range)
+    overview_html = _build_overview_section(data, proxy_online, error_data)
+    connections_html = _build_connections_panel(data, time_range)
     stats_html = _build_stats_cards(data)
     spend_chart = _build_svg_spend_chart(data)
     model_breakdown = _build_model_breakdown(data)
@@ -5305,7 +5571,6 @@ def build_page(time_range, page=1):
     forecast_html = _build_forecast_section(forecast, budgets_status, budget_forecasts)
 
     # Error monitoring
-    error_data = _fetch_error_data(time_range)
     error_html = _build_error_section(error_data, time_range)
 
     reliability_data = _fetch_reliability_data(time_range)
@@ -5395,8 +5660,18 @@ def build_page(time_range, page=1):
     if reliability_panel:
         tier_three.append(reliability_panel)
 
-    body = f"""<div class="tier-one">
+    body = f"""{overview_html}
+<div class="advanced-anchor reveal reveal-delay-1">
+  <div>
+    <div class="advanced-anchor-label">Advanced details</div>
+    <div class="advanced-anchor-copy">The sections below include deeper analytics, diagnostics, and optimization tools.</div>
+  </div>
+  <span class="status-chip"><span class="status-dot {proxy_status_class}"></span> Proxy {proxy_label}</span>
+</div>
+
+<div class="tier-one">
   {stats_html}
+  {connections_html}
   <div class="chart-panel provider-summary-panel loading-surface reveal reveal-delay-2">
     <div class="section-head compact">
       <div>
