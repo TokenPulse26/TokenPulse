@@ -32,3 +32,6 @@ Use this checklist before each public beta announcement.
 - [ ] First tester onboarding flow validated end-to-end.
 - [ ] Issue template references version + route + provider info.
 - [ ] Triage owner assigned for first 7 days after release.
+
+## First-Tester Runbook
+- [ ] Execute [RELEASE_TESTER_RUNBOOK.md](RELEASE_TESTER_RUNBOOK.md) in order.
