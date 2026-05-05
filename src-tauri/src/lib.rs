@@ -186,10 +186,45 @@ fn update_pricing_now(state: State<DbState>) -> Result<(), String> {
 }
 
 fn csv_escape(value: &str) -> String {
-    if value.contains(',') || value.contains('"') || value.contains('\n') || value.contains('\r') {
-        format!("\"{}\"", value.replace('"', "\"\""))
+    let formula_safe = match value.chars().next() {
+        Some('=' | '+' | '-' | '@') => format!("'{}", value),
+        _ => value.to_string(),
+    };
+
+    if formula_safe.contains(',')
+        || formula_safe.contains('"')
+        || formula_safe.contains('\n')
+        || formula_safe.contains('\r')
+    {
+        format!("\"{}\"", formula_safe.replace('"', "\"\""))
     } else {
-        value.to_string()
+        formula_safe
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::csv_escape;
+
+    #[test]
+    fn csv_escape_prefixes_formula_characters() {
+        for input in ["=2+2", "+SUM(A1:A2)", "-10+5", "@cmd"] {
+            let escaped = csv_escape(input);
+            assert_eq!(escaped, format!("'{}", input));
+        }
+    }
+
+    #[test]
+    fn csv_escape_keeps_normal_strings_unchanged() {
+        assert_eq!(csv_escape("anthropic"), "anthropic");
+        assert_eq!(csv_escape("gpt-4.1"), "gpt-4.1");
+    }
+
+    #[test]
+    fn csv_escape_handles_quotes_and_formula_safety() {
+        assert_eq!(csv_escape("hello,world"), "\"hello,world\"");
+        assert_eq!(csv_escape("=hello,world"), "\"'=hello,world\"");
+        assert_eq!(csv_escape("=\"quoted\""), "\"'=\"\"quoted\"\"\"");
     }
 }
 
