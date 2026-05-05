@@ -82,34 +82,54 @@ Pass flags via: `curl -fsSL ... | bash -s -- --no-autostart`
 
 ## Step 2: Verify the install
 
+For a full non-coder/agent validation checklist, use [QA_FIRST_TESTER.md](QA_FIRST_TESTER.md).
+
+Run the built-in verification script (installed to `~/.tokenpulse/agent_verify.py`):
+
 ```bash
-curl -s http://127.0.0.1:4100/health | python3 -m json.tool
+~/.tokenpulse/agent_verify.py
 ```
 
-**Expected response:**
-```json
-{
-    "status": "ok",
-    "service": "tokenpulse-proxy",
-    "port": 4100,
-    "version": "0.3.1",
-    "dashboard_url": "http://127.0.0.1:4200",
-    "proxy_paused": false,
-    "total_requests_tracked": 0,
-    "uptime_seconds": 5
-}
-```
+This script checks:
+- Proxy health (`http://127.0.0.1:4100/health`) including status/version/request count
+- Dashboard health (`http://127.0.0.1:4200/`)
+- Local install files under `~/.tokenpulse/`
+- SQLite database presence and size
+- Recent tracked requests (`/api/requests?limit=5`)
+- Optional local model services (Ollama and LM Studio)
 
-**Success criteria:**
-- `"status": "ok"` — proxy is running
-- `"total_requests_tracked"` — starts at 0 for fresh install
-- Dashboard loads at `http://127.0.0.1:4200` (verify with `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:4200/` — expect `200`)
+**Expected summary states:**
+- `READY`
+- `INSTALLED BUT NO TRAFFIC YET`
+- `PROXY DOWN`
+- `DASHBOARD DOWN`
+- `INSTALL INCOMPLETE`
 
-If either check fails, inspect logs:
+If verification reports a problem, inspect logs:
 ```bash
 tail -20 ~/.tokenpulse/logs/proxy.error.log
 tail -20 ~/.tokenpulse/logs/dashboard.error.log
 ```
+
+You can still run raw endpoint checks if needed:
+```bash
+curl -s http://127.0.0.1:4100/health | python3 -m json.tool
+curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:4200/
+```
+
+---
+
+
+## OpenClaw-specific setup
+
+If the user is running OpenClaw, use the dedicated guide:
+
+- [`docs/OPENCLAW_SETUP.md`](docs/OPENCLAW_SETUP.md)
+
+That guide includes:
+- provider route examples for OpenAI-compatible, Anthropic, Ollama, and LM Studio
+- source-tag header recommendations (`x-tokenpulse-project`, `x-tokenpulse-tag`)
+- OpenClaw troubleshooting for bypassed traffic, wrong routes, local model availability, token gaps, and empty dashboards
 
 ---
 

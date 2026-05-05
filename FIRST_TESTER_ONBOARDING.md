@@ -2,6 +2,8 @@
 
 This is the **single source of truth** for first-tester onboarding.
 
+For a strict step-by-step validation script with expected outputs, use [QA_FIRST_TESTER.md](QA_FIRST_TESTER.md).
+
 For v1, TokenPulse is **free early access** for technical testers on **macOS Apple Silicon only**.
 
 **Feedback:** [github.com/TokenPulse26/TokenPulse/issues](https://github.com/TokenPulse26/TokenPulse/issues)
