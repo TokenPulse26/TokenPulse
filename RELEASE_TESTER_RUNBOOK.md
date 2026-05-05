@@ -16,11 +16,11 @@ Use this runbook for a small first-tester release validation on **macOS Apple Si
      ```
    - Check Rust package version:
      ```bash
-     rg '^version\s*=\s*"' src-tauri/Cargo.toml
+     grep '^version[[:space:]]*=' src-tauri/Cargo.toml
      ```
    - Check Tauri version fields:
      ```bash
-     rg '"version"\s*:' src-tauri/tauri.conf.json
+     grep '"version"[[:space:]]*:' src-tauri/tauri.conf.json
      ```
 
 2. **Confirm `install.sh` one-command install**
@@ -76,7 +76,7 @@ Use this runbook for a small first-tester release validation on **macOS Apple Si
 11. **Run uninstall**
     - Run:
       ```bash
-      ./uninstall.sh
+      curl -fsSL https://raw.githubusercontent.com/TokenPulse26/TokenPulse/main/uninstall.sh | bash -s -- --yes
       ```
     - Confirm TokenPulse services/files are removed per script output.
 
