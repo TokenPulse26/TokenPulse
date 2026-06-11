@@ -43,6 +43,9 @@ jobs:
       - name: Dashboard compiles
         run: python3 -m py_compile web-dashboard.py agent_verify.py
 
+      - name: Dashboard data-integrity tests
+        run: python3 tests/test_dashboard.py
+
       - name: Shell scripts parse
         run: bash -n install.sh && bash -n uninstall.sh
 

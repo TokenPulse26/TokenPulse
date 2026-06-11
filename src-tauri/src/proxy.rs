@@ -335,16 +335,20 @@ fn extract_usage(body: &Value, provider: &str) -> UsageTokens {
         }
         "google" => {
             let usage = body.get("usageMetadata").unwrap_or(&Value::Null);
+            let get = |key: &str| usage.get(key).and_then(|v| v.as_i64()).unwrap_or(0);
+            let thoughts = get("thoughtsTokenCount");
             UsageTokens {
-                input_tokens: usage
-                    .get("promptTokenCount")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(0),
-                output_tokens: usage
-                    .get("candidatesTokenCount")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(0),
-                ..Default::default()
+                // promptTokenCount INCLUDES cachedContentTokenCount, mirroring
+                // OpenAI's inclusive semantics; the pricing layer deducts it.
+                input_tokens: get("promptTokenCount"),
+                // Gemini reports thinking tokens separately from candidates
+                // but bills them as output, so fold them in for cost math.
+                // reasoning_tokens keeps the subset for display, matching
+                // OpenAI semantics.
+                output_tokens: get("candidatesTokenCount") + thoughts,
+                cached_tokens: get("cachedContentTokenCount"),
+                cache_creation_tokens: 0,
+                reasoning_tokens: thoughts,
             }
         }
         "ollama" | "lmstudio" => {
@@ -1775,6 +1779,25 @@ mod tests {
             Some("message_delta")
         );
         assert!(responses_api_usage.is_none());
+    }
+
+    #[test]
+    fn gemini_usage_extracts_cached_and_thinking_tokens() {
+        let body = json!({
+            "usageMetadata": {
+                "promptTokenCount": 12000,
+                "candidatesTokenCount": 400,
+                "cachedContentTokenCount": 9000,
+                "thoughtsTokenCount": 600,
+                "totalTokenCount": 13000
+            }
+        });
+        let usage = super::extract_usage(&body, "google");
+        assert_eq!(usage.input_tokens, 12000);
+        // candidates + thoughts: Gemini bills thinking tokens as output.
+        assert_eq!(usage.output_tokens, 1000);
+        assert_eq!(usage.cached_tokens, 9000);
+        assert_eq!(usage.reasoning_tokens, 600);
     }
 
     #[test]
