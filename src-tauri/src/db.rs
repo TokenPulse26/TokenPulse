@@ -11,8 +11,10 @@ pub struct RequestRecord {
     pub input_tokens: i64,
     pub output_tokens: i64,
     pub cached_tokens: i64,
+    pub cache_creation_tokens: i64,
     pub reasoning_tokens: i64,
     pub cost_usd: f64,
+    pub cost_estimated: bool,
     pub latency_ms: i64,
     pub tokens_per_second: f64,
     pub time_to_first_token_ms: i64,
@@ -347,8 +349,10 @@ pub fn init_db(path: &str) -> Result<Connection> {
             input_tokens INTEGER NOT NULL DEFAULT 0,
             output_tokens INTEGER NOT NULL DEFAULT 0,
             cached_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
             reasoning_tokens INTEGER NOT NULL DEFAULT 0,
             cost_usd REAL NOT NULL DEFAULT 0.0,
+            cost_estimated INTEGER NOT NULL DEFAULT 0,
             latency_ms INTEGER NOT NULL DEFAULT 0,
             tokens_per_second REAL NOT NULL DEFAULT 0.0,
             time_to_first_token_ms INTEGER NOT NULL DEFAULT 0,
@@ -364,6 +368,8 @@ pub fn init_db(path: &str) -> Result<Connection> {
             provider TEXT NOT NULL,
             input_cost_per_million_tokens REAL NOT NULL DEFAULT 0.0,
             output_cost_per_million_tokens REAL NOT NULL DEFAULT 0.0,
+            cache_read_cost_per_million_tokens REAL,
+            cache_creation_cost_per_million_tokens REAL,
             context_window_tokens INTEGER NOT NULL DEFAULT 0,
             is_custom INTEGER NOT NULL DEFAULT 0,
             last_updated TEXT NOT NULL DEFAULT (datetime('now')),
@@ -427,6 +433,14 @@ pub fn init_db(path: &str) -> Result<Connection> {
     // Migrations: add columns if they don't exist
     let _ = conn.execute("ALTER TABLE requests ADD COLUMN error_message TEXT", []);
     let _ = conn.execute(
+        "ALTER TABLE requests ADD COLUMN cache_creation_tokens INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE requests ADD COLUMN cost_estimated INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    let _ = conn.execute(
         "ALTER TABLE requests ADD COLUMN provider_type TEXT NOT NULL DEFAULT 'api'",
         [],
     );
@@ -458,6 +472,17 @@ pub fn init_db(path: &str) -> Result<Connection> {
     )?;
 
     migrate_pricing_table(&conn)?;
+
+    // Cache-rate columns are nullable: NULL means "no real pricing data" and
+    // cost math falls back to a provider heuristic flagged as estimated.
+    let _ = conn.execute(
+        "ALTER TABLE pricing ADD COLUMN cache_read_cost_per_million_tokens REAL",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE pricing ADD COLUMN cache_creation_cost_per_million_tokens REAL",
+        [],
+    );
 
     Ok(conn)
 }
@@ -511,8 +536,8 @@ fn migrate_pricing_table(conn: &Connection) -> Result<()> {
 
 pub fn insert_request(conn: &Connection, req: &RequestRecord) -> Result<i64> {
     conn.execute(
-        "INSERT INTO requests (timestamp, provider, model, input_tokens, output_tokens, cached_tokens, reasoning_tokens, cost_usd, latency_ms, tokens_per_second, time_to_first_token_ms, is_streaming, is_complete, source_tag, error_message, provider_type)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+        "INSERT INTO requests (timestamp, provider, model, input_tokens, output_tokens, cached_tokens, cache_creation_tokens, reasoning_tokens, cost_usd, cost_estimated, latency_ms, tokens_per_second, time_to_first_token_ms, is_streaming, is_complete, source_tag, error_message, provider_type)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
         params![
             req.timestamp,
             req.provider,
@@ -520,8 +545,10 @@ pub fn insert_request(conn: &Connection, req: &RequestRecord) -> Result<i64> {
             req.input_tokens,
             req.output_tokens,
             req.cached_tokens,
+            req.cache_creation_tokens,
             req.reasoning_tokens,
             req.cost_usd,
+            req.cost_estimated as i64,
             req.latency_ms,
             req.tokens_per_second,
             req.time_to_first_token_ms,
@@ -556,12 +583,14 @@ fn map_request_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RequestRecord> {
         provider_type: row
             .get::<_, Option<String>>(16)?
             .unwrap_or_else(|| "api".to_string()),
+        cache_creation_tokens: row.get(17)?,
+        cost_estimated: row.get::<_, i64>(18)? != 0,
     })
 }
 
 pub fn get_recent_requests(conn: &Connection, limit: u32) -> Result<Vec<RequestRecord>> {
     let mut stmt = conn.prepare(
-        "SELECT id, timestamp, provider, model, input_tokens, output_tokens, cached_tokens, reasoning_tokens, cost_usd, latency_ms, tokens_per_second, time_to_first_token_ms, is_streaming, is_complete, source_tag, error_message, COALESCE(provider_type, 'api')
+        "SELECT id, timestamp, provider, model, input_tokens, output_tokens, cached_tokens, reasoning_tokens, cost_usd, latency_ms, tokens_per_second, time_to_first_token_ms, is_streaming, is_complete, source_tag, error_message, COALESCE(provider_type, 'api'), COALESCE(cache_creation_tokens, 0), COALESCE(cost_estimated, 0)
          FROM requests ORDER BY timestamp DESC LIMIT ?1"
     )?;
 
@@ -608,18 +637,22 @@ pub fn upsert_pricing(
     provider: &str,
     input_per_million: f64,
     output_per_million: f64,
+    cache_read_per_million: Option<f64>,
+    cache_creation_per_million: Option<f64>,
     context_window: i64,
 ) -> Result<()> {
     conn.execute(
-        "INSERT INTO pricing (model, provider, input_cost_per_million_tokens, output_cost_per_million_tokens, context_window_tokens, is_custom, last_updated)
-         VALUES (?1, ?2, ?3, ?4, ?5, 0, datetime('now'))
+        "INSERT INTO pricing (model, provider, input_cost_per_million_tokens, output_cost_per_million_tokens, cache_read_cost_per_million_tokens, cache_creation_cost_per_million_tokens, context_window_tokens, is_custom, last_updated)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, datetime('now'))
          ON CONFLICT(model, provider) DO UPDATE SET
              input_cost_per_million_tokens=excluded.input_cost_per_million_tokens,
              output_cost_per_million_tokens=excluded.output_cost_per_million_tokens,
+             cache_read_cost_per_million_tokens=excluded.cache_read_cost_per_million_tokens,
+             cache_creation_cost_per_million_tokens=excluded.cache_creation_cost_per_million_tokens,
              context_window_tokens=excluded.context_window_tokens,
              last_updated=excluded.last_updated
          WHERE is_custom=0",
-        params![model, provider, input_per_million, output_per_million, context_window],
+        params![model, provider, input_per_million, output_per_million, cache_read_per_million, cache_creation_per_million, context_window],
     )?;
     Ok(())
 }
@@ -637,26 +670,34 @@ pub fn get_price_for_model(
     conn: &Connection,
     model: &str,
     provider: Option<&str>,
-) -> Result<Option<(f64, f64)>> {
+) -> Result<Option<crate::pricing::Rates>> {
     let model_lower = model.to_lowercase();
     let provider_lower = provider.map(str::to_lowercase);
+    let map_rates = |row: &rusqlite::Row<'_>| {
+        Ok(crate::pricing::Rates {
+            input: row.get::<_, f64>(0)?,
+            output: row.get::<_, f64>(1)?,
+            cache_read: row.get::<_, Option<f64>>(2)?,
+            cache_creation: row.get::<_, Option<f64>>(3)?,
+        })
+    };
     let result = if let Some(provider_lower) = provider_lower.as_deref() {
         conn.query_row(
-            "SELECT input_cost_per_million_tokens, output_cost_per_million_tokens
+            "SELECT input_cost_per_million_tokens, output_cost_per_million_tokens, cache_read_cost_per_million_tokens, cache_creation_cost_per_million_tokens
              FROM pricing
              WHERE lower(model) = ?1 AND lower(provider) = ?2",
             params![model_lower, provider_lower],
-            |row| Ok((row.get::<_, f64>(0)?, row.get::<_, f64>(1)?)),
+            map_rates,
         )
     } else {
         conn.query_row(
-            "SELECT input_cost_per_million_tokens, output_cost_per_million_tokens
+            "SELECT input_cost_per_million_tokens, output_cost_per_million_tokens, cache_read_cost_per_million_tokens, cache_creation_cost_per_million_tokens
              FROM pricing
              WHERE lower(model) = ?1
              ORDER BY CASE WHEN is_custom = 1 THEN 0 ELSE 1 END, provider ASC
              LIMIT 1",
             params![model_lower],
-            |row| Ok((row.get::<_, f64>(0)?, row.get::<_, f64>(1)?)),
+            map_rates,
         )
     };
     match result {
@@ -681,7 +722,7 @@ pub fn get_setting(conn: &Connection, key: &str) -> Result<Option<String>> {
 
 pub fn get_all_requests(conn: &Connection) -> Result<Vec<RequestRecord>> {
     let mut stmt = conn.prepare(
-        "SELECT id, timestamp, provider, model, input_tokens, output_tokens, cached_tokens, reasoning_tokens, cost_usd, latency_ms, tokens_per_second, time_to_first_token_ms, is_streaming, is_complete, source_tag, error_message, COALESCE(provider_type, 'api')
+        "SELECT id, timestamp, provider, model, input_tokens, output_tokens, cached_tokens, reasoning_tokens, cost_usd, latency_ms, tokens_per_second, time_to_first_token_ms, is_streaming, is_complete, source_tag, error_message, COALESCE(provider_type, 'api'), COALESCE(cache_creation_tokens, 0), COALESCE(cost_estimated, 0)
          FROM requests ORDER BY timestamp DESC"
     )?;
     let records = stmt
@@ -801,7 +842,7 @@ pub fn get_requests_for_range(
 ) -> Result<Vec<RequestRecord>> {
     let where_clause = time_range_filter(time_range);
     let query = format!(
-        "SELECT id, timestamp, provider, model, input_tokens, output_tokens, cached_tokens, reasoning_tokens, cost_usd, latency_ms, tokens_per_second, time_to_first_token_ms, is_streaming, is_complete, source_tag, error_message, COALESCE(provider_type, 'api')
+        "SELECT id, timestamp, provider, model, input_tokens, output_tokens, cached_tokens, reasoning_tokens, cost_usd, latency_ms, tokens_per_second, time_to_first_token_ms, is_streaming, is_complete, source_tag, error_message, COALESCE(provider_type, 'api'), COALESCE(cache_creation_tokens, 0), COALESCE(cost_estimated, 0)
          FROM requests {} ORDER BY timestamp DESC LIMIT {}",
         where_clause, limit
     );

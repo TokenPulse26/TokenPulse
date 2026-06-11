@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::db::{self, insert_request, RequestRecord};
-use crate::pricing::calculate_cost_with_db;
+use crate::pricing::{calculate_cost_with_db, UsageTokens};
 
 /// Process start time for uptime calculation.
 static PROCESS_START: Lazy<std::time::Instant> = Lazy::new(std::time::Instant::now);
@@ -297,36 +297,43 @@ fn extract_model(body: &Value, provider: &str, path: &str) -> String {
     }
 }
 
-fn extract_usage(body: &Value, provider: &str) -> (i64, i64, i64, i64) {
-    // Returns (input_tokens, output_tokens, cached_tokens, reasoning_tokens)
+fn extract_usage(body: &Value, provider: &str) -> UsageTokens {
     match provider {
         "anthropic" => {
             let usage = body.get("usage").unwrap_or(&Value::Null);
-            let input = usage
-                .get("input_tokens")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
-            let output = usage
-                .get("output_tokens")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
-            let cached = usage
-                .get("cache_read_input_tokens")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
-            (input, output, cached, 0)
+            UsageTokens {
+                input_tokens: usage
+                    .get("input_tokens")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0),
+                output_tokens: usage
+                    .get("output_tokens")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0),
+                cached_tokens: usage
+                    .get("cache_read_input_tokens")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0),
+                cache_creation_tokens: usage
+                    .get("cache_creation_input_tokens")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0),
+                reasoning_tokens: 0,
+            }
         }
         "google" => {
             let usage = body.get("usageMetadata").unwrap_or(&Value::Null);
-            let input = usage
-                .get("promptTokenCount")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
-            let output = usage
-                .get("candidatesTokenCount")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
-            (input, output, 0, 0)
+            UsageTokens {
+                input_tokens: usage
+                    .get("promptTokenCount")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0),
+                output_tokens: usage
+                    .get("candidatesTokenCount")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0),
+                ..Default::default()
+            }
         }
         "ollama" | "lmstudio" => {
             // Try Ollama native format first (prompt_eval_count / eval_count)
@@ -336,42 +343,51 @@ fn extract_usage(body: &Value, provider: &str) -> (i64, i64, i64, i64) {
                 .unwrap_or(0);
             let native_output = body.get("eval_count").and_then(|v| v.as_i64()).unwrap_or(0);
             if native_input > 0 || native_output > 0 {
-                return (native_input, native_output, 0, 0);
+                return UsageTokens {
+                    input_tokens: native_input,
+                    output_tokens: native_output,
+                    ..Default::default()
+                };
             }
             // Fall through to OpenAI-compatible format (usage.prompt_tokens)
             let usage = body.get("usage").unwrap_or(&Value::Null);
-            let input = usage
-                .get("prompt_tokens")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
-            let output = usage
-                .get("completion_tokens")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
-            (input, output, 0, 0)
+            UsageTokens {
+                input_tokens: usage
+                    .get("prompt_tokens")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0),
+                output_tokens: usage
+                    .get("completion_tokens")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0),
+                ..Default::default()
+            }
         }
         _ => {
-            // OpenAI and OpenAI-compatible
+            // OpenAI and OpenAI-compatible. Note: prompt_tokens INCLUDES
+            // cached_tokens; the pricing layer accounts for that.
             let usage = body.get("usage").unwrap_or(&Value::Null);
-            let input = usage
-                .get("prompt_tokens")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
-            let output = usage
-                .get("completion_tokens")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
-            let cached = usage
-                .get("prompt_tokens_details")
-                .and_then(|d| d.get("cached_tokens"))
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
-            let reasoning = usage
-                .get("completion_tokens_details")
-                .and_then(|d| d.get("reasoning_tokens"))
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
-            (input, output, cached, reasoning)
+            UsageTokens {
+                input_tokens: usage
+                    .get("prompt_tokens")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0),
+                output_tokens: usage
+                    .get("completion_tokens")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0),
+                cached_tokens: usage
+                    .get("prompt_tokens_details")
+                    .and_then(|d| d.get("cached_tokens"))
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0),
+                cache_creation_tokens: 0,
+                reasoning_tokens: usage
+                    .get("completion_tokens_details")
+                    .and_then(|d| d.get("reasoning_tokens"))
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0),
+            }
         }
     }
 }
@@ -415,9 +431,8 @@ fn is_responses_api_path(path: &str) -> bool {
 /// names `input_tokens` / `output_tokens` (not `prompt_tokens` /
 /// `completion_tokens` like Chat Completions).
 ///
-/// Returns `(input, output, cached, reasoning)` if usage was found in this
-/// event, otherwise `None`.
-fn extract_responses_api_usage(event: &Value) -> Option<(i64, i64, i64, i64)> {
+/// Returns the token usage if it was found in this event, otherwise `None`.
+fn extract_responses_api_usage(event: &Value) -> Option<UsageTokens> {
     // The usage block lives at event.response.usage. Some intermediate events
     // (response.created, response.in_progress) include `response.usage = null`,
     // so we only return Some when we actually find numeric tokens.
@@ -446,7 +461,13 @@ fn extract_responses_api_usage(event: &Value) -> Option<(i64, i64, i64, i64)> {
     if input == 0 && output == 0 {
         return None;
     }
-    Some((input, output, cached, reasoning))
+    Some(UsageTokens {
+        input_tokens: input,
+        output_tokens: output,
+        cached_tokens: cached,
+        cache_creation_tokens: 0,
+        reasoning_tokens: reasoning,
+    })
 }
 
 fn extract_sse_field_value<'a>(line: &'a str, field: &str) -> Option<&'a str> {
@@ -461,10 +482,11 @@ fn handle_stream_sse_event(
     event_name: Option<&str>,
     data: &str,
     last_chunk_json: &mut Option<Value>,
-    responses_api_usage: &mut Option<(i64, i64, i64, i64)>,
+    responses_api_usage: &mut Option<UsageTokens>,
     anthropic_input: &mut i64,
     anthropic_output: &mut i64,
     anthropic_cached: &mut i64,
+    anthropic_cache_creation: &mut i64,
 ) {
     let data = data.trim();
     if data.is_empty() || data == "[DONE]" {
@@ -486,7 +508,13 @@ fn handle_stream_sse_event(
                     .or(event_name)
                     .unwrap_or("unknown");
 
-                if let Some(usage) = json.get("message").and_then(|msg| msg.get("usage")) {
+                for usage in [
+                    json.get("message").and_then(|msg| msg.get("usage")),
+                    json.get("usage"),
+                ]
+                .into_iter()
+                .flatten()
+                {
                     if let Some(v) = usage.get("input_tokens").and_then(|v| v.as_i64()) {
                         *anthropic_input = v;
                     }
@@ -496,20 +524,11 @@ fn handle_stream_sse_event(
                     {
                         *anthropic_cached = v;
                     }
-                    if let Some(v) = usage.get("output_tokens").and_then(|v| v.as_i64()) {
-                        *anthropic_output = v;
-                    }
-                }
-
-                if let Some(usage) = json.get("usage") {
-                    if let Some(v) = usage.get("input_tokens").and_then(|v| v.as_i64()) {
-                        *anthropic_input = v;
-                    }
                     if let Some(v) = usage
-                        .get("cache_read_input_tokens")
+                        .get("cache_creation_input_tokens")
                         .and_then(|v| v.as_i64())
                     {
-                        *anthropic_cached = v;
+                        *anthropic_cache_creation = v;
                     }
                     if let Some(v) = usage.get("output_tokens").and_then(|v| v.as_i64()) {
                         *anthropic_output = v;
@@ -520,8 +539,8 @@ fn handle_stream_sse_event(
                 // message_delta floods stderr for long streaming responses.
                 if event_type == "message_stop" {
                     eprintln!(
-                        "[TokenPulse] anthropic stream done model={} input_tokens={} output_tokens={} cached_tokens={}",
-                        model, *anthropic_input, *anthropic_output, *anthropic_cached
+                        "[TokenPulse] anthropic stream done model={} input_tokens={} output_tokens={} cached_tokens={} cache_creation_tokens={}",
+                        model, *anthropic_input, *anthropic_output, *anthropic_cached, *anthropic_cache_creation
                     );
                 }
             }
@@ -1178,8 +1197,10 @@ async fn proxy_handler(
                 input_tokens: 0,
                 output_tokens: 0,
                 cached_tokens: 0,
+                cache_creation_tokens: 0,
                 reasoning_tokens: 0,
                 cost_usd: 0.0,
+                cost_estimated: false,
                 latency_ms,
                 tokens_per_second: 0.0,
                 time_to_first_token_ms: -1,
@@ -1216,8 +1237,10 @@ async fn proxy_handler(
             input_tokens: 0,
             output_tokens: 0,
             cached_tokens: 0,
+            cache_creation_tokens: 0,
             reasoning_tokens: 0,
             cost_usd: 0.0,
+            cost_estimated: false,
             latency_ms,
             tokens_per_second: 0.0,
             time_to_first_token_ms: -1,
@@ -1260,10 +1283,11 @@ async fn proxy_handler(
             let mut anthropic_input: i64 = 0;
             let mut anthropic_output: i64 = 0;
             let mut anthropic_cached: i64 = 0;
+            let mut anthropic_cache_creation: i64 = 0;
             // For OpenAI Responses API streaming (incl. Codex OAuth): the usage
             // block lives in the terminal `response.completed` event. We track
             // it as it arrives so it survives the post-stream extraction step.
-            let mut responses_api_usage: Option<(i64, i64, i64, i64)> = None;
+            let mut responses_api_usage: Option<UsageTokens> = None;
             // SSE line buffer. A single SSE event can be much larger than one
             // TCP/HTTP chunk (the Codex `response.completed` event is ~1.5 KB),
             // so we cannot rely on each chunk containing complete SSE events.
@@ -1314,6 +1338,7 @@ async fn proxy_handler(
                                         &mut anthropic_input,
                                         &mut anthropic_output,
                                         &mut anthropic_cached,
+                                        &mut anthropic_cache_creation,
                                     );
                                     current_sse_data.clear();
                                 }
@@ -1355,8 +1380,10 @@ async fn proxy_handler(
                             input_tokens: anthropic_input,
                             output_tokens: anthropic_output,
                             cached_tokens: anthropic_cached,
+                            cache_creation_tokens: anthropic_cache_creation,
                             reasoning_tokens: 0,
                             cost_usd: 0.0,
+                            cost_estimated: false,
                             latency_ms,
                             tokens_per_second: 0.0,
                             time_to_first_token_ms: ttft_ms,
@@ -1398,6 +1425,7 @@ async fn proxy_handler(
                                 &mut anthropic_input,
                                 &mut anthropic_output,
                                 &mut anthropic_cached,
+                                &mut anthropic_cache_creation,
                             );
                             current_sse_data.clear();
                         }
@@ -1429,6 +1457,7 @@ async fn proxy_handler(
                     &mut anthropic_input,
                     &mut anthropic_output,
                     &mut anthropic_cached,
+                    &mut anthropic_cache_creation,
                 );
             }
 
@@ -1437,31 +1466,32 @@ async fn proxy_handler(
             //   2. OpenAI Responses API accumulator (response.completed event).
             //   3. Generic last-chunk extractor (Chat Completions usage block,
             //      Ollama native fields, etc.).
-            let (input_tokens, output_tokens, cached_tokens, reasoning_tokens) =
-                if provider_name == "anthropic" && (anthropic_input > 0 || anthropic_output > 0) {
-                    (anthropic_input, anthropic_output, anthropic_cached, 0)
-                } else if let Some(usage) = responses_api_usage {
-                    usage
-                } else if let Some(ref json) = last_chunk_json {
-                    extract_usage(json, &provider_name)
-                } else {
-                    (0, 0, 0, 0)
-                };
+            let usage = if provider_name == "anthropic"
+                && (anthropic_input > 0 || anthropic_output > 0)
+            {
+                UsageTokens {
+                    input_tokens: anthropic_input,
+                    output_tokens: anthropic_output,
+                    cached_tokens: anthropic_cached,
+                    cache_creation_tokens: anthropic_cache_creation,
+                    reasoning_tokens: 0,
+                }
+            } else if let Some(usage) = responses_api_usage {
+                usage
+            } else if let Some(ref json) = last_chunk_json {
+                extract_usage(json, &provider_name)
+            } else {
+                UsageTokens::default()
+            };
 
             let latency_ms = start_time.elapsed().as_millis() as i64;
             let cost = if let Ok(conn) = db.lock() {
-                calculate_cost_with_db(
-                    &conn,
-                    &model_clone,
-                    Some(&provider_name),
-                    input_tokens as u32,
-                    output_tokens as u32,
-                )
+                calculate_cost_with_db(&conn, &model_clone, Some(&provider_name), &usage)
             } else {
-                0.0
+                crate::pricing::calculate_cost(&model_clone, Some(&provider_name), &usage)
             };
-            let tps = if latency_ms > 0 && output_tokens > 0 {
-                (output_tokens as f64) / (latency_ms as f64 / 1000.0)
+            let tps = if latency_ms > 0 && usage.output_tokens > 0 {
+                (usage.output_tokens as f64) / (latency_ms as f64 / 1000.0)
             } else {
                 0.0
             };
@@ -1471,11 +1501,13 @@ async fn proxy_handler(
                 timestamp: start_timestamp,
                 provider: provider_name,
                 model: model_clone,
-                input_tokens,
-                output_tokens,
-                cached_tokens,
-                reasoning_tokens,
-                cost_usd: cost,
+                input_tokens: usage.input_tokens,
+                output_tokens: usage.output_tokens,
+                cached_tokens: usage.cached_tokens,
+                cache_creation_tokens: usage.cache_creation_tokens,
+                reasoning_tokens: usage.reasoning_tokens,
+                cost_usd: cost.cost_usd,
+                cost_estimated: cost.estimated,
                 latency_ms,
                 tokens_per_second: tps,
                 time_to_first_token_ms: ttft_ms,
@@ -1508,21 +1540,14 @@ async fn proxy_handler(
         let latency_ms = start_time.elapsed().as_millis() as i64;
 
         if let Ok(json) = serde_json::from_slice::<Value>(&resp_bytes) {
-            let (input_tokens, output_tokens, cached_tokens, reasoning_tokens) =
-                extract_usage(&json, &provider.name);
+            let usage = extract_usage(&json, &provider.name);
             let cost = if let Ok(conn) = state.db.lock() {
-                calculate_cost_with_db(
-                    &conn,
-                    &model,
-                    Some(&provider.name),
-                    input_tokens as u32,
-                    output_tokens as u32,
-                )
+                calculate_cost_with_db(&conn, &model, Some(&provider.name), &usage)
             } else {
-                0.0
+                crate::pricing::calculate_cost(&model, Some(&provider.name), &usage)
             };
             let tps = if latency_ms > 0 {
-                (output_tokens as f64) / (latency_ms as f64 / 1000.0)
+                (usage.output_tokens as f64) / (latency_ms as f64 / 1000.0)
             } else {
                 0.0
             };
@@ -1532,11 +1557,13 @@ async fn proxy_handler(
                 timestamp: start_timestamp,
                 provider: provider.name.clone(),
                 model: model.clone(),
-                input_tokens,
-                output_tokens,
-                cached_tokens,
-                reasoning_tokens,
-                cost_usd: cost,
+                input_tokens: usage.input_tokens,
+                output_tokens: usage.output_tokens,
+                cached_tokens: usage.cached_tokens,
+                cache_creation_tokens: usage.cache_creation_tokens,
+                reasoning_tokens: usage.reasoning_tokens,
+                cost_usd: cost.cost_usd,
+                cost_estimated: cost.estimated,
                 latency_ms,
                 tokens_per_second: tps,
                 time_to_first_token_ms: -1,
@@ -1636,6 +1663,7 @@ mod tests {
         let mut anthropic_input = 0;
         let mut anthropic_output = 0;
         let mut anthropic_cached = 0;
+        let mut anthropic_cache_creation = 0;
 
         handle_stream_sse_event(
             "anthropic",
@@ -1648,7 +1676,8 @@ mod tests {
                     "usage": {
                         "input_tokens": 472,
                         "output_tokens": 2,
-                        "cache_read_input_tokens": 128
+                        "cache_read_input_tokens": 128,
+                        "cache_creation_input_tokens": 24
                     }
                 }
             })
@@ -1658,6 +1687,7 @@ mod tests {
             &mut anthropic_input,
             &mut anthropic_output,
             &mut anthropic_cached,
+            &mut anthropic_cache_creation,
         );
 
         handle_stream_sse_event(
@@ -1677,11 +1707,13 @@ mod tests {
             &mut anthropic_input,
             &mut anthropic_output,
             &mut anthropic_cached,
+            &mut anthropic_cache_creation,
         );
 
         assert_eq!(anthropic_input, 472);
         assert_eq!(anthropic_output, 89);
         assert_eq!(anthropic_cached, 128);
+        assert_eq!(anthropic_cache_creation, 24);
         assert_eq!(
             last_chunk_json
                 .as_ref()

@@ -398,6 +398,8 @@ fn spawn_pricing_update(db: Arc<Mutex<rusqlite::Connection>>) {
                     &entry.provider,
                     entry.input_cost_per_million,
                     entry.output_cost_per_million,
+                    entry.cache_read_cost_per_million,
+                    entry.cache_creation_cost_per_million,
                     entry.context_window as i64,
                 );
             }

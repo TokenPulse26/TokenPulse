@@ -1324,7 +1324,19 @@ def _fetch_data(time_range):
 
     models = _normalize_model_rows(models)
 
-    # Recent requests with extended columns
+    # Recent requests with extended columns. The newest columns
+    # (cache_creation_tokens, cost_estimated) only exist once the v0.4.0+
+    # proxy has migrated the DB, so probe for them instead of failing the
+    # whole extended query on older schemas.
+    request_cols = {row[1] for row in c.execute("PRAGMA table_info(requests)").fetchall()}
+    cc_expr = (
+        "COALESCE(cache_creation_tokens, 0)"
+        if "cache_creation_tokens" in request_cols else "0"
+    )
+    ce_expr = (
+        "COALESCE(cost_estimated, 0)"
+        if "cost_estimated" in request_cols else "0"
+    )
     base_cols = (
         "timestamp, provider, model, input_tokens, output_tokens, "
         "cost_usd, latency_ms, is_streaming"
@@ -1334,6 +1346,8 @@ def _fetch_data(time_range):
             f"SELECT {base_cols}, "
             f"COALESCE(provider_type, 'api') as ptype, "
             f"COALESCE(cached_tokens, 0) as cached_tokens, "
+            f"{cc_expr} as cache_creation_tokens, "
+            f"{ce_expr} as cost_estimated, "
             f"COALESCE(reasoning_tokens, 0) as reasoning_tokens, "
             f"COALESCE(tokens_per_second, 0) as tokens_per_second, "
             f"COALESCE(time_to_first_token_ms, 0) as time_to_first_token_ms, "
@@ -1348,7 +1362,8 @@ def _fetch_data(time_range):
             c.execute(
                 f"SELECT {base_cols}, "
                 f"COALESCE(provider_type, 'api') as ptype, "
-                f"0 as cached_tokens, 0 as reasoning_tokens, "
+                f"0 as cached_tokens, 0 as cache_creation_tokens, "
+                f"0 as cost_estimated, 0 as reasoning_tokens, "
                 f"0 as tokens_per_second, 0 as time_to_first_token_ms, "
                 f"'' as error_message, '' as source_tag "
                 f"FROM requests{where} ORDER BY timestamp DESC LIMIT 50"
@@ -1362,7 +1377,8 @@ def _fetch_data(time_range):
             rows_base = [dict(r) for r in c.fetchall()]
             for rb in rows_base:
                 rb.update({
-                    "cached_tokens": 0, "reasoning_tokens": 0,
+                    "cached_tokens": 0, "cache_creation_tokens": 0,
+                    "cost_estimated": 0, "reasoning_tokens": 0,
                     "tokens_per_second": 0, "time_to_first_token_ms": 0,
                     "error_message": "", "source_tag": "",
                 })
@@ -4635,7 +4651,14 @@ def _build_requests_table(data, time_range="today", page=1):
         elif ptype == "local":
             cost_td = '<span class="cost-local">free</span>'
         else:
-            cost_td = f'<span class="cost-api">{fmt_cost(r["cost_usd"])}</span>'
+            if r.get("cost_estimated"):
+                cost_td = (
+                    '<span class="cost-api" title="Estimated: priced by closest '
+                    'model-name match or approximated cache rates">'
+                    f'~{fmt_cost(r["cost_usd"])}</span>'
+                )
+            else:
+                cost_td = f'<span class="cost-api">{fmt_cost(r["cost_usd"])}</span>'
 
         stream_html = ""
         if r.get("is_streaming"):
@@ -4644,6 +4667,8 @@ def _build_requests_table(data, time_range="today", page=1):
         # Detail data for JS
         detail = {
             "cached_tokens": r.get("cached_tokens", 0),
+            "cache_creation_tokens": r.get("cache_creation_tokens", 0),
+            "cost_estimated": bool(r.get("cost_estimated")),
             "reasoning_tokens": r.get("reasoning_tokens", 0),
             "tokens_per_second": r.get("tokens_per_second", 0),
             "time_to_first_token_ms": r.get("time_to_first_token_ms", 0),
@@ -5272,6 +5297,8 @@ function initExpandableRows() {{
 
         var fields = [
           ['Cached Tokens', detail.cached_tokens || 0],
+          ['Cache Write Tokens', detail.cache_creation_tokens || 0],
+          ['Price Basis', detail.cost_estimated ? 'Estimated (~)' : 'Exact'],
           ['Reasoning Tokens', detail.reasoning_tokens || 0],
           ['Tokens/sec', detail.tokens_per_second > 0 ? detail.tokens_per_second.toFixed(1) : '—'],
           ['Time to First Token', detail.time_to_first_token_ms > 0 ? detail.time_to_first_token_ms + 'ms' : '—'],
@@ -5913,15 +5940,27 @@ def _export_csv(time_range):
     writer = csv.writer(output)
     writer.writerow([
         "timestamp", "provider", "model", "input_tokens", "output_tokens",
-        "cached_tokens", "reasoning_tokens", "cost_usd", "latency_ms",
+        "cached_tokens", "cache_creation_tokens", "reasoning_tokens",
+        "cost_usd", "cost_estimated", "latency_ms",
         "tokens_per_second", "time_to_first_token_ms", "is_streaming",
         "source_tag", "provider_type", "error_message",
     ])
+
+    # Probe for columns added in v0.4.0 so exports still work against a DB
+    # the proxy hasn't migrated yet.
+    cols = {row[1] for row in c.execute("PRAGMA table_info(requests)").fetchall()}
+    cc_expr = (
+        "COALESCE(cache_creation_tokens, 0)"
+        if "cache_creation_tokens" in cols else "0"
+    )
+    ce_expr = "COALESCE(cost_estimated, 0)" if "cost_estimated" in cols else "0"
 
     try:
         c.execute(
             f"SELECT timestamp, provider, model, input_tokens, output_tokens, "
             f"COALESCE(cached_tokens, 0) as cached_tokens, "
+            f"{cc_expr} as cache_creation_tokens, "
+            f"{ce_expr} as cost_estimated, "
             f"COALESCE(reasoning_tokens, 0) as reasoning_tokens, "
             f"cost_usd, latency_ms, "
             f"COALESCE(tokens_per_second, 0) as tokens_per_second, "
@@ -5941,8 +5980,10 @@ def _export_csv(time_range):
                 writer.writerow([
                     r["timestamp"], r["provider"], r["model"],
                     r["input_tokens"], r["output_tokens"],
-                    r["cached_tokens"], r["reasoning_tokens"],
-                    f"{r['cost_usd']:.6f}", r["latency_ms"],
+                    r["cached_tokens"], r["cache_creation_tokens"],
+                    r["reasoning_tokens"],
+                    f"{r['cost_usd']:.6f}", bool(r["cost_estimated"]),
+                    r["latency_ms"],
                     f"{r['tokens_per_second']:.1f}", r["time_to_first_token_ms"],
                     bool(r["is_streaming"]),
                     r["source_tag"], r["provider_type"], r["error_message"],
