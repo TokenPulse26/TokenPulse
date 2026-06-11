@@ -2262,6 +2262,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn model_family_matches_shared_fixture() {
+        // Same fixture is asserted by tests/test_dashboard.py against the
+        // Python _model_family, so the duplicated implementations cannot
+        // drift apart without failing CI.
+        let fixture = include_str!("../../tests/fixtures/model_family.json");
+        let json: serde_json::Value = serde_json::from_str(fixture).unwrap();
+        for (model, family) in json["cases"].as_object().unwrap() {
+            assert_eq!(
+                model_family(model),
+                family.as_str().unwrap(),
+                "model {:?}",
+                model
+            );
+        }
+    }
+
+    #[test]
     fn reliability_snapshot_detects_latency_and_error_spikes() {
         let db_path = std::env::temp_dir().join(format!(
             "tokenpulse-reliability-test-{}.db",

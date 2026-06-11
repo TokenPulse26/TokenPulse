@@ -1,0 +1,18 @@
+{
+  "comment": "Shared model_family() cases. db.rs and web-dashboard.py both implement this mapping; tests in BOTH languages assert against this file so the implementations cannot drift apart silently.",
+  "cases": {
+    "claude-sonnet-4-6": "claude",
+    "claude-opus-4-6": "claude",
+    "gpt-4o": "gpt",
+    "gpt-5.2-mini": "gpt",
+    "Gemini-2.5-Pro": "gemini",
+    "llama-3.3-70b": "llama",
+    "mistral-large-latest": "mistral",
+    "grok-4": "grok",
+    "o1-pro": "o1",
+    "qwen2.5:0.5b": "qwen2.5:0.5b",
+    "DeepSeek-R1": "deepseek",
+    "  claude-haiku-4-5  ": "claude",
+    "": ""
+  }
+}

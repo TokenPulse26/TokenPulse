@@ -135,6 +135,21 @@ class DashboardDataTests(unittest.TestCase):
         self.assertEqual(len(rows), 2)
 
 
+class ModelFamilyParityTests(unittest.TestCase):
+    """Asserts _model_family against the shared fixture that the Rust side
+    (db.rs model_family) also tests against, so the duplicated logic cannot
+    drift between languages without failing CI."""
+
+    def test_shared_fixture(self):
+        import json
+        fixture = os.path.join(REPO_ROOT, "tests", "fixtures", "model_family.json")
+        with open(fixture) as f:
+            cases = json.load(f)["cases"]
+        wd = load_dashboard(":memory:")
+        for model, family in cases.items():
+            self.assertEqual(wd._model_family(model), family, f"model {model!r}")
+
+
 class OldSchemaFallbackTests(unittest.TestCase):
     """The dashboard must keep working against a DB the new proxy has not
     migrated yet (no cache_creation_tokens / cost_estimated columns)."""

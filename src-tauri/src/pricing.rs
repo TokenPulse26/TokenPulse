@@ -112,6 +112,12 @@ fn cost_from_rates(
         + (usage.cache_creation_tokens as f64 / 1_000_000.0) * cache_creation_rate
         + (usage.output_tokens as f64 / 1_000_000.0) * rates.output;
 
+    // A zero-rate entry (local/free models) costs $0 no matter how it was
+    // matched — an "estimated" flag would be noise.
+    if rates.input == 0.0 && rates.output == 0.0 {
+        estimated = false;
+    }
+
     CostBreakdown {
         cost_usd: cost.max(0.0),
         estimated,
@@ -354,6 +360,20 @@ mod tests {
         let c = calculate_cost("o1-pro", Some("openai"), &usage);
         assert!(c.cost_usd > 0.0);
         assert!(c.estimated);
+    }
+
+    #[test]
+    fn free_local_models_are_never_flagged_estimated() {
+        // "qwen2.5:0.5b" fuzzy-matches the bundled $0 "qwen2.5" ollama entry;
+        // free is free, so the estimated flag must stay off.
+        let usage = UsageTokens {
+            input_tokens: 1_000,
+            output_tokens: 500,
+            ..Default::default()
+        };
+        let c = calculate_cost("qwen2.5:0.5b", Some("ollama"), &usage);
+        assert!(close(c.cost_usd, 0.0));
+        assert!(!c.estimated);
     }
 
     #[test]
