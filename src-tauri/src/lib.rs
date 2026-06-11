@@ -367,6 +367,9 @@ async fn check_for_update(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 fn spawn_pricing_update(db: Arc<Mutex<rusqlite::Connection>>) {
+    // Refresh at startup and then every 24 hours. The proxy runs as a
+    // KeepAlive launchd service for weeks at a time, so a one-shot refresh
+    // would leave cost math drifting against current provider pricing.
     tauri::async_runtime::spawn(async move {
         let url = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
         let client = match reqwest::Client::builder()
@@ -377,37 +380,38 @@ fn spawn_pricing_update(db: Arc<Mutex<rusqlite::Connection>>) {
             Err(_) => return,
         };
 
-        let text = match client.get(url).send().await {
-            Ok(resp) => match resp.text().await {
-                Ok(t) => t,
-                Err(_) => return,
-            },
-            Err(_) => return,
-        };
-
-        let entries = pricing::parse_litellm_json(&text);
-        if entries.is_empty() {
-            return;
-        }
-
-        if let Ok(conn) = db.lock() {
-            for entry in &entries {
-                let _ = db::upsert_pricing(
-                    &conn,
-                    &entry.model,
-                    &entry.provider,
-                    entry.input_cost_per_million,
-                    entry.output_cost_per_million,
-                    entry.cache_read_cost_per_million,
-                    entry.cache_creation_cost_per_million,
-                    entry.context_window as i64,
-                );
+        loop {
+            if let Ok(resp) = client.get(url).send().await {
+                if let Ok(text) = resp.text().await {
+                    let entries = pricing::parse_litellm_json(&text);
+                    if !entries.is_empty() {
+                        if let Ok(conn) = db.lock() {
+                            for entry in &entries {
+                                let _ = db::upsert_pricing(
+                                    &conn,
+                                    &entry.model,
+                                    &entry.provider,
+                                    entry.input_cost_per_million,
+                                    entry.output_cost_per_million,
+                                    entry.cache_read_cost_per_million,
+                                    entry.cache_creation_cost_per_million,
+                                    entry.context_window as i64,
+                                );
+                            }
+                            let _ = db::set_setting(
+                                &conn,
+                                "pricing_last_updated",
+                                &chrono::Utc::now().to_rfc3339(),
+                            );
+                            eprintln!(
+                                "[TokenPulse] pricing refreshed: {} models",
+                                entries.len()
+                            );
+                        }
+                    }
+                }
             }
-            let _ = db::set_setting(
-                &conn,
-                "pricing_last_updated",
-                &chrono::Utc::now().to_rfc3339(),
-            );
+            tokio::time::sleep(std::time::Duration::from_secs(24 * 60 * 60)).await;
         }
     });
 }
