@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.4.2] - 2026-06-11 (Early Access)
+
+### Fixed
+- **Ollama native streaming token capture** — Ollama's `/api/chat` and `/api/generate` stream NDJSON (bare JSON per line), not SSE. The stream parser only consumed `data:`-framed lines, so streamed local-model requests recorded 0 tokens. NDJSON lines are now treated as complete events and the final chunk's `prompt_eval_count` / `eval_count` are captured. Found by live end-to-end testing during the v0.4.1 install verification.
+
+---
+
 ## [0.4.1] - 2026-06-11 (Early Access)
 
 ### Added

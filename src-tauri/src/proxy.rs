@@ -1366,6 +1366,28 @@ async fn proxy_handler(
 
                             if let Some(data) = extract_sse_field_value(line, "data:") {
                                 current_sse_data.push(data.to_string());
+                                continue;
+                            }
+
+                            // NDJSON streams (Ollama native /api/chat and
+                            // /api/generate) send one bare JSON object per
+                            // line with no SSE framing. Treat each line as a
+                            // complete event so the final chunk's usage
+                            // counts are captured.
+                            if line.starts_with('{') {
+                                handle_stream_sse_event(
+                                    &provider_name,
+                                    &model_clone,
+                                    is_responses_api_stream,
+                                    None,
+                                    line,
+                                    &mut last_chunk_json,
+                                    &mut responses_api_usage,
+                                    &mut anthropic_input,
+                                    &mut anthropic_output,
+                                    &mut anthropic_cached,
+                                    &mut anthropic_cache_creation,
+                                );
                             }
                         }
 
@@ -1453,6 +1475,24 @@ async fn proxy_handler(
 
                     if let Some(data) = extract_sse_field_value(line, "data:") {
                         current_sse_data.push(data.to_string());
+                        continue;
+                    }
+
+                    // NDJSON line (Ollama native streaming) — see main loop.
+                    if line.starts_with('{') {
+                        handle_stream_sse_event(
+                            &provider_name,
+                            &model_clone,
+                            is_responses_api_stream,
+                            None,
+                            line,
+                            &mut last_chunk_json,
+                            &mut responses_api_usage,
+                            &mut anthropic_input,
+                            &mut anthropic_output,
+                            &mut anthropic_cached,
+                            &mut anthropic_cache_creation,
+                        );
                     }
                 }
             }
@@ -1735,6 +1775,38 @@ mod tests {
             Some("message_delta")
         );
         assert!(responses_api_usage.is_none());
+    }
+
+    #[test]
+    fn ollama_ndjson_final_chunk_yields_native_usage() {
+        // Ollama native streaming is NDJSON: bare JSON objects per line, no
+        // SSE "data:" framing. The final object carries the usage counts.
+        let mut last_chunk_json = None;
+        let mut responses_api_usage = None;
+        let (mut ai, mut ao, mut ac, mut acc) = (0i64, 0i64, 0i64, 0i64);
+        let final_chunk = json!({
+            "model": "qwen2.5:0.5b",
+            "done": true,
+            "prompt_eval_count": 33,
+            "eval_count": 10
+        })
+        .to_string();
+        handle_stream_sse_event(
+            "ollama",
+            "qwen2.5:0.5b",
+            false,
+            None,
+            &final_chunk,
+            &mut last_chunk_json,
+            &mut responses_api_usage,
+            &mut ai,
+            &mut ao,
+            &mut ac,
+            &mut acc,
+        );
+        let usage = super::extract_usage(last_chunk_json.as_ref().unwrap(), "ollama");
+        assert_eq!(usage.input_tokens, 33);
+        assert_eq!(usage.output_tokens, 10);
     }
 
     #[test]
