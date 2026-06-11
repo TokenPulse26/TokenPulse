@@ -8,7 +8,7 @@ src-tauri/gen/
 # Node / frontend leftovers
 node_modules/
 public/
-src/
+/src/
 
 # Python
 __pycache__/

@@ -8,16 +8,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [0.4.0] - 2026-05-04 (Early Access)
+## [0.4.0] - 2026-06-11 (Early Access)
+
+### Fixed
+- **Cache token pricing** — cached tokens are now billed at provider-correct rates instead of being ignored. Anthropic cache reads are priced at 0.1× input and cache writes (`cache_creation_input_tokens`, previously not even extracted) at 1.25× input; OpenAI-style cached tokens are deducted from the full-rate input count and billed at the cache-read rate. Cache rates come from the LiteLLM pricing refresh when available, with provider heuristics as fallback. For agentic workloads (Claude Code, Codex) that run 80–90% cached tokens, this materially corrects the headline cost number in both directions.
+- **Estimated prices are now flagged** — when a model is priced by fuzzy name match (e.g. an unknown `o1-pro` variant matching the `o1` entry) or by approximated cache rates, the request is marked `cost_estimated` in the database, shown with a `~` prefix in the dashboard, and exported in CSV. Fuzzy matching also now prefers the most specific (longest) model-name match.
 
 ### Added
 - GitHub Actions release workflow that builds a macOS Apple Silicon proxy binary on every `v*.*.*` tag and publishes it as a GitHub Release asset (`tokenpulse-macos-arm64` + `.sha256`).
+- `web-dashboard.py` and `agent_verify.py` ship as checksummed release assets, and `install.sh` installs them from the same release as the proxy binary — proxy and dashboard always arrive as a version-matched pair.
 - `install.sh` downloads the pre-built binary from the latest GitHub Release and verifies its SHA256, removing the hard Rust toolchain dependency from the default install path.
 - `install.sh --from-source` flag for the advanced build-from-source path.
+- New per-request fields: `cache_creation_tokens` and `cost_estimated` (DB migration is automatic; CSV export includes both).
+- MIT `LICENSE` file.
+- Unit tests pinning known request costs for Anthropic (cache read/write), OpenAI (cached discount), fuzzy-match flagging, and LiteLLM cache-rate parsing.
 
 ### Changed
 - Default `install.sh` path no longer compiles Rust on the tester's machine.
 - README and GETTING_STARTED updated to reflect the pre-built binary install flow.
+- Removed machine-specific local model entries from the bundled `pricing.json`.
 
 ### Notes
 - Proxy binary is not codesigned for v1 early access; macOS may require an “Allow Anyway” step on first run.
