@@ -61,10 +61,18 @@ jobs:
           mkdir -p dist-release
           cp src-tauri/target/aarch64-apple-darwin/release/tokenpulse dist-release/tokenpulse-macos-arm64
           chmod +x dist-release/tokenpulse-macos-arm64
-          # Compute SHA256 in a format that works with `shasum -a 256 -c`
+          # Ship the dashboard and verification script as release assets so
+          # install.sh can fetch a proxy+dashboard pair from the SAME release.
+          # Both the binary and the dashboard migrate the same SQLite schema,
+          # so mixing versions across them is not safe.
+          cp web-dashboard.py dist-release/web-dashboard.py
+          cp agent_verify.py dist-release/agent_verify.py
+          # Compute SHA256s in a format that works with `shasum -a 256 -c`
           cd dist-release
           shasum -a 256 tokenpulse-macos-arm64 > tokenpulse-macos-arm64.sha256
-          cat tokenpulse-macos-arm64.sha256
+          shasum -a 256 web-dashboard.py > web-dashboard.py.sha256
+          shasum -a 256 agent_verify.py > agent_verify.py.sha256
+          cat ./*.sha256
           echo "sha256=$(awk '{print $1}' tokenpulse-macos-arm64.sha256)" >> "$GITHUB_OUTPUT"
 
       - name: Determine release tag
@@ -90,6 +98,10 @@ jobs:
           path: |
             dist-release/tokenpulse-macos-arm64
             dist-release/tokenpulse-macos-arm64.sha256
+            dist-release/web-dashboard.py
+            dist-release/web-dashboard.py.sha256
+            dist-release/agent_verify.py
+            dist-release/agent_verify.py.sha256
           if-no-files-found: error
 
       - name: Create or update GitHub Release
@@ -109,10 +121,17 @@ jobs:
             **Artifacts**
             - `tokenpulse-macos-arm64` — Rust proxy binary (arm64)
             - `tokenpulse-macos-arm64.sha256` — SHA256 checksum
+            - `web-dashboard.py` — web dashboard, version-matched to this binary
+            - `agent_verify.py` — install verification script
+            - `*.sha256` — checksums for each asset
 
-            **SHA256:** `${{ steps.stage.outputs.sha256 }}`
+            **Binary SHA256:** `${{ steps.stage.outputs.sha256 }}`
 
-            Install via `install.sh`, which will download this binary and verify the checksum automatically.
+            Install via `install.sh`, which downloads the binary and dashboard from this release and verifies all checksums automatically.
           files: |
             dist-release/tokenpulse-macos-arm64
             dist-release/tokenpulse-macos-arm64.sha256
+            dist-release/web-dashboard.py
+            dist-release/web-dashboard.py.sha256
+            dist-release/agent_verify.py
+            dist-release/agent_verify.py.sha256

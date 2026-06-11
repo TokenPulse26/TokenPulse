@@ -118,14 +118,19 @@ API_URL="https://api.github.com/repos/$REPO/releases/latest"
 BINARY_ASSET="tokenpulse-macos-arm64"
 SHA_ASSET="tokenpulse-macos-arm64.sha256"
 
-# Always pull the latest docs and dashboard, regardless of proxy install path
-echo "Downloading dashboard..."
-curl -fsSL "$BASE_URL/web-dashboard.py" -o "$INSTALL_DIR/web-dashboard.py"
+# Dashboard + verification script for the source-build path. The release
+# install path fetches these from the release itself (see install_from_release)
+# so the proxy binary and dashboard always ship as a version-matched pair.
+download_support_files_from_main() {
+    echo "Downloading dashboard (main branch)..."
+    curl -fsSL "$BASE_URL/web-dashboard.py" -o "$INSTALL_DIR/web-dashboard.py"
 
-echo "Downloading verification script..."
-curl -fsSL "$BASE_URL/agent_verify.py" -o "$INSTALL_DIR/agent_verify.py"
-chmod +x "$INSTALL_DIR/agent_verify.py"
+    echo "Downloading verification script (main branch)..."
+    curl -fsSL "$BASE_URL/agent_verify.py" -o "$INSTALL_DIR/agent_verify.py"
+    chmod +x "$INSTALL_DIR/agent_verify.py"
+}
 
+# Docs are informational; always pull the latest copies.
 echo "Downloading docs..."
 curl -fsSL "$BASE_URL/GETTING_STARTED.md" -o "$INSTALL_DIR/GETTING_STARTED.md"
 curl -fsSL "$BASE_URL/README.md" -o "$INSTALL_DIR/README.md"
@@ -182,6 +187,35 @@ install_from_release() {
     mv "$tmpdir/$BINARY_ASSET" "$INSTALL_DIR/tokenpulse"
     chmod +x "$INSTALL_DIR/tokenpulse"
     echo "✅ Proxy binary installed: $INSTALL_DIR/tokenpulse"
+
+    # Pull the dashboard and verification script from the SAME release so the
+    # installed pair is always version-matched (both migrate the same SQLite
+    # schema, so mixing a release binary with a main-branch dashboard is not
+    # safe). Older releases predate these assets; fall back to main for them.
+    local support_missing=0
+    local asset
+    for asset in web-dashboard.py agent_verify.py; do
+        local asset_url="https://github.com/$REPO/releases/latest/download/$asset"
+        if curl -fsSL "$asset_url" -o "$tmpdir/$asset" \
+            && curl -fsSL "$asset_url.sha256" -o "$tmpdir/$asset.sha256"; then
+            if ! ( cd "$tmpdir" && shasum -a 256 -c "$asset.sha256" ); then
+                echo ""
+                echo "Error: SHA256 verification failed for $asset."
+                echo "Refusing to install an unverified file."
+                return 2
+            fi
+            mv "$tmpdir/$asset" "$INSTALL_DIR/$asset"
+            echo "✅ Installed $asset from release"
+        else
+            support_missing=1
+        fi
+    done
+    if [ "$support_missing" = "1" ]; then
+        echo "⚠️  This release does not ship dashboard assets; using main branch copies."
+        download_support_files_from_main
+    fi
+    chmod +x "$INSTALL_DIR/agent_verify.py" 2>/dev/null || true
+
     return 0
 }
 
@@ -223,6 +257,7 @@ PROXY_OK=0
 
 if [ "$FROM_SOURCE" = "1" ]; then
     echo "--from-source flag set: skipping pre-built binary."
+    download_support_files_from_main
     if install_from_source; then
         PROXY_OK=1
     fi
@@ -234,11 +269,12 @@ else
         if [ "$rc" = "2" ]; then
             # Checksum mismatch is a hard fail — do not silently fall through to source build.
             echo ""
-            echo "Aborting install because the downloaded binary failed SHA256 verification."
+            echo "Aborting install because a downloaded release asset failed SHA256 verification."
             echo "If you believe this is a mistake, re-run with:  install.sh --from-source"
             exit 2
         fi
         echo "Pre-built binary unavailable; falling back to source build."
+        download_support_files_from_main
         if install_from_source; then
             PROXY_OK=1
         fi
