@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.4.3] - 2026-06-11 (Early Access)
+
+### Added
+- Dashboard data-integrity test suite (`tests/test_dashboard.py`) — time-filter totals, CSV export columns/sums, estimated-flag passthrough, and pre-v0.4.0 schema fallbacks pinned against seeded databases. Runs in CI.
+- The Tauri desktop shell now builds from a clean clone: the previously missing npm frontend is replaced by a committed static status page (live proxy health + Open Dashboard button). No Node toolchain required.
+
+### Fixed
+- **Gemini cache and thinking tokens** — the Google route now extracts `cachedContentTokenCount` (deducted from the inclusive `promptTokenCount` at the cache-read rate) and `thoughtsTokenCount` (billed as output, as Gemini does; reported separately as reasoning tokens). Previously both were ignored, overbilling cached Gemini traffic and underbilling thinking models.
+
+---
+
 ## [0.4.2] - 2026-06-11 (Early Access)
 
 ### Fixed
