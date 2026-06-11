@@ -112,6 +112,7 @@ Use [FIRST_TESTER_ONBOARDING.md](FIRST_TESTER_ONBOARDING.md) as the source of tr
 - **Google Gemini:** `http://localhost:4100/google`
 - **Mistral:** `http://localhost:4100/mistral`
 - **Groq:** `http://localhost:4100/groq`
+- **xAI (Grok):** `http://localhost:4100/xai`
 - **CLIProxy:** `http://localhost:4100/cliproxy`
 
 ### Local models

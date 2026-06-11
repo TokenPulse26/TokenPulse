@@ -68,7 +68,7 @@ fn redact_url_secrets(url_str: &str) -> String {
 fn redact_secrets_in_text(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
-    let prefixes = ["sk-ant-", "sk-proj-", "sk-", "AIza", "gsk_"];
+    let prefixes = ["sk-ant-", "sk-proj-", "sk-", "AIza", "gsk_", "xai-"];
     'outer: while !rest.is_empty() {
         for prefix in &prefixes {
             if let Some(pos) = rest.find(prefix) {
@@ -155,6 +155,12 @@ fn detect_provider(headers: &HeaderMap, path: &str) -> ProviderInfo {
             base_url: "https://api.groq.com".to_string(),
         };
     }
+    if path.starts_with("/xai/") {
+        return ProviderInfo {
+            name: "xai".to_string(),
+            base_url: "https://api.x.ai".to_string(),
+        };
+    }
     if path.starts_with("/cliproxy/") {
         return ProviderInfo {
             name: "cliproxy".to_string(),
@@ -190,6 +196,12 @@ fn detect_provider(headers: &HeaderMap, path: &str) -> ProviderInfo {
                 return ProviderInfo {
                     name: "google".to_string(),
                     base_url: "https://generativelanguage.googleapis.com".to_string(),
+                };
+            }
+            if token.starts_with("xai-") {
+                return ProviderInfo {
+                    name: "xai".to_string(),
+                    base_url: "https://api.x.ai".to_string(),
                 };
             }
         }
@@ -580,6 +592,7 @@ fn build_forward_path(provider: &ProviderInfo, original_path: &str) -> String {
             .strip_prefix("/mistral")
             .unwrap_or(original_path),
         "groq" => original_path.strip_prefix("/groq").unwrap_or(original_path),
+        "xai" => original_path.strip_prefix("/xai").unwrap_or(original_path),
         "cliproxy" => original_path
             .strip_prefix("/cliproxy")
             .unwrap_or(original_path),
@@ -1722,5 +1735,41 @@ mod tests {
             Some("message_delta")
         );
         assert!(responses_api_usage.is_none());
+    }
+
+    #[test]
+    fn xai_route_detected_and_path_stripped() {
+        let headers = http::HeaderMap::new();
+        let provider = super::detect_provider(&headers, "/xai/v1/chat/completions");
+        assert_eq!(provider.name, "xai");
+        assert_eq!(provider.base_url, "https://api.x.ai");
+        assert_eq!(
+            super::build_forward_path(&provider, "/xai/v1/chat/completions"),
+            "/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn xai_bearer_key_detected_on_root_route() {
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            "authorization",
+            "Bearer xai-test-key-not-real".parse().unwrap(),
+        );
+        let provider = super::detect_provider(&headers, "/v1/chat/completions");
+        assert_eq!(provider.name, "xai");
+    }
+
+    #[test]
+    fn grok_pricing_resolves_exactly() {
+        let usage = crate::pricing::UsageTokens {
+            input_tokens: 1_000,
+            output_tokens: 500,
+            ..Default::default()
+        };
+        let c = crate::pricing::calculate_cost("grok-4", Some("xai"), &usage);
+        // grok-4 bundled: $3/M input, $15/M output.
+        assert!((c.cost_usd - 0.0105).abs() < 1e-9, "got {}", c.cost_usd);
+        assert!(!c.estimated);
     }
 }
