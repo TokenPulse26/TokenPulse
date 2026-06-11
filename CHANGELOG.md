@@ -8,6 +8,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.4.1] - 2026-06-11 (Early Access)
+
+### Added
+- **xAI (Grok) provider route** — `http://localhost:4100/xai` forwards to `api.x.ai`; `xai-` bearer keys are also auto-detected on the root route and redacted in logs. Bundled pricing for grok-4 / grok-3 / grok-3-mini.
+- CI workflow: every push and pull request now runs the Rust test suite, a compiler-warnings gate, dashboard/script compile checks, and pricing data validation.
+- `SECURITY.md` — private vulnerability reporting and the project's data-handling posture.
+
+### Fixed
+- Dependency security pass (OSV scan of the full lockfile): updated tauri to 2.11.1 (origin-confusion advisory), openssl, rustls-webpki, tar, and rand to patched versions. All advisories with available fixes are cleared.
+
+### Changed
+- The orphaned secondary landing page in `docs/` now redirects to tokenpulse.to instead of carrying a divergent brand.
+- README: xAI route documented, known-limitations section refreshed (time-range filter caveat removed after validation; estimated-price marker and codesigning status documented).
+
+---
+
 ## [0.4.0] - 2026-06-11 (Early Access)
 
 ### Fixed

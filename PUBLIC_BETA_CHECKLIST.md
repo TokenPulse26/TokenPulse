@@ -7,6 +7,7 @@ Use this checklist before each public beta announcement.
 - [ ] `src-tauri/Cargo.toml` version matches `VERSION`.
 - [ ] `CHANGELOG.md` top entry version/date matches release tag.
 - [ ] Dashboard-reported version matches `VERSION`.
+- [ ] CI workflow green on `main` at the release commit.
 
 ## Installer + Distribution
 - [ ] Latest release asset (`tokenpulse-macos-arm64`) published.
@@ -18,8 +19,9 @@ Use this checklist before each public beta announcement.
 - [ ] Proxy health endpoint responds on `127.0.0.1:4100/health`.
 - [ ] Dashboard loads on `127.0.0.1:4200`.
 - [ ] OpenAI-compatible route logs tokens + model + provider.
-- [ ] Anthropic route logs tokens + model + provider.
+- [ ] Anthropic route logs tokens + model + provider (including cache read/write tokens).
 - [ ] Ollama route logs local-model traffic correctly.
+- [ ] Estimated costs (fuzzy pricing) display with the `~` marker.
 
 ## Analytics Integrity
 - [ ] Time range filters validated (Today/7d/30d/All) on seeded data.

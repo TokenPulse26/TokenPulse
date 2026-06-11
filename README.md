@@ -155,10 +155,10 @@ Current early-access limitations:
 - macOS Apple Silicon is the only supported v1 platform
 - Ollama is the recommended local-model path today
 - LM Studio is supported, but lower confidence than Ollama
-- pricing data can be stale for some newer model families
-- some dashboard time-range filters may not fully apply
+- bundled pricing data can be stale for newer model families until the automatic LiteLLM refresh runs; costs priced by closest-name match or approximated cache rates are marked with `~` in the dashboard and `cost_estimated` in CSV exports
 - the Tauri app-shell is secondary, the browser dashboard is the main surface
 - the installer is still a narrow bootstrap path, not a polished general release installer
+- the proxy binary is not codesigned yet; macOS may require an "Allow Anyway" step on first run
 
 ---
 
