@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Tests (macOS Apple Silicon)
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and git db
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache cargo build target
+        uses: actions/cache@v4
+        with:
+          path: src-tauri/target
+          key: ${{ runner.os }}-cargo-target-ci-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-target-ci-
+
+      - name: Run Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Check for Rust warnings
+        run: cargo check --manifest-path src-tauri/Cargo.toml 2>&1 | tee /tmp/check.log && ! grep -q "^warning" /tmp/check.log
+
+      - name: Dashboard compiles
+        run: python3 -m py_compile web-dashboard.py agent_verify.py
+
+      - name: Shell scripts parse
+        run: bash -n install.sh && bash -n uninstall.sh
+
+      - name: Bundled pricing.json is valid JSON
+        run: python3 -c "import json; json.load(open('src-tauri/pricing.json'))"
