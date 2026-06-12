@@ -653,7 +653,13 @@ fn build_cors_layer() -> CorsLayer {
 
     CorsLayer::new()
         .allow_origin(allow_origin)
-        .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
         .allow_headers([
             header::ACCEPT,
             header::AUTHORIZATION,
@@ -691,6 +697,21 @@ fn build_response(status: StatusCode, content_type: &str, body: Body) -> Respons
             .unwrap_or_else(|_| header::HeaderValue::from_static("application/octet-stream")),
     );
     response
+}
+
+fn api_error(status: StatusCode, message: &str) -> Response<Body> {
+    json_response(
+        status,
+        serde_json::json!({"status": "error", "message": message}),
+    )
+}
+
+/// Read and parse a JSON request body for the local API write endpoints.
+async fn read_json_body(body: Body) -> Result<Value, String> {
+    let bytes = axum::body::to_bytes(body, 1024 * 1024)
+        .await
+        .map_err(|e| format!("failed to read request body: {}", e))?;
+    serde_json::from_slice(&bytes).map_err(|e| format!("request body is not valid JSON: {}", e))
 }
 
 fn json_response(status: StatusCode, value: Value) -> Response<Body> {
@@ -1057,7 +1078,7 @@ async fn proxy_handler(
     // ── /api/budgets endpoint ─────────────────────────────────────────
     if path == "/api/budgets" && parts.method == Method::GET {
         let result = if let Ok(conn) = state.db.lock() {
-            match db::check_budgets(&conn) {
+            match db::get_budget_statuses(&conn) {
                 Ok(statuses) => serde_json::json!({
                     "status": "ok",
                     "budgets": statuses,
@@ -1069,6 +1090,135 @@ async fn proxy_handler(
         };
 
         return Ok(json_response(StatusCode::OK, result));
+    }
+
+    // ── /api/budgets write endpoints (JSON bodies, used by the TS
+    // dashboard; the legacy Python dashboard talks to its own server) ──
+    if path == "/api/budgets" && parts.method == Method::POST {
+        let payload = match read_json_body(body).await {
+            Ok(v) => v,
+            Err(msg) => return Ok(api_error(StatusCode::BAD_REQUEST, &msg)),
+        };
+        let result = {
+            let conn = match state.db.lock() {
+                Ok(c) => c,
+                Err(_) => {
+                    return Ok(api_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "database lock failed",
+                    ))
+                }
+            };
+            db::create_budget(
+                &conn,
+                payload["name"].as_str().unwrap_or("").trim(),
+                payload["period"].as_str().unwrap_or(""),
+                payload["threshold_usd"].as_f64().unwrap_or(0.0),
+                payload["provider_filter"].as_str().filter(|s| !s.is_empty()),
+                payload["scope_kind"].as_str(),
+                payload["scope_value"].as_str().filter(|s| !s.is_empty()),
+            )
+        };
+        return Ok(match result {
+            Ok(id) => json_response(
+                StatusCode::OK,
+                serde_json::json!({"status": "ok", "id": id}),
+            ),
+            Err(e) => api_error(StatusCode::BAD_REQUEST, &e.to_string()),
+        });
+    }
+
+    if let Some(rest) = path.strip_prefix("/api/budgets/") {
+        let (id_str, action) = match rest.split_once('/') {
+            Some((id, act)) => (id, Some(act)),
+            None => (rest, None),
+        };
+        if let Ok(id) = id_str.parse::<i64>() {
+            match (parts.method.clone(), action) {
+                (Method::PUT, Some("enabled")) => {
+                    let payload = match read_json_body(body).await {
+                        Ok(v) => v,
+                        Err(msg) => return Ok(api_error(StatusCode::BAD_REQUEST, &msg)),
+                    };
+                    let Some(enabled) = payload["enabled"].as_bool() else {
+                        return Ok(api_error(
+                            StatusCode::BAD_REQUEST,
+                            "body must include boolean field 'enabled'",
+                        ));
+                    };
+                    let result = match state.db.lock() {
+                        Ok(conn) => db::set_budget_enabled(&conn, id, enabled),
+                        Err(_) => {
+                            return Ok(api_error(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "database lock failed",
+                            ))
+                        }
+                    };
+                    return Ok(match result {
+                        Ok(()) => {
+                            json_response(StatusCode::OK, serde_json::json!({"status": "ok"}))
+                        }
+                        Err(e) => api_error(StatusCode::BAD_REQUEST, &e.to_string()),
+                    });
+                }
+                (Method::PUT, None) => {
+                    let payload = match read_json_body(body).await {
+                        Ok(v) => v,
+                        Err(msg) => return Ok(api_error(StatusCode::BAD_REQUEST, &msg)),
+                    };
+                    let result = match state.db.lock() {
+                        Ok(conn) => db::update_budget(
+                            &conn,
+                            id,
+                            payload["name"].as_str().unwrap_or("").trim(),
+                            payload["period"].as_str().unwrap_or(""),
+                            payload["threshold_usd"].as_f64().unwrap_or(0.0),
+                            payload["provider_filter"].as_str().filter(|s| !s.is_empty()),
+                            payload["scope_kind"].as_str(),
+                            payload["scope_value"].as_str().filter(|s| !s.is_empty()),
+                            payload["enabled"].as_bool().unwrap_or(true),
+                        ),
+                        Err(_) => {
+                            return Ok(api_error(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "database lock failed",
+                            ))
+                        }
+                    };
+                    return Ok(match result {
+                        Ok(()) => {
+                            json_response(StatusCode::OK, serde_json::json!({"status": "ok"}))
+                        }
+                        Err(e) => api_error(StatusCode::BAD_REQUEST, &e.to_string()),
+                    });
+                }
+                (Method::DELETE, None) => {
+                    let result = match state.db.lock() {
+                        Ok(conn) => db::delete_budget(&conn, id),
+                        Err(_) => {
+                            return Ok(api_error(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "database lock failed",
+                            ))
+                        }
+                    };
+                    return Ok(match result {
+                        Ok(()) => {
+                            json_response(StatusCode::OK, serde_json::json!({"status": "ok"}))
+                        }
+                        Err(e) => api_error(StatusCode::BAD_REQUEST, &e.to_string()),
+                    });
+                }
+                _ => {
+                    return Ok(api_error(
+                        StatusCode::METHOD_NOT_ALLOWED,
+                        "unsupported method for /api/budgets/{id}",
+                    ))
+                }
+            }
+        }
+        return Ok(api_error(StatusCode::BAD_REQUEST, "invalid budget id"));
     }
 
     if path == "/api/context-audit" && parts.method == Method::GET {

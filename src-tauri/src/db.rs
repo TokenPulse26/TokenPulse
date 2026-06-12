@@ -1247,6 +1247,16 @@ pub fn check_budgets(conn: &Connection) -> Result<Vec<BudgetStatus>> {
         .collect()
 }
 
+/// Like `check_budgets`, but includes disabled budgets — for management
+/// UIs, which must still show (and be able to re-enable) disabled budgets.
+pub fn get_budget_statuses(conn: &Connection) -> Result<Vec<BudgetStatus>> {
+    let budgets = get_budgets(conn)?;
+    budgets
+        .iter()
+        .map(|budget| build_budget_status(conn, budget))
+        .collect()
+}
+
 pub fn resolve_budget_alerts(conn: &Connection, budget_id: i64) -> Result<usize> {
     conn.execute(
         "UPDATE budget_alerts

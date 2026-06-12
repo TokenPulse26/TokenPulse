@@ -308,6 +308,112 @@ async fn upstream_error_passes_through_and_is_recorded() {
 }
 
 #[tokio::test]
+async fn budget_crud_lifecycle_through_the_api() {
+    let (upstream, _captured) =
+        spawn_mock_upstream(StatusCode::OK, "application/json", "{}").await;
+    let (proxy, _db) = spawn_proxy(&upstream).await;
+    let client = reqwest::Client::new();
+
+    // Create
+    let created: Value = client
+        .post(format!("{}/api/budgets", proxy))
+        .json(&json!({"name": "Monthly cap", "period": "monthly", "threshold_usd": 50.0}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(created["status"], "ok");
+    let id = created["id"].as_i64().expect("created budget id");
+
+    // Invalid create is rejected with 400, not silently accepted
+    let bad = client
+        .post(format!("{}/api/budgets", proxy))
+        .json(&json!({"name": "broken", "period": "monthly", "threshold_usd": -5}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad.status(), 400);
+
+    // List shows it with live status fields
+    let listed: Value = client
+        .get(format!("{}/api/budgets", proxy))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let budgets = listed["budgets"].as_array().unwrap();
+    assert_eq!(budgets.len(), 1);
+    assert_eq!(budgets[0]["name"], "Monthly cap");
+    assert_eq!(budgets[0]["threshold_usd"], json!(50.0));
+    assert_eq!(budgets[0]["enabled"], json!(true));
+
+    // Full update
+    let updated: Value = client
+        .put(format!("{}/api/budgets/{}", proxy, id))
+        .json(&json!({
+            "name": "Monthly cap v2", "period": "monthly", "threshold_usd": 75.0,
+            "provider_filter": "anthropic", "enabled": true
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(updated["status"], "ok");
+
+    // Toggle off
+    let toggled: Value = client
+        .put(format!("{}/api/budgets/{}/enabled", proxy, id))
+        .json(&json!({"enabled": false}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(toggled["status"], "ok");
+
+    let listed: Value = client
+        .get(format!("{}/api/budgets", proxy))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let b = &listed["budgets"][0];
+    assert_eq!(b["name"], "Monthly cap v2");
+    assert_eq!(b["threshold_usd"], json!(75.0));
+    assert_eq!(b["provider_filter"], "anthropic");
+    assert_eq!(b["enabled"], json!(false));
+
+    // Delete, then the list is empty
+    let deleted: Value = client
+        .delete(format!("{}/api/budgets/{}", proxy, id))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(deleted["status"], "ok");
+    let listed: Value = client
+        .get(format!("{}/api/budgets", proxy))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(listed["budgets"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
 async fn health_endpoint_reports_ok_and_request_count() {
     let (upstream, _captured) =
         spawn_mock_upstream(StatusCode::OK, "application/json", "{}").await;

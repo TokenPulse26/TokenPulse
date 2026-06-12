@@ -9,6 +9,7 @@ import { RangeTabs } from './components/RangeTabs'
 import { StatusPill } from './components/StatusPill'
 import { ModelTable } from './components/ModelTable'
 import { RequestsTable } from './components/RequestsTable'
+import { BudgetsPanel } from './components/BudgetsPanel'
 
 export default function App() {
   const [range, setRange] = useState<Range>('7d')
@@ -80,6 +81,8 @@ export default function App() {
               </div>
             </Panel>
           )}
+
+          <BudgetsPanel />
 
           <Panel title="Recent requests">
             <RequestsTable requests={requests.data?.requests ?? []} />
