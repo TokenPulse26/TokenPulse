@@ -175,6 +175,15 @@ fn find_bundled_entry(
     None
 }
 
+/// Providers whose requests genuinely cost $0 per token (local runtimes and
+/// prepaid subscriptions). Keep in sync with get_provider_type in proxy.rs.
+fn is_free_provider(provider: Option<&str>) -> bool {
+    matches!(
+        provider.map(str::to_lowercase).as_deref(),
+        Some("ollama" | "lmstudio" | "cliproxy")
+    )
+}
+
 /// Price a request from the bundled pricing table only.
 pub fn calculate_cost(model: &str, provider: Option<&str>, usage: &UsageTokens) -> CostBreakdown {
     match find_bundled_entry(model, provider) {
@@ -189,9 +198,12 @@ pub fn calculate_cost(model: &str, provider: Option<&str>, usage: &UsageTokens) 
             provider,
             fuzzy,
         ),
+        // No pricing data at all. For paid API providers the true cost is
+        // unknown, not zero — flag it so the UI shows ~$0.00 instead of
+        // presenting a hard $0.00. Local/subscription traffic really is $0.
         None => CostBreakdown {
             cost_usd: 0.0,
-            estimated: false,
+            estimated: !is_free_provider(provider),
         },
     }
 }
@@ -331,9 +343,41 @@ mod tests {
         };
         let c = calculate_cost("claude-sonnet-4-6", Some("anthropic"), &usage);
         assert!(close(c.cost_usd, 0.021), "got {}", c.cost_usd);
-        assert!(c.estimated, "heuristic cache rates must be flagged");
+        // Bundled Anthropic entries now carry explicit cache rates (0.1x
+        // read / 1.25x write are Anthropic's documented multipliers), so
+        // cached requests are exact, not estimates.
+        assert!(!c.estimated, "explicit bundled cache rates are not estimates");
         // The old (broken) math priced cache traffic at $0: 0.0105.
         assert!(c.cost_usd > 0.0105);
+    }
+
+    #[test]
+    fn unknown_api_model_is_flagged_estimated() {
+        let usage = UsageTokens {
+            input_tokens: 1_000,
+            output_tokens: 500,
+            ..Default::default()
+        };
+        let c = calculate_cost("zzz-unknown-model-zzz", Some("openai"), &usage);
+        assert!(close(c.cost_usd, 0.0));
+        assert!(
+            c.estimated,
+            "a paid-API model with no pricing data has unknown cost, not $0"
+        );
+    }
+
+    #[test]
+    fn unknown_local_model_is_not_flagged() {
+        let usage = UsageTokens {
+            input_tokens: 1_000,
+            output_tokens: 500,
+            ..Default::default()
+        };
+        for provider in ["ollama", "lmstudio", "cliproxy"] {
+            let c = calculate_cost("zzz-unknown-model-zzz", Some(provider), &usage);
+            assert!(close(c.cost_usd, 0.0));
+            assert!(!c.estimated, "{} traffic really is $0", provider);
+        }
     }
 
     #[test]
