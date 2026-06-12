@@ -1,0 +1,39 @@
+@import 'tailwindcss';
+
+/* Design tokens shared with tokenpulse-site/style.css — keep in sync. */
+@theme {
+  --color-bg: #0a0a0a;
+  --color-bg-soft: #101417;
+  --color-panel: rgba(16, 23, 27, 0.78);
+  --color-panel-strong: rgba(15, 19, 22, 0.94);
+  --color-panel-border: rgba(144, 244, 226, 0.14);
+  --color-ink: #f5fbfb;
+  --color-muted: #9db2b3;
+  --color-accent: #00d4aa;
+  --color-accent-strong: #39f0d8;
+  --color-accent-soft: rgba(0, 212, 170, 0.16);
+  --color-danger: #ff6b6b;
+  --color-warn: #ffc857;
+
+  --font-sans: 'Inter', system-ui, sans-serif;
+  --font-mono: 'SFMono-Regular', ui-monospace, 'Cascadia Code', Menlo, Consolas, monospace;
+
+  --radius-panel: 16px;
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background:
+    radial-gradient(circle at top left, rgba(0, 212, 170, 0.14), transparent 28%),
+    radial-gradient(circle at top right, rgba(57, 240, 216, 0.1), transparent 22%),
+    linear-gradient(180deg, #0b0e10 0%, #0a0a0a 25%, #0c1012 100%);
+  background-attachment: fixed;
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  line-height: 1.6;
+}
