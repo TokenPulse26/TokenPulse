@@ -5161,7 +5161,7 @@ dependencies = [
 
 [[package]]
 name = "tokenpulse"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "axum",
  "bytes",

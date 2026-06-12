@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.4.4] - 2026-06-12 (Early Access)
+
+### Added
+- End-to-end proxy integration tests (`src-tauri/tests/proxy_integration.rs`) — real HTTP requests through the full proxy stack against a mock upstream, covering auth-header forwarding, Anthropic SSE usage accumulation, `stream_options` usage injection for OpenAI-compatible streams, upstream error pass-through, and the health endpoint. Runs in CI.
+- Cross-language model-family parity guard — `tests/fixtures/model_family.json` is asserted by both the Rust proxy and the Python dashboard test suites, so the two implementations can no longer drift apart silently.
+- xAI (Grok) route documented in the Agent Setup Guide.
+
+### Fixed
+- **Pricing data now refreshes every 24 hours** while the proxy runs, instead of only at startup. Long-running installs no longer drift onto stale rates until restarted.
+- Models with a zero-rate pricing entry (e.g. free local models) are no longer flagged as cost-estimated.
+- The proxy listen port can be overridden with `TOKENPULSE_PORT` (default remains 4100).
+
 ---
 
 ## [0.4.3] - 2026-06-11 (Early Access)
