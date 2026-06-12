@@ -134,6 +134,37 @@ class DashboardDataTests(unittest.TestCase):
         rows = list(csv.DictReader(io.StringIO(out)))
         self.assertEqual(len(rows), 2)
 
+    def test_csv_neutralizes_formula_injection(self):
+        # A request whose upstream error / tag begins with a formula character
+        # must not export a live spreadsheet formula.
+        db = make_db(NEW_SCHEMA, with_new_columns=True)
+        try:
+            conn = sqlite3.connect(db)
+            conn.execute(
+                "INSERT INTO requests (timestamp, provider, model, input_tokens, "
+                "output_tokens, cost_usd, source_tag, error_message) "
+                "VALUES (datetime('now'), 'openai', '@evil', 1, 1, 0.0, ?, ?)",
+                ("=cmd|'/c calc'!A1", "-2+3"))
+            conn.commit()
+            conn.close()
+            wd = load_dashboard(db)
+            rows = list(csv.DictReader(io.StringIO(wd._export_csv("today"))))
+            hit = next(r for r in rows if r["model"] == "'@evil")
+            self.assertEqual(hit["source_tag"], "'=cmd|'/c calc'!A1")
+            self.assertEqual(hit["error_message"], "'-2+3")
+            # Numeric and benign string cells are left untouched.
+            self.assertEqual(hit["provider"], "openai")
+        finally:
+            os.unlink(db)
+
+    def test_csv_formula_safe_helper(self):
+        self.assertEqual(self.wd._csv_formula_safe("=2+2"), "'=2+2")
+        self.assertEqual(self.wd._csv_formula_safe("+SUM(A1)"), "'+SUM(A1)")
+        self.assertEqual(self.wd._csv_formula_safe("-1"), "'-1")
+        self.assertEqual(self.wd._csv_formula_safe("@x"), "'@x")
+        self.assertEqual(self.wd._csv_formula_safe("anthropic"), "anthropic")
+        self.assertEqual(self.wd._csv_formula_safe(""), "")
+
 
 class ModelFamilyParityTests(unittest.TestCase):
     """Asserts _model_family against the shared fixture that the Rust side

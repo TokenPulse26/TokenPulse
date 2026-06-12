@@ -5921,6 +5921,20 @@ def _api_delete_budget(budget_id):
 CSV_EXPORT_ROW_CAP = 500_000
 
 
+def _csv_formula_safe(value):
+    """Neutralize spreadsheet formula injection in exported CSV cells.
+
+    A cell whose text starts with =, +, -, or @ is executed as a formula by
+    Excel / Google Sheets. provider, model, source_tag, and error_message all
+    carry caller- or upstream-controlled strings, so prefix a single quote to
+    force literal text. Mirrors csv_escape() in src-tauri/src/lib.rs; the
+    csv.writer handles comma/quote/newline quoting on its own.
+    """
+    if isinstance(value, str) and value[:1] in ("=", "+", "-", "@"):
+        return "'" + value
+    return value
+
+
 def _export_csv(time_range):
     """Generate CSV content for all requests in the given time range.
 
@@ -5978,7 +5992,8 @@ def _export_csv(time_range):
                 break
             for r in rows:
                 writer.writerow([
-                    r["timestamp"], r["provider"], r["model"],
+                    r["timestamp"], _csv_formula_safe(r["provider"]),
+                    _csv_formula_safe(r["model"]),
                     r["input_tokens"], r["output_tokens"],
                     r["cached_tokens"], r["cache_creation_tokens"],
                     r["reasoning_tokens"],
@@ -5986,7 +6001,9 @@ def _export_csv(time_range):
                     r["latency_ms"],
                     f"{r['tokens_per_second']:.1f}", r["time_to_first_token_ms"],
                     bool(r["is_streaming"]),
-                    r["source_tag"], r["provider_type"], r["error_message"],
+                    _csv_formula_safe(r["source_tag"]),
+                    _csv_formula_safe(r["provider_type"]),
+                    _csv_formula_safe(r["error_message"]),
                 ])
     except Exception as e:
         print(f"[tokenpulse-dashboard] CSV export error: {e}", flush=True)

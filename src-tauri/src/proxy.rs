@@ -174,6 +174,14 @@ fn detect_provider(headers: &HeaderMap, path: &str) -> ProviderInfo {
             base_url: "https://api.x.ai".to_string(),
         };
     }
+    if path.starts_with("/deepseek/") {
+        // DeepSeek's API is OpenAI-compatible. Its keys reuse the generic
+        // `sk-` prefix, so there's no reliable header signal — route by path.
+        return ProviderInfo {
+            name: "deepseek".to_string(),
+            base_url: "https://api.deepseek.com".to_string(),
+        };
+    }
     if path.starts_with("/cliproxy/") {
         return ProviderInfo {
             name: "cliproxy".to_string(),
@@ -610,6 +618,9 @@ fn build_forward_path(provider: &ProviderInfo, original_path: &str) -> String {
             .unwrap_or(original_path),
         "groq" => original_path.strip_prefix("/groq").unwrap_or(original_path),
         "xai" => original_path.strip_prefix("/xai").unwrap_or(original_path),
+        "deepseek" => original_path
+            .strip_prefix("/deepseek")
+            .unwrap_or(original_path),
         "cliproxy" => original_path
             .strip_prefix("/cliproxy")
             .unwrap_or(original_path),
@@ -2012,6 +2023,18 @@ mod tests {
         assert_eq!(provider.base_url, "https://api.x.ai");
         assert_eq!(
             super::build_forward_path(&provider, "/xai/v1/chat/completions"),
+            "/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn deepseek_route_detected_and_path_stripped() {
+        let headers = http::HeaderMap::new();
+        let provider = super::detect_provider(&headers, "/deepseek/v1/chat/completions");
+        assert_eq!(provider.name, "deepseek");
+        assert_eq!(provider.base_url, "https://api.deepseek.com");
+        assert_eq!(
+            super::build_forward_path(&provider, "/deepseek/v1/chat/completions"),
             "/v1/chat/completions"
         );
     }

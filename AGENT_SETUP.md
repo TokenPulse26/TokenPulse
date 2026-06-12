@@ -149,6 +149,7 @@ Change the base URL of the user's AI tool to point at TokenPulse instead of the 
 | Mistral | `http://localhost:4100/mistral` |
 | Groq | `http://localhost:4100/groq` |
 | xAI (Grok) | `http://localhost:4100/xai` |
+| DeepSeek | `http://localhost:4100/deepseek` |
 | OpenRouter | `http://localhost:4100/openrouter` |
 
 **Critical:** Each provider type MUST use its specific route. Anthropic requests to the root route will fail. Ollama requests to the root route will fail.
