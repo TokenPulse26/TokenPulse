@@ -109,6 +109,19 @@ pub struct AppState {
     pub db: Arc<Mutex<rusqlite::Connection>>,
     pub http_client: Client,
     pub proxy_paused: Arc<AtomicBool>,
+    /// When set, every detected provider's base URL is replaced with this
+    /// value. Used by integration tests to point all routes at a mock
+    /// upstream; always `None` in production.
+    pub upstream_override: Option<String>,
+}
+
+/// Proxy listen port. Defaults to 4100; override with TOKENPULSE_PORT
+/// (useful for tests and for running side-by-side instances).
+pub fn proxy_port() -> u16 {
+    std::env::var("TOKENPULSE_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(4100)
 }
 
 #[derive(Debug, Clone)]
@@ -802,7 +815,7 @@ async fn proxy_handler(
             "status": "ok",
             "service": "tokenpulse-proxy",
             "version": env!("CARGO_PKG_VERSION"),
-            "port": 4100,
+            "port": proxy_port(),
             "uptime_seconds": uptime_secs,
             "proxy_paused": state.proxy_paused.load(Ordering::SeqCst),
             "total_requests_tracked": count,
@@ -1084,7 +1097,10 @@ async fn proxy_handler(
         return Ok(json_response(StatusCode::OK, result));
     }
 
-    let provider = detect_provider(&parts.headers, &path);
+    let mut provider = detect_provider(&parts.headers, &path);
+    if let Some(override_url) = &state.upstream_override {
+        provider.base_url = override_url.clone();
+    }
     let forward_path = build_forward_path(&provider, &path);
     let target_url = format!("{}{}{}", provider.base_url, forward_path, query);
 
@@ -1666,30 +1682,36 @@ pub async fn start_proxy_server(
         db,
         http_client,
         proxy_paused,
+        upstream_override: None,
     };
 
-    let cors = build_cors_layer();
+    let app = build_router(state);
+    let port = proxy_port();
 
-    let app = Router::new()
-        .fallback(any(proxy_handler))
-        .layer(cors)
-        .with_state(state);
-
-    match tokio::net::TcpListener::bind("127.0.0.1:4100").await {
+    match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
         Ok(listener) => {
             proxy_running.store(true, Ordering::SeqCst);
-            eprintln!("TokenPulse proxy listening on http://127.0.0.1:4100");
+            eprintln!("TokenPulse proxy listening on http://127.0.0.1:{}", port);
             axum::serve(listener, app).await.ok();
             proxy_running.store(false, Ordering::SeqCst);
         }
         Err(e) => {
             eprintln!(
-                "Failed to bind proxy port 4100: {}. Is another instance running?",
-                e
+                "Failed to bind proxy port {}: {}. Is another instance running?",
+                port, e
             );
             proxy_running.store(false, Ordering::SeqCst);
         }
     }
+}
+
+/// Build the proxy router. Separated from the server startup so integration
+/// tests can drive the full handler stack against an in-process listener.
+pub fn build_router(state: AppState) -> Router {
+    Router::new()
+        .fallback(any(proxy_handler))
+        .layer(build_cors_layer())
+        .with_state(state)
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
-mod db;
-mod pricing;
-mod proxy;
+pub mod db;
+pub mod pricing;
+pub mod proxy;
 
 use db::{
     Budget, BudgetAlertHistoryItem, BudgetForecast, BudgetStatus, ContextAuditSnapshot,
